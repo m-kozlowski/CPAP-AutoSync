@@ -24,17 +24,26 @@ void ScheduleManager::setNtpServer(const String& server) {
     }
 }
 
-bool ScheduleManager::begin(const String& mode, int startHour, int endHour, int gmtOffset) {
+bool ScheduleManager::begin(const String& mode, int startHour, int endHour,
+                            int gmtOffset, const String& tz, const String& ntp) {
     this->uploadMode = mode;
     this->uploadStartHour = startHour;
     this->uploadEndHour = endHour;
     this->gmtOffsetHours = gmtOffset;
+    this->tzString = tz;
+    this->ntpServer = ntp;
     
     // Also set legacy uploadHour for backward compat
     this->uploadHour = startHour;
     
-    LOGF("[Schedule] Mode: %s, Window: %d:00-%d:00, GMT%+d",
-         mode.c_str(), startHour, endHour, gmtOffset);
+    if (tzString.length() > 0) {
+        LOGF("[Schedule] Mode: %s, Window: %d:00-%d:00, TZ: %s",
+             mode.c_str(), startHour, endHour, tzString.c_str());
+    } else {
+        LOGF("[Schedule] Mode: %s, Window: %d:00-%d:00, GMT%+d",
+             mode.c_str(), startHour, endHour, gmtOffset);
+    }
+    LOGF("[Schedule] NTP server: %s", ntpServer.c_str());
     
     syncTime();
     return true;
@@ -53,7 +62,8 @@ bool ScheduleManager::begin(int uploadHour, int gmtOffsetHours) {
 }
 
 bool ScheduleManager::syncTime() {
-    LOGF("[NTP] Starting time sync with server: %s", ntpServer);
+    LOGF("[NTP] Starting time sync with server: %s", ntpServer.c_str());
+    LOGF("[NTP] TZ string: %s", tzString.c_str());
     LOGF("[NTP] GMT offset: %d hours", gmtOffsetHours);
     
     // Allow network to stabilize after WiFi connection.
@@ -69,20 +79,47 @@ bool ScheduleManager::syncTime() {
     // ICMP reachability is not required for NTP (uses UDP/123).
     LOG("[NTP] Proceeding directly with UDP NTP sync (ICMP pre-check disabled)");
     
-    long gmtOffsetSeconds = gmtOffsetHours * 3600L;
+    // Check if DHCP gave us a server (esp_sntp_servermode_dhcp(true) was called before WiFi connect)
+    bool hasDhcpServer = false;
+    const ip_addr_t* dhcpServer = esp_sntp_getserver(0);
+    if (dhcpServer && !ip_addr_isany(dhcpServer)) {
+        hasDhcpServer = true;
+    }
     
-    if (ntpServer != "pool.ntp.org") {
+    const char* serverToUse = nullptr;
+    
+    // Configure DHCP Option 42 (NTP) based on server override
+    if (ntpServer.length() > 0 && ntpServer != "pool.ntp.org") {
 #if defined(ESP32)
         esp_sntp_servermode_dhcp(0);
 #endif
-        configTime(gmtOffsetSeconds, 0, ntpServer.c_str());
+        LOGF("[NTP] Using configured override: %s", ntpServer.c_str());
+        serverToUse = ntpServer.c_str();
+    } else if (hasDhcpServer) {
+        LOGF("[NTP] Using DHCP-provided server: " IPSTR, IP2STR(&dhcpServer->u_addr.ip4));
+        serverToUse = nullptr; // Tells configTzTime not to overwrite server 0
     } else {
-#if defined(ESP32)
-        esp_sntp_servermode_dhcp(1);
-#endif
-        configTime(gmtOffsetSeconds, 0, "pool.ntp.org");
+        LOG("[NTP] No DHCP server found, using fallback: pool.ntp.org");
+        serverToUse = "pool.ntp.org";
     }
+
+    String tzVal;
+    if (tzString.length() > 0) {
+        LOGF("[NTP] Using POSIX timezone: %s", tzString.c_str());
+        tzVal = tzString;
+    } else {
+        // note inverted sign, TZ "UTC-5" is "GMT+5"
+        char tz[24];
+        snprintf(tz, sizeof(tz), "UTC%d", -gmtOffsetHours);
+        LOGF("[NTP] Using GMT offset: %d hours (TZ=%s)", gmtOffsetHours, tz);
+        tzVal = tz;
+    }
+
+    // configTzTime natively handles SNTP init, parses the TZ string natively, 
+    // and correctly preserves DHCP SNTP servers if serverToUse is nullptr.
+    configTzTime(tzVal.c_str(), serverToUse);
     
+
     // Wait for time to be set (with timeout)
     int retries = 0;
     const int maxRetries = 20;  // Increased timeout
@@ -279,10 +316,17 @@ String ScheduleManager::getCurrentLocalTime() const {
         return "Failed to get local time";
     }
     
-    char buffer[32];
-    snprintf(buffer, sizeof(buffer), "%02d:%02d:%02d (GMT%+d)",
-             timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec,
-             gmtOffsetHours);
+    char buffer[48];
+    if (tzString.length() > 0) {
+        snprintf(buffer, sizeof(buffer), "%02d:%02d:%02d (%s)",
+                 timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec,
+                 timeinfo.tm_isdst > 0 ? "DST" : "STD");
+    } else {
+        snprintf(buffer, sizeof(buffer), "%02d:%02d:%02d (GMT%+d)",
+                 timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec,
+                 gmtOffsetHours);
+    }
+
     
     return String(buffer);
 }
