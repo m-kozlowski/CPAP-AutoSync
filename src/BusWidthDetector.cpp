@@ -778,18 +778,16 @@ void BusWidthDetector::restoreAndRelease(uint16_t rca, uint8_t origState, bool w
 // briefly and grabs it back to prove the MUX switch kills the session.
 
 void BusWidthDetector::selfTest() {
-    LOG_INFO("\n===SELF-TEST=== Starting RCA sweep validation ===");
+    LOG_INFO("\n===SELF-TEST=== MUX disruption test (ESP-IDF card init) ===");
     // NOTE: Caller must have already grabbed MUX and called initHardware().
-    // We assume SDMMC peripheral is live and MUX points to ESP32.
 
-    // ── Step 1: Full SD card init via ESP-IDF (handles all timing/retries) ──
-    LOG_INFO("===SELF-TEST=== Phase 1: Initialising card via sdmmc_card_init()...");
+    // ── Phase 1: Init card via ESP-IDF ──
+    LOG_INFO("===SELF-TEST=== Phase 1: sdmmc_card_init() — first init...");
 
-    // Build host config matching our already-initialized slot
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     host.slot = SDMMC_HOST_SLOT_1;
-    host.max_freq_khz = 400;
-    host.flags = SDMMC_HOST_FLAG_1BIT;  // Safe 1-bit mode
+    host.max_freq_khz = SDMMC_FREQ_PROBING;
+    host.flags = SDMMC_HOST_FLAG_1BIT;
 
     sdmmc_card_t card;
     memset(&card, 0, sizeof(card));
@@ -797,46 +795,33 @@ void BusWidthDetector::selfTest() {
 
     esp_err_t err = sdmmc_card_init(&host, &card);
     if (err != ESP_OK) {
-        LOG_ERRORF("===SELF-TEST=== sdmmc_card_init failed: 0x%x (%s)", err, esp_err_to_name(err));
-        LOG_INFO("===SELF-TEST=== ABORTED (card init failed) ===\n");
-        return;  // Caller handles cleanup
+        LOG_ERRORF("===SELF-TEST=== First init FAILED: 0x%x (%s)", err, esp_err_to_name(err));
+        LOG_INFO("===SELF-TEST=== ABORTED ===\n");
+        return;
     }
 
-    uint16_t selfRCA = card.rca;
-    LOG_INFOF("===SELF-TEST=== Card init OK: RCA=0x%04X, type=%s, %luMB",
-              selfRCA,
-              (card.ocr & (1 << 30)) ? "SDHC" : "SDSC",
+    uint16_t rca1 = card.rca;
+    LOG_INFOF("===SELF-TEST=== First init OK: RCA=0x%04X, SDHC=%s, %luMB",
+              rca1, (card.ocr & (1 << 30)) ? "yes" : "no",
               (unsigned long)(((uint64_t)card.csd.capacity) * card.csd.sector_size / (1024 * 1024)));
 
-    // ── Step 2: Verify our bare-metal CMD13 works on the ESP-IDF-assigned RCA ──
-    uint32_t status = 0;
-    bool cmd13ok = sendCmd13(selfRCA, &status);
-    uint8_t state = (status >> 9) & 0x0F;
-    LOG_INFOF("===SELF-TEST=== Bare-metal CMD13 to 0x%04X: %s — state=%d(%s) status=0x%08X",
-              selfRCA, cmd13ok ? "OK" : "FAIL", state, SD_STATE_NAME(state), status);
-
-    // ── Step 3: Run sweep — it MUST find our RCA (positive control) ──
-    LOG_INFO("===SELF-TEST=== Phase 2: Running sweep to find self-assigned RCA...");
-    uint32_t sweepStatus = 0;
-    uint16_t foundRCA = sweepRCA(&sweepStatus);
-    uint8_t foundState = (sweepStatus >> 9) & 0x0F;
-
-    if (foundRCA == selfRCA) {
-        LOG_INFOF("===SELF-TEST=== PASS: Sweep found RCA 0x%04X state=%d(%s) ✓",
-                  foundRCA, foundState, SD_STATE_NAME(foundState));
-    } else if (foundRCA != 0) {
-        LOG_WARNF("===SELF-TEST=== UNEXPECTED: Sweep found RCA 0x%04X (expected 0x%04X)",
-                  foundRCA, selfRCA);
-    } else {
-        LOG_ERROR("===SELF-TEST=== FAIL: Sweep did NOT find self-assigned RCA — sweep code is broken!");
+    // ── Phase 2: Re-init WITHOUT MUX cycle (control — should succeed) ──
+    LOG_INFO("===SELF-TEST=== Phase 2: Re-init without MUX cycle (control)...");
+    memset(&card, 0, sizeof(card));
+    card.host = host;
+    err = sdmmc_card_init(&host, &card);
+    if (err != ESP_OK) {
+        LOG_ERRORF("===SELF-TEST=== Control re-init FAILED: 0x%x (%s)", err, esp_err_to_name(err));
         LOG_INFO("===SELF-TEST=== ABORTED ===\n");
-        return;  // Caller handles cleanup
+        return;
     }
+    uint16_t rca2 = card.rca;
+    LOG_INFOF("===SELF-TEST=== Control re-init OK: RCA=0x%04X (was 0x%04X)", rca2, rca1);
 
-    // ── Step 4: MUX round-trip test ──
-    LOG_INFO("===SELF-TEST=== Phase 3: MUX round-trip — releasing MUX for 500ms...");
+    // ── Phase 3: MUX round-trip + re-init ──
+    LOG_INFO("===SELF-TEST=== Phase 3: MUX round-trip (release 500ms, grab back)...");
 
-    // Tri-state pins before releasing
+    // Tri-state pins, deinit, release MUX
     const int sdPins[] = { SD_CMD_PIN, SD_CLK_PIN, SD_D0_PIN, SD_D1_PIN, SD_D2_PIN, SD_D3_PIN };
     for (int pin : sdPins) {
         gpio_reset_pin((gpio_num_t)pin);
@@ -844,52 +829,47 @@ void BusWidthDetector::selfTest() {
         gpio_set_pull_mode((gpio_num_t)pin, GPIO_PULLUP_ONLY);
     }
     deinitHardware();
-
-    // Return MUX to CPAP
     digitalWrite(SD_SWITCH_PIN, SD_SWITCH_CPAP_VALUE);
+    LOG_INFO("===SELF-TEST=== MUX released to CPAP, waiting 500ms...");
     delay(500);
 
-    // Grab MUX back
+    // Grab MUX back and re-init
     LOG_INFO("===SELF-TEST=== Grabbing MUX back...");
     digitalWrite(SD_SWITCH_PIN, SD_SWITCH_ESP_VALUE);
     delay(200);
 
     if (!initHardware()) {
         LOG_ERROR("===SELF-TEST=== Hardware re-init failed after MUX round-trip");
-        LOG_INFO("===SELF-TEST=== ABORTED (re-init failed) ===\n");
-        return;  // Caller handles cleanup
+        LOG_INFO("===SELF-TEST=== ABORTED ===\n");
+        return;
     }
 
-    // Try direct CMD13 to the same RCA
-    uint32_t postStatus = 0;
-    bool postCmd13 = sendCmd13(selfRCA, &postStatus);
-    uint8_t postState = (postStatus >> 9) & 0x0F;
-    LOG_INFOF("===SELF-TEST=== Post-MUX CMD13 to 0x%04X: %s — state=%d(%s) status=0x%08X",
-              selfRCA, postCmd13 ? "OK" : "FAIL", postState, SD_STATE_NAME(postState), postStatus);
-
-    // Short targeted sweep: just check the known RCA range ±16
-    LOG_INFO("===SELF-TEST=== Running post-MUX targeted sweep (known RCA ±16)...");
-    uint32_t postSweepStatus = 0;
-    uint16_t postFoundRCA = 0;
-    // Quick direct check of the exact RCA first
-    {
-        uint32_t resp = 0;
-        if (sendCmd13(selfRCA, &resp)) {
-            uint8_t st = (resp >> 9) & 0x0F;
-            if (st >= 3 && resp != 0) {
-                postFoundRCA = selfRCA;
-                postSweepStatus = resp;
-            }
-        }
+    // Try card init again
+    LOG_INFO("===SELF-TEST=== Phase 3b: sdmmc_card_init() after MUX round-trip...");
+    memset(&card, 0, sizeof(card));
+    card.host = host;
+    err = sdmmc_card_init(&host, &card);
+    if (err != ESP_OK) {
+        LOG_ERRORF("===SELF-TEST=== Post-MUX init FAILED: 0x%x (%s) — card lost session!",
+                   err, esp_err_to_name(err));
+        LOG_INFO("===SELF-TEST=== CONFIRMED: MUX round-trip kills card — init fails completely ===\n");
+        return;
     }
 
-    if (postFoundRCA == selfRCA) {
-        LOG_INFOF("===SELF-TEST=== SURPRISE: RCA 0x%04X survived MUX round-trip!", selfRCA);
+    uint16_t rca3 = card.rca;
+    LOG_INFOF("===SELF-TEST=== Post-MUX init OK: RCA=0x%04X (was 0x%04X / 0x%04X)", rca3, rca1, rca2);
+
+    if (rca3 == rca2) {
+        LOG_INFOF("===SELF-TEST=== SURPRISE: Card retained same RCA across MUX cycle!");
     } else {
-        LOG_INFO("===SELF-TEST=== CONFIRMED: MUX round-trip killed the card session — RCA gone");
+        LOG_INFOF("===SELF-TEST=== Card got new RCA after MUX cycle (0x%04X → 0x%04X) — session was reset",
+                  rca2, rca3);
     }
 
-    // Hardware is re-initialized and MUX points to ESP32 — caller handles final cleanup
+    // Also: bare-metal sweep is broken (can't find ESP-IDF-initialized RCA).
+    // The ESP-IDF SDMMC driver's ISR consumes interrupts before our polling loop.
+    LOG_WARN("===SELF-TEST=== NOTE: Bare-metal CMD13 sweep is incompatible with ESP-IDF SDMMC driver");
+
     LOG_INFO("===SELF-TEST=== Complete ===\n");
 }
 
