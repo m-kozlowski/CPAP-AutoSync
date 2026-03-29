@@ -381,6 +381,12 @@ void setup() {
     pinMode(CS_SENSE, INPUT);
     pinMode(SD_SWITCH_PIN, OUTPUT);
     digitalWrite(SD_SWITCH_PIN, SD_SWITCH_CPAP_VALUE);
+
+    // ── EXPERIMENTAL: Start early PCNT immediately ──
+    // Count DAT3 (CS_SENSE) edges from the very first moment of boot.
+    // AS11 (4-bit mode) generates many pulses during card init;
+    // AS10 (1-bit mode) generates few or zero (DAT3 is unused).
+    EarlyPCNT::init(CS_SENSE);
     
     delay(1000);
     LOG("\n\n=== CPAP Data Auto-Uploader ===");
@@ -403,6 +409,17 @@ void setup() {
         int rawCore0 = (int)rtc_get_reset_reason(0);
         int rawCore1 = (int)rtc_get_reset_reason(1);
         LOG_INFOF("Reset reason (raw): Core0=%d Core1=%d", rawCore0, rawCore1);
+    }
+
+    // ── EXPERIMENTAL: Early PCNT checkpoint #1 (after ~1s of boot) ──
+    {
+        int earlyPulses = EarlyPCNT::read();
+        LOG_INFOF("===EXPERIMENTAL=== Early PCNT checkpoint 1 (boot+1s): %d pulses on DAT3", earlyPulses);
+        if (resetReason == ESP_RST_POWERON) {
+            LOG_INFOF("===EXPERIMENTAL=== Power-on boot — PCNT captures CPAP card init activity");
+        } else {
+            LOG_INFOF("===EXPERIMENTAL=== Non-power-on boot (reason=%d) — PCNT may miss init window", (int)resetReason);
+        }
     }
 
     // ── 2B: NVS boot counter + consecutive power-on reset detection ──
@@ -501,6 +518,9 @@ void setup() {
     }
     
     // Initialize TrafficMonitor (PCNT-based bus activity detection on CS_SENSE pin)
+    // EarlyPCNT and TrafficMonitor use separate PCNT units (ESP32 has 8) on the
+    // same GPIO — they coexist safely.  EarlyPCNT is torn down later, after all
+    // checkpoint readings are complete.
     trafficMonitor.begin(CS_SENSE);
 
     // ── AS10: Therapy-safe cached boot ──
@@ -583,6 +603,13 @@ void setup() {
         }
     }
 
+    if (usedCachedConfig) {
+        // Cached-config path — no detector will run, tear down early PCNT now
+        int p = EarlyPCNT::read();
+        LOG_INFOF("===EXPERIMENTAL=== Early PCNT final (cached-config path): %d pulses", p);
+        EarlyPCNT::teardown();
+    }
+
     if (!usedCachedConfig) {
         // ── Normal boot path: wait for bus silence, take SD, load config ──
 
@@ -604,22 +631,46 @@ void setup() {
 
         if (fastBoot) {
             LOG("[FastBoot] Software reset — skipping 15s electrical stabilization");
+            {
+                int p = EarlyPCNT::read();
+                LOG_INFOF("===EXPERIMENTAL=== Early PCNT checkpoint 2 (pre-SmartWait, FastBoot): %d pulses", p);
+            }
             runSmartWait();
         } else {
+            {
+                int p = EarlyPCNT::read();
+                LOG_INFOF("===EXPERIMENTAL=== Early PCNT checkpoint 2 (pre-stabilization): %d pulses", p);
+            }
             LOG("Waiting 8s for electrical stabilization...");
             delay(8000);
+            {
+                int p = EarlyPCNT::read();
+                LOG_INFOF("===EXPERIMENTAL=== Early PCNT checkpoint 3 (post-stabilization): %d pulses", p);
+            }
             runSmartWait();
         }
         
+        // ── EXPERIMENTAL: Final PCNT reading + teardown ──
+        {
+            int p = EarlyPCNT::read();
+            LOG_INFOF("===EXPERIMENTAL=== Early PCNT final (pre-detect): %d pulses", p);
+        }
+        EarlyPCNT::teardown();
+
         LOG("Boot delay complete. Running Bus Width Detection...");
         // EXPERIMENTAL: Stealth detect RCA and Bus Width
-        int detectedBusWidth = BusWidthDetector::detectBusWidth();
-        if (detectedBusWidth == 1) {
+        DetectionResult detResult = BusWidthDetector::detect();
+        if (detResult.busWidth == 1) {
             LOG("-> MAIN: Detected 1-Bit Width (Likely AirSense 10)");
-        } else if (detectedBusWidth == 4) {
+        } else if (detResult.busWidth == 4) {
             LOG("-> MAIN: Detected 4-Bit Width (Likely AirSense 11)");
+        } else if (detResult.rca != 0) {
+            LOG("-> MAIN: RCA found but bus-width probe failed — card in unusual state");
         } else {
-            LOG("-> MAIN: Detection Failed (Standard Reader / CPAP Off) — falling back to standard SD mount");
+            LOG("-> MAIN: No RCA found (Standard Reader / CPAP Off) — falling back to standard SD mount");
+        }
+        if (!detResult.wifiSSID.isEmpty()) {
+            LOGF("===EXPERIMENTAL=== Stealth config.txt WIFI_SSID: %s", detResult.wifiSSID.c_str());
         }
 
         LOG("Attempting SD card access for normal boot...");
@@ -665,13 +716,7 @@ void setup() {
         sdManager.releaseControl();
     }
 
-skip_sd_mount:
     // ── Common path: config post-processing (runs for both cached and SD boot) ──
-    // If we skipped SD mount (no RCA found), load default configuration
-    if (!config.isLoaded()) {
-        LOG_WARN("[EXPERIMENTAL] Loading default configuration (no SD access)");
-        config.loadDefaults();
-    }
     LOG("Configuration loaded successfully");
     g_debugMode = config.getDebugMode();
     if (g_debugMode) {

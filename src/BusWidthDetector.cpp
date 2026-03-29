@@ -2,247 +2,781 @@
 #include "pins_config.h"
 #include "Logger.h"
 #include <driver/sdmmc_host.h>
-#include <sdmmc_cmd.h>
 #include "soc/sdmmc_reg.h"
 #include "soc/sdmmc_struct.h"
-#include "hal/sdmmc_ll.h"
 
-// Define register access macros for bare-metal CMD13 sweep
-#define SD_CMDARG_VAL  (*(volatile uint32_t*)(SDMMC_CMDARG_REG))
-#define SD_CMD_VAL     (*(volatile uint32_t*)(SDMMC_CMD_REG))
-#define SD_RINTSTS_VAL (*(volatile uint32_t*)(SDMMC_RINTSTS_REG))
-#define SD_RESP0_VAL   (*(volatile uint32_t*)(SDMMC_RESP0_REG))
-#define SD_TMOUT_VAL   (*(volatile uint32_t*)(SDMMC_TMOUT_REG))
-#define SD_CTYPE_VAL   (*(volatile uint32_t*)(SDMMC_CTYPE_REG))
+// ============================================================================
+// ESP32 SDMMC register access via the memory-mapped struct
+// ============================================================================
+// The ESP-IDF exports `SDMMC` as a global sdmmc_dev_t at DR_REG_SDMMC_BASE.
+// Using the struct is cleaner and safer than raw pointer casts.
+// The DATA FIFO is at base + 0x200 and is NOT in the struct — access it directly.
+#define SDMMC_FIFO_ADDR  (DR_REG_SDMMC_BASE + 0x200)
+#define SDMMC_FIFO       (*(volatile uint32_t*)SDMMC_FIFO_ADDR)
 
-// Hardware Status Bits
-#define HW_CMD_DONE        SDMMC_INTMASK_CMD_DONE  // BIT(2)
-#define HW_RTO             SDMMC_INTMASK_RTO       // BIT(8)
-#define HW_HLE             SDMMC_INTMASK_HLE       // BIT(12)
-#define HW_RESP_ERR        SDMMC_INTMASK_RESP_ERR  // BIT(1)
-#define HW_RCRC            SDMMC_INTMASK_RCRC      // BIT(6)
+// Interrupt status bits (from sdmmc_reg.h)
+#define INT_CMD_DONE   BIT(2)
+#define INT_DTO        BIT(3)   // Data Transfer Over
+#define INT_RXDR       BIT(5)   // RX FIFO Data Ready
+#define INT_RCRC       BIT(6)   // Response CRC error
+#define INT_DCRC       BIT(7)   // Data CRC error
+#define INT_RTO        BIT(8)   // Response Timeout
+#define INT_DRTO       BIT(9)   // Data Read Timeout
+#define INT_HTO        BIT(10)  // Data starvation Host Timeout
+#define INT_FRUN       BIT(11)  // FIFO underrun/overrun
+#define INT_HLE        BIT(12)  // Hardware Locked write Error
+#define INT_SBE        BIT(13)  // Start Bit Error
+#define INT_EBE        BIT(15)  // End Bit Error
 
-// Errors indicating current RCA is wrong during sweep
-#define SWEEP_ERR_FLAGS    (HW_RTO | HW_HLE | HW_RESP_ERR | HW_RCRC)
+// Aggregate error masks
+#define CMD_ERR_FLAGS  (INT_RTO | INT_RCRC | INT_HLE)
+#define DATA_ERR_FLAGS (INT_DCRC | INT_DRTO | INT_SBE | INT_EBE | INT_HTO | INT_FRUN)
+#define ALL_ERR_FLAGS  (CMD_ERR_FLAGS | DATA_ERR_FLAGS)
 
-int BusWidthDetector::detectBusWidth() {
-    LOG("\n--- [EXPERIMENTAL] STARTING BUS-WIDTH DETECTOR ---");
-    
-    // 1. Grab MUX (Physical Layer)
-    LOG("Detector: Grabbing SD MUX...");
-    pinMode(SD_SWITCH_PIN, OUTPUT);
-    digitalWrite(SD_SWITCH_PIN, SD_SWITCH_ESP_VALUE); // ESP32 takes the card
-    delay(200); // Settle MUX relay/switch (increased for mechanical relays)
+// SD card states (R1 response bits [12:9])
+static const char* SD_STATE_NAMES[] = {
+    "Idle", "Ready", "Ident", "Stby", "Tran", "Data", "Rcv", "Prg", "Dis"
+};
+#define SD_STATE_NAME(s) ((s) < 9 ? SD_STATE_NAMES[s] : "Unknown")
 
-    // 2. Formal Host and Slot Initialization (Link Layer)
-    // We MUST use these functions to route the SDMMC peripheral to the GPIO Matrix.
-    // Manual register writes to CMD/CLK will fail if the matrix is not configured!
+// ============================================================================
+// EarlyPCNT — standalone lightweight pulse counter
+// ============================================================================
+namespace EarlyPCNT {
+    static pcnt_unit_handle_t   s_unit    = nullptr;
+    static pcnt_channel_handle_t s_chan   = nullptr;
+
+    void init(int gpio) {
+        pcnt_unit_config_t ucfg = {};
+        ucfg.high_limit = 32767;
+        ucfg.low_limit  = -1;
+        if (pcnt_new_unit(&ucfg, &s_unit) != ESP_OK) return;
+
+        pcnt_glitch_filter_config_t fcfg = {};
+        fcfg.max_glitch_ns = 125;
+        pcnt_unit_set_glitch_filter(s_unit, &fcfg);
+
+        pcnt_chan_config_t ccfg = {};
+        ccfg.edge_gpio_num  = gpio;
+        ccfg.level_gpio_num = -1;
+        if (pcnt_new_channel(s_unit, &ccfg, &s_chan) != ESP_OK) {
+            pcnt_del_unit(s_unit);
+            s_unit = nullptr;
+            return;
+        }
+        pcnt_channel_set_edge_action(s_chan,
+            PCNT_CHANNEL_EDGE_ACTION_INCREASE,
+            PCNT_CHANNEL_EDGE_ACTION_INCREASE);
+        pcnt_channel_set_level_action(s_chan,
+            PCNT_CHANNEL_LEVEL_ACTION_KEEP,
+            PCNT_CHANNEL_LEVEL_ACTION_KEEP);
+        pcnt_unit_enable(s_unit);
+        pcnt_unit_clear_count(s_unit);
+        pcnt_unit_start(s_unit);
+    }
+
+    int read() {
+        if (!s_unit) return -1;
+        int val = 0;
+        pcnt_unit_get_count(s_unit, &val);
+        return val;
+    }
+
+    void teardown() {
+        if (s_chan)  { pcnt_del_channel(s_chan); s_chan = nullptr; }
+        if (s_unit) { pcnt_unit_stop(s_unit); pcnt_unit_disable(s_unit); pcnt_del_unit(s_unit); s_unit = nullptr; }
+    }
+}
+
+// ============================================================================
+// Hardware Init / Deinit
+// ============================================================================
+
+bool BusWidthDetector::initHardware() {
+    // Use ESP-IDF sdmmc_host_init to properly configure the GPIO matrix.
+    // Without this, the SDMMC peripheral cannot drive or sample the SD pins.
     esp_err_t err = sdmmc_host_init();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        LOGF("Detector: sdmmc_host_init failed: 0x%x", err);
-        cleanup_and_release(false);
-        return -1;
+        LOG_ERRORF("[BWD] sdmmc_host_init failed: 0x%x", err);
+        return false;
     }
 
-    // Configure Slot 1 Pins (ESP32 standard for this board)
-    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
-    slot_config.width = 1; // Start in 1-bit mode for probing safely
-    slot_config.clk = GPIO_NUM_14;
-    slot_config.cmd = GPIO_NUM_15;
-    slot_config.d0  = GPIO_NUM_2;
-    slot_config.d1  = GPIO_NUM_4;
-    slot_config.d2  = GPIO_NUM_12;
-    slot_config.d3  = GPIO_NUM_13;
-    slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
-    
-    err = sdmmc_host_init_slot(SDMMC_HOST_SLOT_1, &slot_config);
+    sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
+    slot.width = 4;  // Configure all 4 data lines in GPIO matrix
+    slot.clk   = (gpio_num_t)SD_CLK_PIN;
+    slot.cmd   = (gpio_num_t)SD_CMD_PIN;
+    slot.d0    = (gpio_num_t)SD_D0_PIN;
+    slot.d1    = (gpio_num_t)SD_D1_PIN;
+    slot.d2    = (gpio_num_t)SD_D2_PIN;
+    slot.d3    = (gpio_num_t)SD_D3_PIN;
+    slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+
+    err = sdmmc_host_init_slot(SDMMC_HOST_SLOT_1, &slot);
     if (err != ESP_OK) {
-        LOGF("Detector: sdmmc_host_init_slot failed: 0x%x", err);
-        cleanup_and_release(false);
-        return -1;
+        LOG_ERRORF("[BWD] sdmmc_host_init_slot failed: 0x%x", err);
+        sdmmc_host_deinit();
+        return false;
     }
 
-    // Set probing clock (4 MHz)
-    err = sdmmc_host_set_card_clk(SDMMC_HOST_SLOT_1, 4000); 
+    // Start with 1-bit mode at the host level (safe default for probing)
+    setHostBusWidth(1);
+    setHostClock(400);  // 400 kHz — safe identification speed
+    delay(10);
+
+    // Send 80 initialization clocks to synchronize the card's CIU
+    sdmmc_hw_cmd_t initCmd = {};
+    initCmd.send_init     = 1;
+    initCmd.wait_complete = 1;
+    initCmd.card_num      = SDMMC_HOST_SLOT_1;
+    initCmd.start_command = 1;
+    *(volatile uint32_t*)&SDMMC.cmd = *(uint32_t*)&initCmd;
+
+    uint32_t t0 = millis();
+    while (SDMMC.cmd.start_command && (millis() - t0 < 100));
+    delay(5);
+
+    return true;
+}
+
+void BusWidthDetector::deinitHardware() {
+    // Reset host bus width to 1-bit
+    setHostBusWidth(1);
+
+    sdmmc_host_deinit_slot(SDMMC_HOST_SLOT_1);
+    sdmmc_host_deinit();
+}
+
+// ============================================================================
+// Host bus configuration helpers
+// ============================================================================
+
+void BusWidthDetector::setHostBusWidth(int bits) {
+    // ctype register: bit 0 for slot 1 — 0 = 1-bit, 1 = 4-bit
+    if (bits == 4)
+        SDMMC.ctype.card_width |= BIT(SDMMC_HOST_SLOT_1);
+    else
+        SDMMC.ctype.card_width &= ~BIT(SDMMC_HOST_SLOT_1);
+}
+
+void BusWidthDetector::setHostClock(int freqKHz) {
+    esp_err_t err = sdmmc_host_set_card_clk(SDMMC_HOST_SLOT_1, freqKHz);
     if (err != ESP_OK) {
-        LOGF("Detector: sdmmc_host_set_card_clk (4 MHz) failed: 0x%x", err);
-        cleanup_and_release(false);
-        return -1;
+        LOG_ERRORF("[BWD] setHostClock(%d kHz) failed: 0x%x", freqKHz, err);
     }
-    delay(20);
+    delayMicroseconds(100);
+}
 
-    // 3. Send 80 Initialization Clocks (CIU sync)
-    // Critical: Bit 15 (send_init) tells the hardware to send 80 clocks to the card.
-    // Card state machines are often left in inconsistent states after MUX switching.
-    uint32_t init_clks = (1u << 31) | (1 << 15) | (1 << 13) | (SDMMC_HOST_SLOT_1 << 0);
-    SD_CMD_VAL = init_clks;
-    
-    uint32_t start_init = millis();
-    while (SD_CMD_VAL & (1u << 31)) { // Wait for HW to finish sending init clocks
-        if (millis() - start_init > 100) break;
+// ============================================================================
+// Bare-metal command dispatch
+// ============================================================================
+
+bool BusWidthDetector::sendCmd(uint8_t cmdIdx, uint32_t arg, uint32_t extraFlags,
+                               uint32_t* resp, uint32_t timeoutUs)
+{
+    // Clear all pending interrupt flags
+    SDMMC.rintsts.val = 0xFFFFFFFF;
+
+    // Write command argument
+    SDMMC.cmdarg = arg;
+
+    // Build command register value using the struct for clarity
+    sdmmc_hw_cmd_t hw = {};
+    hw.cmd_index      = cmdIdx;
+    hw.card_num       = SDMMC_HOST_SLOT_1;
+    hw.use_hold_reg   = 1;
+    hw.wait_complete  = 1;
+    hw.start_command  = 1;
+    // Merge extra flags (response_expect, check_response_crc, data_expected, etc.)
+    uint32_t cmdVal   = *(uint32_t*)&hw;
+    cmdVal           |= extraFlags;
+    *(volatile uint32_t*)&SDMMC.cmd = cmdVal;
+
+    // Spin-wait for start_command bit to clear (command accepted by CIU)
+    uint32_t t0 = (uint32_t)esp_timer_get_time();
+    while (SDMMC.cmd.start_command) {
+        if (((uint32_t)esp_timer_get_time() - t0) > timeoutUs) return false;
     }
-    delay(10); // Final settle
 
-    LOG("Detector: Starting Optimized RCA Sweep...");
-    
-    // Set hardware response timeout to 127 card clock cycles.
-    // At 4 MHz, 127 cycles is 31.75\u00b5s, which is enough to capture the 48-bit response.
-    uint32_t orig_tmout = SD_TMOUT_VAL;
-    SD_TMOUT_VAL = (orig_tmout & 0xFFFFFF00) | 0x7F;
+    // Wait for command completion or error
+    while (true) {
+        uint32_t sts = SDMMC.rintsts.val;
+        if (sts & (INT_CMD_DONE | CMD_ERR_FLAGS)) {
+            if (resp) *resp = SDMMC.resp[0];
+            return (sts & INT_CMD_DONE) && !(sts & CMD_ERR_FLAGS);
+        }
+        if (((uint32_t)esp_timer_get_time() - t0) > timeoutUs) return false;
+    }
+}
 
-    unsigned long start_time = millis();
-    uint16_t found_rca = 0;
-    bool rca_found = false;
-    uint32_t card_status = 0;
-    uint32_t timeouts = 0;
-    uint32_t crc_errors = 0;
+bool BusWidthDetector::sendCmd13(uint16_t rca, uint32_t* status) {
+    // CMD13 flags: response_expect, check_crc, check response index
+    uint32_t flags = (1 << 6) | (1 << 8);
+    return sendCmd(13, (uint32_t)rca << 16, flags, status, 5000);
+}
 
-    // CMD13: opcode=13, res_expected=1, check_crc=1, check_idx=1, hold=1, start=1
-    uint32_t cmd13_flags = 13 |          // Command 13 (SEND_STATUS)
-                           (1 << 6) |    // Response expected
-                           (1 << 8) |    // Check response CRC
-                           (1 << 9) |    // Check response index
-                           (1 << 13) |   // Wait for previous data to complete
-                           (1 << 29) |   // Use Hold Register
-                           (1 << 31);    // Start Command
+bool BusWidthDetector::sendCmd7(uint16_t rca) {
+    // CMD7 SELECT/DESELECT: response expected, check CRC
+    uint32_t flags = (1 << 6) | (1 << 8);
+    uint32_t resp = 0;
+    return sendCmd(7, (uint32_t)rca << 16, flags, &resp, 50000);
+}
 
-    // Common RCAs to check first for instant detection.
-    // Most SD cards use RCAs 1, 2, or 3. Checking 1-16 first captures 99% of cards.
-    uint16_t fast_path[] = {0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007, 0x0008, 
-                            0x0009, 0x000A, 0x000B, 0x000C, 0x000D, 0x000E, 0x000F, 0x0010,
-                            0x1234, 0xC0DE, 0x8000, 0x0000};
-    
-    for (int i = 0; i < (int)(sizeof(fast_path)/sizeof(fast_path[0])); i++) {
-        uint16_t rca = fast_path[i];
-        SD_CMDARG_VAL = (uint32_t)rca << 16;
-        SD_RINTSTS_VAL = 0xFFFFFFFF; // Clear interrupts
-        SD_CMD_VAL = cmd13_flags;
+bool BusWidthDetector::sendCmd12() {
+    // CMD12 STOP_TRANSMISSION: response expected, stop/abort flag
+    uint32_t flags = (1 << 6) | (1 << 14);  // response_expect + stop_abort_cmd
+    uint32_t resp = 0;
+    return sendCmd(12, 0, flags, &resp, 50000);
+}
 
-        // Wait for HW to latch the command (Bit 31 clears when sent)
-        uint32_t latch_sc = 0;
-        while ((SD_CMD_VAL & (1u << 31)) && ++latch_sc < 100);
+// ============================================================================
+// Sector read via FIFO (no DMA) — bare-metal CMD17
+// ============================================================================
 
-        uint32_t sc = 0;
-        while (!(SD_RINTSTS_VAL & (HW_CMD_DONE | SWEEP_ERR_FLAGS)) && ++sc < 500);
+bool BusWidthDetector::readSector(uint32_t sector, uint8_t* buf) {
+    // Configure block size and byte count
+    SDMMC.blksiz.block_size = 512;
+    SDMMC.bytcnt = 512;
 
-        uint32_t status = SD_RINTSTS_VAL;
-        if ((status & HW_CMD_DONE) && !(status & SWEEP_ERR_FLAGS)) {
-            found_rca = rca;
-            rca_found = true;
-            card_status = SD_RESP0_VAL;
-            LOGF("Detector: Fast-Path HIT! Found RCA 0x%04X", rca);
+    // Reset FIFO
+    SDMMC.ctrl.fifo_reset = 1;
+    uint32_t t0 = (uint32_t)esp_timer_get_time();
+    while (SDMMC.ctrl.fifo_reset) {
+        if (((uint32_t)esp_timer_get_time() - t0) > 10000) {
+            LOG_ERROR("[BWD] FIFO reset timeout");
+            return false;
+        }
+    }
+
+    // Clear all interrupt flags
+    SDMMC.rintsts.val = 0xFFFFFFFF;
+
+    // Set command argument (sector address for SDHC/SDXC)
+    SDMMC.cmdarg = sector;
+
+    // CMD17 READ_SINGLE_BLOCK: response_expect, check_crc, data_expected, wait_complete
+    sdmmc_hw_cmd_t hw = {};
+    hw.cmd_index       = 17;
+    hw.response_expect = 1;
+    hw.check_response_crc = 1;
+    hw.data_expected   = 1;
+    hw.wait_complete   = 1;
+    hw.card_num        = SDMMC_HOST_SLOT_1;
+    hw.use_hold_reg    = 1;
+    hw.start_command   = 1;
+    *(volatile uint32_t*)&SDMMC.cmd = *(uint32_t*)&hw;
+
+    // Wait for command acceptance
+    t0 = (uint32_t)esp_timer_get_time();
+    while (SDMMC.cmd.start_command) {
+        if (((uint32_t)esp_timer_get_time() - t0) > 100000) return false;
+    }
+
+    // Check for command-level errors (wrong RCA, etc.)
+    uint32_t sts = SDMMC.rintsts.val;
+    if (sts & CMD_ERR_FLAGS) {
+        return false;
+    }
+
+    // Read 512 bytes (128 x 32-bit words) from the FIFO
+    uint32_t* buf32 = (uint32_t*)buf;
+    uint32_t wordsRead = 0;
+    const uint32_t wordsNeeded = 128;
+    t0 = (uint32_t)esp_timer_get_time();
+
+    while (wordsRead < wordsNeeded) {
+        sts = SDMMC.rintsts.val;
+        if (sts & DATA_ERR_FLAGS) {
+            return false;
+        }
+
+        // Check if FIFO has data
+        uint32_t fifoCount = SDMMC.status.fifo_count;
+        while (fifoCount > 0 && wordsRead < wordsNeeded) {
+            buf32[wordsRead++] = SDMMC_FIFO;
+            fifoCount--;
+        }
+
+        if (sts & INT_DTO) break;  // Data Transfer Over
+
+        if (((uint32_t)esp_timer_get_time() - t0) > 500000) {
+            LOG_ERROR("[BWD] Sector read timeout");
+            return false;
+        }
+    }
+
+    // Wait for DTO if we haven't seen it yet
+    if (!(SDMMC.rintsts.val & INT_DTO)) {
+        t0 = (uint32_t)esp_timer_get_time();
+        while (!(SDMMC.rintsts.val & INT_DTO)) {
+            if (SDMMC.rintsts.val & DATA_ERR_FLAGS) return false;
+            if (((uint32_t)esp_timer_get_time() - t0) > 100000) return false;
+        }
+    }
+
+    // Final CRC check
+    sts = SDMMC.rintsts.val;
+    if (sts & (INT_DCRC | INT_SBE | INT_EBE)) {
+        return false;
+    }
+
+    return (wordsRead == wordsNeeded);
+}
+
+// ============================================================================
+// RCA Brute-Force Sweep
+// ============================================================================
+
+uint16_t BusWidthDetector::sweepRCA(uint32_t* outStatus) {
+    LOG_INFO("[BWD] Starting RCA sweep...");
+    unsigned long t0 = millis();
+
+    // Build CMD13 command word once (bare-metal, no struct overhead in hot loop)
+    // cmd_index=13, response_expect=1, check_crc=1, wait_complete=1, use_hold=1, start=1, card_num=slot1
+    const uint32_t cmd13Word =
+        13                          |  // CMD13
+        (1u << 6)                   |  // response_expect
+        (1u << 8)                   |  // check_response_crc
+        (1u << 13)                  |  // wait_complete
+        ((uint32_t)SDMMC_HOST_SLOT_1 << 16) |  // card_num
+        (1u << 29)                  |  // use_hold_reg
+        (1u << 31);                    // start_command
+
+    // Set short response timeout (64 card clock cycles at 400kHz = 160µs)
+    uint32_t origTmout = SDMMC.tmout.val;
+    SDMMC.tmout.response = 0x40;
+
+    uint32_t timeouts = 0, crcErrs = 0;
+
+    // Fast-path: check common low RCAs first
+    // SD spec says RCA is assigned by card during CMD3 and is typically small.
+    // The CPAP's SD stack almost certainly generates a small RCA.
+    static const uint16_t fastRCAs[] = {
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+        0x0100, 0x0200, 0xAAAA, 0x1234
+    };
+
+    for (uint16_t rca : fastRCAs) {
+        SDMMC.cmdarg = (uint32_t)rca << 16;
+        SDMMC.rintsts.val = 0xFFFFFFFF;
+        *(volatile uint32_t*)&SDMMC.cmd = cmd13Word;
+
+        // Spin until start_command clears (CIU accepted)
+        while (SDMMC.cmd.start_command);
+
+        // Spin until command completion or error
+        uint32_t sts;
+        do { sts = SDMMC.rintsts.val; } while (!(sts & (INT_CMD_DONE | CMD_ERR_FLAGS)));
+
+        if ((sts & INT_CMD_DONE) && !(sts & CMD_ERR_FLAGS)) {
+            *outStatus = SDMMC.resp[0];
+            SDMMC.tmout.val = origTmout;
+            LOG_INFOF("[BWD] RCA 0x%04X found (fast-path, %lums)", rca, millis() - t0);
+            return rca;
+        }
+    }
+
+    // Full linear sweep
+    LOG_INFO("[BWD] Fast-path miss. Full sweep 1→65535...");
+    for (uint32_t rca = 1; rca <= 0xFFFF; rca++) {
+        // Safety: abort after 10 seconds
+        if ((rca & 0x3FF) == 0 && (millis() - t0 > 10000)) {
+            LOG_ERROR("[BWD] Sweep safety timeout (10s)");
             break;
         }
-    }
 
-    // Full sweep if fast-path missed
-    if (found_rca == 0) {
-        LOG("Detector: Fast-path missed. Full linear sweep (1->65535)...");
-        for (uint16_t rca = 1; rca < 0xFFFF; rca++) {
-            // Periodic 10s total timeout check (safety buffer for full sweep)
-            if ((rca & 0xFF) == 0 && (millis() - start_time > 10000)) {
-                LOG_ERROR("Detector: Sweep reached 10-second safety limit. Aborting.");
-                break;
-            }
+        SDMMC.cmdarg = rca << 16;
+        SDMMC.rintsts.val = 0xFFFFFFFF;
+        *(volatile uint32_t*)&SDMMC.cmd = cmd13Word;
 
-            SD_CMDARG_VAL = (uint32_t)rca << 16;
-            SD_RINTSTS_VAL = 0xFFFFFFFF;
-            SD_CMD_VAL = cmd13_flags;
+        while (SDMMC.cmd.start_command);
 
-            // Wait for HW to latch the command (Bit 31 clears when sent)
-            uint32_t latch_sc = 0;
-            while ((SD_CMD_VAL & (1u << 31)) && ++latch_sc < 100);
+        uint32_t sts;
+        uint32_t spins = 0;
+        do {
+            sts = SDMMC.rintsts.val;
+        } while (!(sts & (INT_CMD_DONE | CMD_ERR_FLAGS)) && ++spins < 500);
 
-            uint32_t sc = 0;
-            // hardware timeout (127 cycles) handles this mostly. 200 software polls is ~100us.
-            while (!(SD_RINTSTS_VAL & (HW_CMD_DONE | SWEEP_ERR_FLAGS)) && ++sc < 200);
-
-            uint32_t status = SD_RINTSTS_VAL;
-            if ((status & HW_CMD_DONE) && !(status & SWEEP_ERR_FLAGS)) {
-                found_rca = rca;
-                rca_found = true;
-                card_status = SD_RESP0_VAL;
-                LOGF("Detector: Discovered RCA 0x%04X", rca);
-                break;
-            }
-            if (status & HW_RTO) timeouts++;
-            else if (status & HW_RCRC) crc_errors++;
-            else if (!(status & HW_CMD_DONE)) {
-                // This means latch_sc reached 100 or sc reached 200 without HW noticing anything
-                timeouts++; 
-            }
-
-            if (rca % 10000 == 0) LOGF("..%uk", rca/1000);
+        if ((sts & INT_CMD_DONE) && !(sts & CMD_ERR_FLAGS)) {
+            *outStatus = SDMMC.resp[0];
+            SDMMC.tmout.val = origTmout;
+            LOG_INFOF("[BWD] RCA 0x%04X found (full sweep, %lums)", (uint16_t)rca, millis() - t0);
+            return (uint16_t)rca;
         }
+
+        if (sts & INT_RTO) timeouts++;
+        else if (sts & INT_RCRC) crcErrs++;
+
+        if (rca % 10000 == 0) LOG_INFOF("[BWD] ..%uk", (unsigned)(rca / 1000));
     }
 
-    SD_TMOUT_VAL = orig_tmout; // Restore original timeout
-
-    if (!rca_found) {
-        LOGF("Detector: No RCA found after sweep. Diagnostics: Timeouts=%u, CRC_Errors=%u", timeouts, crc_errors);
-        cleanup_and_release(false);
-        return 0; // Uninitialized or card reader
-    }
-
-    uint8_t state = (card_status >> 9) & 0x0F;
-    const char* states[] = {"Idle", "Ready", "Ident", "Stby", "Tran", "Data", "Rcv", "Prg", "Dis", "Reserved"};
-    LOGF("Detector: Card state %d (%s), RCA 0x%04X", state, (state < 10 ? states[state] : "Unknown"), found_rca);
-
-    // 4. Phase 2: Bus-Width Detection (CRC Probe via CMD17)
-    // Logic: In AS11 (4-bit mode), reading in 1-bit mode will trigger a CRC error.
-    
-    // We try a tiny 1-MHz read at Sector 0 (MBR)
-    uint32_t cmd17_flags = 17 | (1 << 6) | (1 << 8) | (1 << 9) | (1 << 13) | (1 << 29) | (1 << 31);
-    
-    // 1-Bit Probe (Current Mode)
-    SD_CMDARG_VAL = 0; // Sector 0
-    SD_RINTSTS_VAL = 0xFFFFFFFF;
-    SD_CMD_VAL = cmd17_flags;
-    
-    uint32_t sc = 0;
-    while (!(SD_RINTSTS_VAL & (HW_CMD_DONE | SWEEP_ERR_FLAGS)) && ++sc < 1000);
-    
-    bool crc_fail_1bit = (SD_RINTSTS_VAL & HW_RCRC);
-    
-    if (!crc_fail_1bit && (SD_RINTSTS_VAL & HW_CMD_DONE)) {
-        LOG("Detector: 1-Bit Read SUCCESS -> Confirmed AirSense 10 (1-bit mode)");
-        cleanup_and_release(false);
-        return 1;
-    }
-
-    // Try 4-Bit Mode on ESP32 host to verify if card is already in 4-bit
-    LOG("Detector: 1-Bit Read failed CRC (Expected for AS11). Testing 4-Bit Host Mode...");
-    SD_CTYPE_VAL = (1 << 0); // Set slot 1 to 4-bit mode inside ESP32 Host
-    delay(5);
-    
-    SD_RINTSTS_VAL = 0xFFFFFFFF;
-    SD_CMD_VAL = cmd17_flags;
-    sc = 0;
-    while (!(SD_RINTSTS_VAL & (HW_CMD_DONE | SWEEP_ERR_FLAGS)) && ++sc < 1000);
-    
-    bool success_4bit = (SD_RINTSTS_VAL & HW_CMD_DONE) && !(SD_RINTSTS_VAL & HW_RCRC);
-    
-    if (success_4bit) {
-        LOG("Detector: 4-Bit Read SUCCESS -> Confirmed AirSense 11 (4-bit mode)");
-        cleanup_and_release(false);
-        return 4;
-    }
-
-    LOG("Detector: Both 1-bit and 4-bit probes failed. Card might be in incompatible state.");
-    cleanup_and_release(false);
+    SDMMC.tmout.val = origTmout;
+    LOG_WARNF("[BWD] No RCA found (sweep took %lums, timeouts=%u, crcErr=%u)",
+              millis() - t0, timeouts, crcErrs);
     return 0;
 }
 
-void BusWidthDetector::cleanup_and_release(bool must_deselect) {
-    LOG("Detector: Cleaning up hardware resources...");
+// ============================================================================
+// Bus-Width CRC Probing
+// ============================================================================
 
-    // Restore SDMMC bus settings
-    SD_CTYPE_VAL = 0; // Reset to 1-bit mode internally
-    
-    // De-initialize slot and host to release resources for Arduino SD_MMC library
-    sdmmc_host_deinit_slot(SDMMC_HOST_SLOT_1);
-    sdmmc_host_deinit();
-    
-    delay(10);
-    LOG("Detector: Hardware de-initialized.");
+int BusWidthDetector::probeBusWidth(uint16_t rca, uint8_t* sectorBuf) {
+    LOG_INFO("[BWD] Phase 2: CRC-based bus-width probing...");
+
+    // Get current card state
+    uint32_t status = 0;
+    if (!sendCmd13(rca, &status)) {
+        LOG_ERROR("[BWD] CMD13 failed before probe");
+        return 0;
+    }
+    uint8_t state = (status >> 9) & 0x0F;
+    bool wasStandby = (state == 3);
+
+    // Card must be in Transfer state (4) for CMD17
+    if (state == 3) {
+        LOG_INFO("[BWD] Card in Standby — selecting with CMD7...");
+        if (!sendCmd7(rca)) {
+            LOG_ERROR("[BWD] CMD7 SELECT failed");
+            return 0;
+        }
+        delay(2);
+    } else if (state != 4) {
+        LOG_WARNF("[BWD] Unexpected card state %d (%s) — attempting probe anyway",
+                  state, SD_STATE_NAME(state));
+    }
+
+    // Probe order: 1-bit first (safe), then 4-bit.
+    // Each speed: 400kHz first (safest), then 25MHz.
+    struct ProbeConfig {
+        int bits;
+        int clockKHz;
+        const char* label;
+    };
+    static const ProbeConfig probes[] = {
+        { 1,   400, "1-bit @ 400kHz" },
+        { 1, 25000, "1-bit @ 25MHz"  },
+        { 4,   400, "4-bit @ 400kHz" },
+        { 4, 25000, "4-bit @ 25MHz"  },
+    };
+
+    int detectedWidth = 0;
+
+    for (const auto& p : probes) {
+        setHostBusWidth(p.bits);
+        setHostClock(p.clockKHz);
+
+        bool ok = readSector(0, sectorBuf);
+
+        if (ok) {
+            // Sanity check: sector 0 should look like a valid MBR/VBR
+            // (byte 510=0x55, byte 511=0xAA for boot signature)
+            bool validSig = (sectorBuf[510] == 0x55 && sectorBuf[511] == 0xAA);
+            LOG_INFOF("[BWD] Probe %s: READ OK (boot sig %s)",
+                      p.label, validSig ? "valid" : "MISSING");
+            detectedWidth = p.bits;
+            break;
+        } else {
+            LOG_INFOF("[BWD] Probe %s: FAILED (CRC/timeout)", p.label);
+            // Safety: CMD12 after every failed read
+            sendCmd12();
+            delay(2);
+        }
+    }
+
+    // Restore Standby if card was in Standby before
+    if (wasStandby && detectedWidth > 0) {
+        LOG_INFO("[BWD] Deselecting card (was in Standby)...");
+        sendCmd7(0);  // CMD7 with RCA=0 deselects
+    }
+
+    return detectedWidth;
+}
+
+// ============================================================================
+// Minimal FAT32 config.txt reader — zero writes, zero timestamps
+// ============================================================================
+
+static uint32_t readLE16(const uint8_t* p) { return p[0] | (p[1] << 8); }
+static uint32_t readLE32(const uint8_t* p) { return p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24); }
+
+bool BusWidthDetector::readConfigTxt(int busWidth, uint16_t rca, uint8_t* sec, String& outSSID) {
+    LOG_INFO("[BWD] Phase 3: Stealth config.txt read...");
+
+    // Ensure card is selected and in Transfer state
+    uint32_t st = 0;
+    if (!sendCmd13(rca, &st)) return false;
+    uint8_t state = (st >> 9) & 0x0F;
+    if (state == 3) {
+        if (!sendCmd7(rca)) return false;
+    }
+
+    // Configure host to detected bus width at 25MHz for data reads
+    setHostBusWidth(busWidth);
+    setHostClock(25000);
+
+    // Step 1: Read sector 0 (MBR or VBR)
+    if (!readSector(0, sec)) {
+        LOG_ERROR("[BWD] Failed to read sector 0");
+        sendCmd12();
+        return false;
+    }
+
+    // Determine if this is an MBR or a VBR
+    uint32_t vbrSector = 0;
+    // Check for FAT filesystem signature at offset 0x36 or 0x52
+    bool isFAT = (memcmp(sec + 0x36, "FAT", 3) == 0) ||
+                 (memcmp(sec + 0x52, "FAT", 3) == 0);
+    if (!isFAT) {
+        // Likely an MBR — read partition 1 start LBA
+        if (sec[510] != 0x55 || sec[511] != 0xAA) {
+            LOG_ERROR("[BWD] No valid MBR/VBR boot signature");
+            return false;
+        }
+        vbrSector = readLE32(sec + 0x1C6);  // Partition 1 start LBA
+        LOG_INFOF("[BWD] MBR: Partition 1 starts at sector %u", vbrSector);
+
+        if (!readSector(vbrSector, sec)) {
+            LOG_ERROR("[BWD] Failed to read VBR");
+            sendCmd12();
+            return false;
+        }
+    }
+
+    // Parse BPB (BIOS Parameter Block) from VBR
+    uint16_t bytesPerSector  = readLE16(sec + 0x0B);
+    uint8_t  sectorsPerClust = sec[0x0D];
+    uint16_t reservedSectors = readLE16(sec + 0x0E);
+    uint8_t  numFATs         = sec[0x10];
+    uint16_t rootEntryCount  = readLE16(sec + 0x11);  // 0 for FAT32
+    uint32_t fatSize         = readLE16(sec + 0x16);
+    if (fatSize == 0) fatSize = readLE32(sec + 0x24);  // FAT32 uses 32-bit field
+    uint32_t rootCluster     = readLE32(sec + 0x2C);   // FAT32 root dir cluster
+
+    if (bytesPerSector != 512 || sectorsPerClust == 0) {
+        LOG_ERRORF("[BWD] Unsupported BPB: bps=%u spc=%u", bytesPerSector, sectorsPerClust);
+        return false;
+    }
+
+    uint32_t fatStart    = vbrSector + reservedSectors;
+    uint32_t dataStart   = fatStart + (numFATs * fatSize);
+    // For FAT16: root dir is between FAT and data
+    uint32_t rootDirSectors = ((rootEntryCount * 32) + 511) / 512;
+    uint32_t firstDataSector = dataStart + rootDirSectors;
+
+    bool isFAT32 = (rootEntryCount == 0);
+
+    LOG_INFOF("[BWD] FAT%s: fatStart=%u dataStart=%u spc=%u rootClust=%u",
+              isFAT32 ? "32" : "16", fatStart, dataStart, sectorsPerClust, rootCluster);
+
+    // Step 2: Scan root directory for "CONFIG  TXT" (8.3 format)
+    // For FAT32, root dir starts at rootCluster; for FAT16, it's at dataStart
+    uint32_t configCluster = 0;
+    uint32_t configSize = 0;
+    bool found = false;
+
+    auto clusterToSector = [&](uint32_t cluster) -> uint32_t {
+        return firstDataSector + (cluster - 2) * sectorsPerClust;
+    };
+
+    // Read up to 16 sectors of root directory (covers most SD cards)
+    uint32_t dirSector;
+    if (isFAT32) {
+        dirSector = clusterToSector(rootCluster);
+    } else {
+        dirSector = dataStart;
+    }
+
+    for (int s = 0; s < 16 && !found; s++) {
+        if (!readSector(dirSector + s, sec)) {
+            sendCmd12();
+            break;
+        }
+        for (int e = 0; e < 16 && !found; e++) {
+            uint8_t* entry = sec + (e * 32);
+            if (entry[0] == 0x00) { found = false; goto dir_done; }  // End of directory
+            if (entry[0] == 0xE5) continue;  // Deleted entry
+            if (entry[11] & 0x08) continue;  // Volume label
+            if (entry[11] & 0x10) continue;  // Subdirectory
+
+            // Compare 8.3 name: "CONFIG  TXT"
+            if (memcmp(entry, "CONFIG  TXT", 11) == 0) {
+                uint16_t clHi = readLE16(entry + 0x14);
+                uint16_t clLo = readLE16(entry + 0x1A);
+                configCluster = ((uint32_t)clHi << 16) | clLo;
+                configSize = readLE32(entry + 0x1C);
+                found = true;
+                LOG_INFOF("[BWD] Found config.txt: cluster=%u size=%u", configCluster, configSize);
+            }
+        }
+    }
+dir_done:
+
+    if (!found || configCluster < 2 || configSize == 0) {
+        LOG_WARN("[BWD] config.txt not found in root directory");
+        return false;
+    }
+
+    // Step 3: Read config.txt data (just first sector — 512 bytes is enough for WIFI_SSID)
+    uint32_t fileSector = clusterToSector(configCluster);
+    if (!readSector(fileSector, sec)) {
+        LOG_ERROR("[BWD] Failed to read config.txt data sector");
+        sendCmd12();
+        return false;
+    }
+
+    // Step 4: Parse WIFI_SSID from the buffer
+    uint32_t len = configSize < 512 ? configSize : 512;
+    // Null-terminate safely
+    sec[len < 512 ? len : 511] = '\0';
+    const char* txt = (const char*)sec;
+
+    // Simple line-by-line parser looking for WIFI_SSID
+    const char* p = txt;
+    while (*p) {
+        // Skip whitespace
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '#' || *p == '\r' || *p == '\n') {
+            while (*p && *p != '\n') p++;
+            if (*p) p++;
+            continue;
+        }
+
+        // Check for WIFI_SSID
+        if (strncmp(p, "WIFI_SSID", 9) == 0) {
+            p += 9;
+            while (*p == ' ' || *p == '\t') p++;
+            if (*p == '=') {
+                p++;
+                while (*p == ' ' || *p == '\t') p++;
+                // Strip optional quotes
+                char quote = 0;
+                if (*p == '"' || *p == '\'') { quote = *p; p++; }
+                const char* start = p;
+                while (*p && *p != '\r' && *p != '\n') {
+                    if (quote && *p == quote) break;
+                    p++;
+                }
+                outSSID = String(start).substring(0, p - start);
+                LOG_INFOF("[BWD] Extracted WIFI_SSID: %s", outSSID.c_str());
+                return true;
+            }
+        }
+
+        // Skip to next line
+        while (*p && *p != '\n') p++;
+        if (*p) p++;
+    }
+
+    LOG_WARN("[BWD] WIFI_SSID not found in config.txt");
+    return false;
+}
+
+// ============================================================================
+// State Restoration & MUX Return
+// ============================================================================
+
+void BusWidthDetector::restoreAndRelease(uint16_t rca, uint8_t origState, bool wasSelected) {
+    // Deselect card if it was in Standby when we found it
+    if (!wasSelected && rca != 0) {
+        LOG_INFO("[BWD] Restoring card to Standby (CMD7 deselect)...");
+        sendCmd7(0);
+        delay(1);
+    }
+
+    // Tri-state all SDMMC pins to high-impedance
+    const int sdPins[] = { SD_CMD_PIN, SD_CLK_PIN, SD_D0_PIN, SD_D1_PIN, SD_D2_PIN, SD_D3_PIN };
+    for (int pin : sdPins) {
+        gpio_reset_pin((gpio_num_t)pin);
+        gpio_set_direction((gpio_num_t)pin, GPIO_MODE_INPUT);
+        gpio_set_pull_mode((gpio_num_t)pin, GPIO_PULLUP_ONLY);
+    }
+
+    deinitHardware();
+
+    // Return MUX to CPAP
+    digitalWrite(SD_SWITCH_PIN, SD_SWITCH_CPAP_VALUE);
+    delay(5);
+    LOG_INFO("[BWD] MUX returned to CPAP.");
+}
+
+// ============================================================================
+// Main Detection Entry Point
+// ============================================================================
+
+DetectionResult BusWidthDetector::detect() {
+    DetectionResult result = {};
+    result.busWidth = 0;
+    result.rca = 0;
+    result.cardState = 0;
+    result.sweepTimeMs = 0;
+
+    LOG_INFO("\n===EXPERIMENTAL=== BUS-WIDTH DETECTOR START ===");
+
+    // Grab MUX
+    LOG_INFO("[BWD] Grabbing SD MUX...");
+    pinMode(SD_SWITCH_PIN, OUTPUT);
+    digitalWrite(SD_SWITCH_PIN, SD_SWITCH_ESP_VALUE);
+    delay(200);  // MUX settle
+
+    // Initialize SDMMC hardware
+    if (!initHardware()) {
+        LOG_ERROR("[BWD] Hardware init failed — aborting");
+        digitalWrite(SD_SWITCH_PIN, SD_SWITCH_CPAP_VALUE);
+        LOG_INFO("===EXPERIMENTAL=== BUS-WIDTH DETECTOR END (hw fail) ===\n");
+        return result;
+    }
+
+    // Phase 1: RCA sweep
+    unsigned long sweepStart = millis();
+    uint32_t cardStatus = 0;
+    uint16_t rca = sweepRCA(&cardStatus);
+    result.sweepTimeMs = millis() - sweepStart;
+    result.rca = rca;
+
+    if (rca == 0) {
+        LOG_WARN("[BWD] No RCA found — card uninitialised or in card reader");
+        restoreAndRelease(0, 0, false);
+        LOG_INFO("===EXPERIMENTAL=== BUS-WIDTH DETECTOR END (no RCA) ===\n");
+        return result;
+    }
+
+    uint8_t origState = (cardStatus >> 9) & 0x0F;
+    result.cardState = origState;
+    bool wasSelected = (origState == 4 || origState == 5 || origState == 6);
+
+    LOG_INFOF("[BWD] RCA=0x%04X State=%d(%s) Status=0x%08X",
+              rca, origState, SD_STATE_NAME(origState), cardStatus);
+
+    // Raise clock for probing — 25MHz gives faster reads
+    setHostClock(25000);
+
+    // Phase 2: Bus-width detection via CRC probing
+    // Allocate sector buffer on stack (512 bytes)
+    uint8_t sectorBuf[512] __attribute__((aligned(4)));
+    memset(sectorBuf, 0, sizeof(sectorBuf));
+
+    int bw = probeBusWidth(rca, sectorBuf);
+    result.busWidth = bw;
+
+    if (bw > 0) {
+        LOG_INFOF("===EXPERIMENTAL=== Detected %d-bit mode (likely %s) ===",
+                  bw, bw == 1 ? "AirSense 10" : "AirSense 11");
+
+        // Phase 3: Attempt stealth config.txt read
+        String ssid;
+        if (readConfigTxt(bw, rca, sectorBuf, ssid)) {
+            result.wifiSSID = ssid;
+        } else {
+            LOG_WARN("[BWD] config.txt read failed (non-fatal)");
+        }
+    } else {
+        LOG_WARN("===EXPERIMENTAL=== Bus-width detection FAILED (all probes failed) ===");
+    }
+
+    // Phase 4: Restore and release
+    restoreAndRelease(rca, origState, wasSelected);
+
+    LOG_INFOF("===EXPERIMENTAL=== BUS-WIDTH DETECTOR END (bw=%d, rca=0x%04X, sweep=%lums) ===\n",
+              result.busWidth, result.rca, result.sweepTimeMs);
+
+    return result;
 }
