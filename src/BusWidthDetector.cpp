@@ -355,6 +355,7 @@ uint16_t BusWidthDetector::sweepRCA(uint32_t* outStatus) {
         0x0100, 0x0200, 0xAAAA, 0x1234
     };
 
+    LOG_INFOF("[BWD] Fast-path: testing %d common RCAs...", (int)(sizeof(fastRCAs)/sizeof(fastRCAs[0])));
     for (uint16_t rca : fastRCAs) {
         SDMMC.cmdarg = (uint32_t)rca << 16;
         SDMMC.rintsts.val = 0xFFFFFFFF;
@@ -374,6 +375,7 @@ uint16_t BusWidthDetector::sweepRCA(uint32_t* outStatus) {
             return rca;
         }
     }
+    LOG_INFOF("[BWD] Fast-path: no hit (%lums elapsed)", millis() - t0);
 
     // Full linear sweep
     LOG_INFO("[BWD] Fast-path miss. Full sweep 1→65535...");
@@ -406,7 +408,10 @@ uint16_t BusWidthDetector::sweepRCA(uint32_t* outStatus) {
         if (sts & INT_RTO) timeouts++;
         else if (sts & INT_RCRC) crcErrs++;
 
-        if (rca % 10000 == 0) LOG_INFOF("[BWD] ..%uk", (unsigned)(rca / 1000));
+        if (rca % 1000 == 0) {
+            LOG_INFOF("[BWD] Sweep progress: RCA %u/65535 (%lums, TO=%u CRC=%u)",
+                      (unsigned)rca, millis() - t0, timeouts, crcErrs);
+        }
     }
 
     SDMMC.tmout.val = origTmout;
