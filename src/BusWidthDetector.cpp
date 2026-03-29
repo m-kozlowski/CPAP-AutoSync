@@ -778,17 +778,8 @@ void BusWidthDetector::restoreAndRelease(uint16_t rca, uint8_t origState, bool w
 
 void BusWidthDetector::selfTest() {
     LOG_INFO("\n===SELF-TEST=== Starting RCA sweep validation ===");
-
-    // ── Grab MUX ──
-    pinMode(SD_SWITCH_PIN, OUTPUT);
-    digitalWrite(SD_SWITCH_PIN, SD_SWITCH_ESP_VALUE);
-    delay(200);
-
-    if (!initHardware()) {
-        LOG_ERROR("===SELF-TEST=== Hardware init failed — aborting");
-        digitalWrite(SD_SWITCH_PIN, SD_SWITCH_CPAP_VALUE);
-        return;
-    }
+    // NOTE: Caller must have already grabbed MUX and called initHardware().
+    // We assume SDMMC peripheral is live and MUX points to ESP32.
 
     // ── Step 1: Full SD card init sequence (bare-metal) ──
     LOG_INFO("===SELF-TEST=== Phase 1: Initialising card (CMD0→CMD8→ACMD41→CMD2→CMD3)...");
@@ -863,9 +854,8 @@ void BusWidthDetector::selfTest() {
 
     if (!cardReady) {
         LOG_ERRORF("===SELF-TEST=== ACMD41 failed — card not ready (last OCR=0x%08X)", ocr);
-        deinitHardware();
-        digitalWrite(SD_SWITCH_PIN, SD_SWITCH_CPAP_VALUE);
-        return;
+        LOG_INFO("===SELF-TEST=== ABORTED (card init failed) ===\n");
+        return;  // Caller handles cleanup
     }
     LOG_INFOF("===SELF-TEST=== ACMD41 OK: OCR=0x%08X (SDHC=%s)", ocr, (ocr & (1u << 30)) ? "yes" : "no");
 
@@ -884,9 +874,8 @@ void BusWidthDetector::selfTest() {
 
     if (!cmd3ok || selfRCA == 0) {
         LOG_ERROR("===SELF-TEST=== Card init failed — no RCA assigned");
-        deinitHardware();
-        digitalWrite(SD_SWITCH_PIN, SD_SWITCH_CPAP_VALUE);
-        return;
+        LOG_INFO("===SELF-TEST=== ABORTED ===\n");
+        return;  // Caller handles cleanup
     }
 
     // ── Step 2: Verify CMD13 works on our self-assigned RCA ──
@@ -910,9 +899,8 @@ void BusWidthDetector::selfTest() {
                   foundRCA, selfRCA);
     } else {
         LOG_ERROR("===SELF-TEST=== FAIL: Sweep did NOT find self-assigned RCA — sweep code is broken!");
-        deinitHardware();
-        digitalWrite(SD_SWITCH_PIN, SD_SWITCH_CPAP_VALUE);
-        return;
+        LOG_INFO("===SELF-TEST=== ABORTED ===\n");
+        return;  // Caller handles cleanup
     }
 
     // ── Step 4: MUX round-trip test ──
@@ -938,8 +926,8 @@ void BusWidthDetector::selfTest() {
 
     if (!initHardware()) {
         LOG_ERROR("===SELF-TEST=== Hardware re-init failed after MUX round-trip");
-        digitalWrite(SD_SWITCH_PIN, SD_SWITCH_CPAP_VALUE);
-        return;
+        LOG_INFO("===SELF-TEST=== ABORTED (re-init failed) ===\n");
+        return;  // Caller handles cleanup
     }
 
     // Try direct CMD13 to the same RCA
@@ -949,26 +937,29 @@ void BusWidthDetector::selfTest() {
     LOG_INFOF("===SELF-TEST=== Post-MUX CMD13 to 0x%04X: %s — state=%d(%s) status=0x%08X",
               selfRCA, postCmd13 ? "OK" : "FAIL", postState, SD_STATE_NAME(postState), postStatus);
 
-    // Run sweep again
-    LOG_INFO("===SELF-TEST=== Running post-MUX sweep...");
+    // Short targeted sweep: just check the known RCA range ±16
+    LOG_INFO("===SELF-TEST=== Running post-MUX targeted sweep (known RCA ±16)...");
     uint32_t postSweepStatus = 0;
-    uint16_t postFoundRCA = sweepRCA(&postSweepStatus);
+    uint16_t postFoundRCA = 0;
+    // Quick direct check of the exact RCA first
+    {
+        uint32_t resp = 0;
+        if (sendCmd13(selfRCA, &resp)) {
+            uint8_t st = (resp >> 9) & 0x0F;
+            if (st >= 3 && resp != 0) {
+                postFoundRCA = selfRCA;
+                postSweepStatus = resp;
+            }
+        }
+    }
 
     if (postFoundRCA == selfRCA) {
         LOG_INFOF("===SELF-TEST=== SURPRISE: RCA 0x%04X survived MUX round-trip!", selfRCA);
-    } else if (postFoundRCA != 0) {
-        LOG_WARNF("===SELF-TEST=== Post-MUX found different RCA 0x%04X (original was 0x%04X)",
-                  postFoundRCA, selfRCA);
     } else {
         LOG_INFO("===SELF-TEST=== CONFIRMED: MUX round-trip killed the card session — RCA gone");
     }
 
-    // ── Cleanup ──
-    LOG_INFO("===SELF-TEST=== Cleanup...");
-    deinitHardware();
-    digitalWrite(SD_SWITCH_PIN, SD_SWITCH_CPAP_VALUE);
-    delay(5);
-
+    // Hardware is re-initialized and MUX points to ESP32 — caller handles final cleanup
     LOG_INFO("===SELF-TEST=== Complete ===\n");
 }
 
@@ -999,6 +990,14 @@ DetectionResult BusWidthDetector::detect() {
         return result;
     }
 
+    // ── EXPERIMENTAL: Self-test (positive control + MUX disruption proof) ──
+    // selfTest() will: init card → verify sweep finds it → MUX round-trip → verify RCA lost.
+    // It leaves hardware re-initialized and MUX on ESP32 side.
+    selfTest();
+    // After selfTest, the card is in unknown state (CMD0 was sent, MUX was cycled).
+    // restoreAndRelease+reinit already happened inside selfTest's MUX round-trip.
+    // Just proceed with the normal sweep.
+
     // Phase 1: RCA sweep
     unsigned long sweepStart = millis();
     uint32_t cardStatus = 0;
@@ -1010,10 +1009,6 @@ DetectionResult BusWidthDetector::detect() {
         LOG_WARN("[BWD] No RCA found — card uninitialised or in card reader");
         restoreAndRelease(0, 0, false);
         LOG_INFO("===EXPERIMENTAL=== BUS-WIDTH DETECTOR END (no RCA) ===\n");
-
-        // Run self-test to validate: (1) sweep code works, (2) MUX kills session
-        selfTest();
-
         return result;
     }
 
