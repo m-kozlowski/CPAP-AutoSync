@@ -658,29 +658,17 @@ void setup() {
         }
         EarlyPCNT::teardown();
 
-        LOG("Boot delay complete. Running Bus Width Detection...");
-        // EXPERIMENTAL: Stealth detect RCA and Bus Width
-        DetectionResult detResult = BusWidthDetector::detect();
+        LOG("Boot delay complete.");
 
-        // ── EXPERIMENTAL: Combined PCNT + RCA conclusion ──
-        // PCNT is the reliable discriminator:
+        // ── EXPERIMENTAL: PCNT-only AS10/AS11 detection ──
+        // PCNT is the sole reliable discriminator:
         //   AS10 (1-bit): 0 pulses on DAT3 (DAT3 unused in SPI/1-bit mode)
         //   AS11 (4-bit): hundreds/thousands of pulses on DAT3
+        // Bare-metal RCA sweep was removed (incompatible with ESP-IDF SDMMC driver).
         const char* pcntVerdict = (finalPulses == 0) ? "AS10 (no DAT3 activity)"
                                 : (finalPulses > 50) ? "AS11 (active DAT3)"
                                                      : "Uncertain (low pulse count)";
-        LOG_INFOF("===EXPERIMENTAL=== DETECTION SUMMARY: PCNT=%d → %s | RCA=%s (0x%04X, sweep=%lums)",
-                  finalPulses, pcntVerdict,
-                  detResult.rca ? "found" : "none",
-                  detResult.rca, detResult.sweepTimeMs);
-
-        if (detResult.busWidth > 0) {
-            LOG_INFOF("===EXPERIMENTAL=== Bus width: %d-bit (likely %s)",
-                      detResult.busWidth, detResult.busWidth == 1 ? "AirSense 10" : "AirSense 11");
-        }
-        if (!detResult.wifiSSID.isEmpty()) {
-            LOGF("===EXPERIMENTAL=== Stealth config.txt WIFI_SSID: %s", detResult.wifiSSID.c_str());
-        }
+        LOG_INFOF("===EXPERIMENTAL=== DETECTION: PCNT=%d pulses → %s", finalPulses, pcntVerdict);
 
         LOG("Attempting SD card access for normal boot...");
 

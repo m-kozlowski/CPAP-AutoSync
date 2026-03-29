@@ -878,88 +878,14 @@ void BusWidthDetector::selfTest() {
 // ============================================================================
 
 DetectionResult BusWidthDetector::detect() {
+    // EXPERIMENTAL CONCLUSION (dev+18):
+    // - Bare-metal CMD13 sweep is incompatible with ESP-IDF SDMMC driver (ISR conflict)
+    // - MUX does NOT kill card session (sdmmc_card_init succeeds after MUX cycling)
+    // - PCNT is the sole reliable AS10/AS11 discriminator
+    // - All RCA sweep, bus-width probing, FAT32 reading code is dead
+    //
+    // This function now returns an empty result immediately.
+    // Detection is done entirely via EarlyPCNT in main.cpp.
     DetectionResult result = {};
-    result.busWidth = 0;
-    result.rca = 0;
-    result.cardState = 0;
-    result.sweepTimeMs = 0;
-
-    LOG_INFO("\n===EXPERIMENTAL=== BUS-WIDTH DETECTOR START ===");
-
-    // Grab MUX
-    LOG_INFO("[BWD] Grabbing SD MUX...");
-    pinMode(SD_SWITCH_PIN, OUTPUT);
-    digitalWrite(SD_SWITCH_PIN, SD_SWITCH_ESP_VALUE);
-    delay(200);  // MUX settle
-
-    // Initialize SDMMC hardware
-    if (!initHardware()) {
-        LOG_ERROR("[BWD] Hardware init failed — aborting");
-        digitalWrite(SD_SWITCH_PIN, SD_SWITCH_CPAP_VALUE);
-        LOG_INFO("===EXPERIMENTAL=== BUS-WIDTH DETECTOR END (hw fail) ===\n");
-        return result;
-    }
-
-    // ── EXPERIMENTAL: Self-test (positive control + MUX disruption proof) ──
-    // selfTest() will: init card → verify sweep finds it → MUX round-trip → verify RCA lost.
-    // It leaves hardware re-initialized and MUX on ESP32 side.
-    selfTest();
-    // After selfTest, the card is in unknown state (CMD0 was sent, MUX was cycled).
-    // restoreAndRelease+reinit already happened inside selfTest's MUX round-trip.
-    // Just proceed with the normal sweep.
-
-    // Phase 1: RCA sweep
-    unsigned long sweepStart = millis();
-    uint32_t cardStatus = 0;
-    uint16_t rca = sweepRCA(&cardStatus);
-    result.sweepTimeMs = millis() - sweepStart;
-    result.rca = rca;
-
-    if (rca == 0) {
-        LOG_WARN("[BWD] No RCA found — card uninitialised or in card reader");
-        restoreAndRelease(0, 0, false);
-        LOG_INFO("===EXPERIMENTAL=== BUS-WIDTH DETECTOR END (no RCA) ===\n");
-        return result;
-    }
-
-    uint8_t origState = (cardStatus >> 9) & 0x0F;
-    result.cardState = origState;
-    bool wasSelected = (origState == 4 || origState == 5 || origState == 6);
-
-    LOG_INFOF("[BWD] RCA=0x%04X State=%d(%s) Status=0x%08X",
-              rca, origState, SD_STATE_NAME(origState), cardStatus);
-
-    // Raise clock for probing — 25MHz gives faster reads
-    setHostClock(25000);
-
-    // Phase 2: Bus-width detection via CRC probing
-    // Allocate sector buffer on stack (512 bytes)
-    uint8_t sectorBuf[512] __attribute__((aligned(4)));
-    memset(sectorBuf, 0, sizeof(sectorBuf));
-
-    int bw = probeBusWidth(rca, sectorBuf);
-    result.busWidth = bw;
-
-    if (bw > 0) {
-        LOG_INFOF("===EXPERIMENTAL=== Detected %d-bit mode (likely %s) ===",
-                  bw, bw == 1 ? "AirSense 10" : "AirSense 11");
-
-        // Phase 3: Attempt stealth config.txt read
-        String ssid;
-        if (readConfigTxt(bw, rca, sectorBuf, ssid)) {
-            result.wifiSSID = ssid;
-        } else {
-            LOG_WARN("[BWD] config.txt read failed (non-fatal)");
-        }
-    } else {
-        LOG_WARN("===EXPERIMENTAL=== Bus-width detection FAILED (all probes failed) ===");
-    }
-
-    // Phase 4: Restore and release
-    restoreAndRelease(rca, origState, wasSelected);
-
-    LOG_INFOF("===EXPERIMENTAL=== BUS-WIDTH DETECTOR END (bw=%d, rca=0x%04X, sweep=%lums) ===\n",
-              result.busWidth, result.rca, result.sweepTimeMs);
-
     return result;
 }
