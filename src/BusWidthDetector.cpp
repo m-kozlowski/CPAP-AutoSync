@@ -943,9 +943,16 @@ void BusWidthDetector::stealthTest() {
                 detectedBits = p.bits;
                 break;
             } else {
-                LOG_INFOF("===STEALTH=== READ FAIL (%s) — CRC/timeout", p.label);
+                LOG_INFOF("===STEALTH=== READ FAIL (%s) — CRC/timeout rintsts=0x%08X",
+                          p.label, SDMMC.rintsts.val);
+                // Recovery: CMD12 stop + FIFO/DMA reset to clear stuck controller
                 sendCmd12();
                 delay(2);
+                SDMMC.rintsts.val = 0xFFFFFFFF;
+                SDMMC.ctrl.fifo_reset = 1;
+                while (SDMMC.ctrl.fifo_reset) {}
+                SDMMC.ctrl.dma_reset = 1;
+                while (SDMMC.ctrl.dma_reset) {}
             }
         }
 
@@ -966,8 +973,17 @@ void BusWidthDetector::stealthTest() {
     // ════════════════════════════════════════════════════════════════════════
     LOG_INFO("===STEALTH=== Phase 2: Positive control (sdmmc_card_init + bare-metal CMD13)...");
 
-    // Restore INTMASK for ESP-IDF card init (it needs the ISR)
+    // Full controller recovery: failed reads may have left SDMMC stuck.
+    // deinit/reinit gives sdmmc_card_init() a clean controller.
     SDMMC.intmask.val = savedIntMask;
+    deinitHardware();
+    delay(50);
+    if (!initHardware(/*stealth=*/false)) {
+        LOG_ERROR("===STEALTH=== Phase 2: controller reinit failed");
+        LOG_INFO("===STEALTH=== DONE ===\n");
+        return;
+    }
+    savedIntMask = SDMMC.intmask.val;
 
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     host.slot = SDMMC_HOST_SLOT_1;
