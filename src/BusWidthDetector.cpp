@@ -345,11 +345,15 @@ uint16_t BusWidthDetector::sweepRCA(uint32_t* outStatus) {
     uint32_t origTmout = SDMMC.tmout.val;
     SDMMC.tmout.response = 0x40;
 
-    uint32_t timeouts = 0, crcErrs = 0, ghostHits = 0;
+    uint32_t timeouts = 0, crcErrs = 0, ghostHits = 0, noResponse = 0;
+
+    // Per-probe software timeout in microseconds.
+    // Hardware response timeout is 64 card clocks @ 400kHz = 160µs.
+    // 300µs gives ~2× margin; 1ms for validation/confirm probes.
+    static constexpr uint32_t PROBE_TIMEOUT_US  = 300;
+    static constexpr uint32_t CONFIRM_TIMEOUT_US = 1000;
 
     // ── Helper: fire CMD13 for a given RCA and return raw rintsts ──
-    // Returns the interrupt status register value after the command completes.
-    // resp[0] is stored into *outResp.  timeoutUs is the per-spin timeout.
     auto fireCmd13 = [&](uint16_t rca, uint32_t timeoutUs, uint32_t* outResp) -> uint32_t {
         SDMMC.cmdarg = (uint32_t)rca << 16;
         SDMMC.rintsts.val = 0xFFFFFFFF;
@@ -376,31 +380,32 @@ uint16_t BusWidthDetector::sweepRCA(uint32_t* outStatus) {
     // ── Helper: validate a CMD13 hit and confirm with double-tap ──
     // Returns true only if the response represents a real card (State >= 3,
     // non-zero status) and a second CMD13 to the same RCA also succeeds.
+    // Only logs first MAX_VERBOSE_GHOSTS ghost hits verbosely to avoid log spam.
+    static constexpr uint32_t MAX_VERBOSE_GHOSTS = 3;
+
     auto validateHit = [&](uint16_t rca, uint32_t sts, uint32_t resp,
                            const char* source) -> bool {
         uint8_t state = (resp >> 9) & 0x0F;
 
+        // Reject ghost hits: State 0 (Idle) is invalid in SD mode for CMD13.
+        // A real card responding to CMD13 must be in Standby (3) or higher.
+        // Also reject all-zero response (electrical noise on CMD line).
+        if (state < 3 || resp == 0) {
+            ghostHits++;
+            if (ghostHits <= MAX_VERBOSE_GHOSTS) {
+                LOG_WARNF("[BWD] Ghost #%u: RCA 0x%04X rintsts=0x%08X resp=0x%08X state=%d(%s)",
+                          ghostHits, rca, sts, resp, state, SD_STATE_NAME(state));
+            }
+            return false;
+        }
+
+        // Non-ghost candidate — log fully
         LOG_INFOF("[BWD] Candidate RCA 0x%04X (%s): rintsts=0x%08X resp=0x%08X state=%d(%s)",
                   rca, source, sts, resp, state, SD_STATE_NAME(state));
 
-        // Reject ghost hits: State 0 (Idle) is invalid in SD mode for CMD13.
-        // A real card responding to CMD13 must be in Standby (3) or higher.
-        if (state < 3) {
-            LOG_WARNF("[BWD] Ghost hit: RCA 0x%04X state=%d < 3 — rejected", rca, state);
-            ghostHits++;
-            return false;
-        }
-
-        // Reject all-zero status (electrical noise)
-        if (resp == 0) {
-            LOG_WARNF("[BWD] Ghost hit: RCA 0x%04X resp=0x00000000 — rejected", rca);
-            ghostHits++;
-            return false;
-        }
-
         // Double-tap confirmation: send CMD13 again and require consistent response
         uint32_t confirmResp = 0;
-        uint32_t confirmSts = fireCmd13(rca, 5000, &confirmResp);
+        uint32_t confirmSts = fireCmd13(rca, CONFIRM_TIMEOUT_US, &confirmResp);
 
         if (!(confirmSts & INT_CMD_DONE) || (confirmSts & CMD_ERR_FLAGS)) {
             LOG_WARNF("[BWD] Confirm failed: RCA 0x%04X rintsts=0x%08X — rejected",
@@ -431,7 +436,7 @@ uint16_t BusWidthDetector::sweepRCA(uint32_t* outStatus) {
     LOG_INFOF("[BWD] Fast-path: testing %d common RCAs...", (int)(sizeof(fastRCAs)/sizeof(fastRCAs[0])));
     for (uint16_t rca : fastRCAs) {
         uint32_t resp = 0;
-        uint32_t sts = fireCmd13(rca, 5000, &resp);
+        uint32_t sts = fireCmd13(rca, PROBE_TIMEOUT_US, &resp);
 
         if ((sts & INT_CMD_DONE) && !(sts & CMD_ERR_FLAGS)) {
             if (validateHit(rca, sts, resp, "fast-path")) {
@@ -447,14 +452,14 @@ uint16_t BusWidthDetector::sweepRCA(uint32_t* outStatus) {
     // ── Full linear sweep ──
     LOG_INFO("[BWD] Full sweep 1→65535...");
     for (uint32_t rca = 1; rca <= 0xFFFF; rca++) {
-        // Safety: abort after 10 seconds
-        if ((rca & 0x3FF) == 0 && (millis() - t0 > 10000)) {
-            LOG_ERROR("[BWD] Sweep safety timeout (10s)");
+        // Safety: abort after 30 seconds (allows full 65535 scan at ~300µs/RCA)
+        if ((rca & 0x3FF) == 0 && (millis() - t0 > 30000)) {
+            LOG_WARNF("[BWD] Sweep timeout (30s, scanned %u RCAs)", (unsigned)rca);
             break;
         }
 
         uint32_t resp = 0;
-        uint32_t sts = fireCmd13((uint16_t)rca, 2000, &resp);
+        uint32_t sts = fireCmd13((uint16_t)rca, PROBE_TIMEOUT_US, &resp);
 
         if ((sts & INT_CMD_DONE) && !(sts & CMD_ERR_FLAGS)) {
             if (validateHit((uint16_t)rca, sts, resp, "full-sweep")) {
@@ -467,16 +472,17 @@ uint16_t BusWidthDetector::sweepRCA(uint32_t* outStatus) {
 
         if (sts & INT_RTO) timeouts++;
         else if (sts & INT_RCRC) crcErrs++;
+        else if (!(sts & (INT_CMD_DONE | CMD_ERR_FLAGS))) noResponse++;
 
-        if (rca % 1000 == 0) {
-            LOG_INFOF("[BWD] Sweep progress: RCA %u/65535 (%lums, TO=%u CRC=%u ghosts=%u)",
-                      (unsigned)rca, millis() - t0, timeouts, crcErrs, ghostHits);
+        if (rca % 5000 == 0) {
+            LOG_INFOF("[BWD] Sweep progress: RCA %u/65535 (%lums, TO=%u CRC=%u ghosts=%u noResp=%u)",
+                      (unsigned)rca, millis() - t0, timeouts, crcErrs, ghostHits, noResponse);
         }
     }
 
     SDMMC.tmout.val = origTmout;
-    LOG_WARNF("[BWD] No RCA found (sweep took %lums, TO=%u, CRC=%u, ghosts=%u)",
-              millis() - t0, timeouts, crcErrs, ghostHits);
+    LOG_WARNF("[BWD] No RCA found (sweep took %lums, TO=%u, CRC=%u, ghosts=%u, noResp=%u)",
+              millis() - t0, timeouts, crcErrs, ghostHits, noResponse);
     return 0;
 }
 

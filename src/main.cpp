@@ -651,23 +651,32 @@ void setup() {
         }
         
         // ── EXPERIMENTAL: Final PCNT reading + teardown ──
+        int finalPulses;
         {
-            int p = EarlyPCNT::read();
-            LOG_INFOF("===EXPERIMENTAL=== Early PCNT final (pre-detect): %d pulses", p);
+            finalPulses = EarlyPCNT::read();
+            LOG_INFOF("===EXPERIMENTAL=== Early PCNT final (pre-detect): %d pulses", finalPulses);
         }
         EarlyPCNT::teardown();
 
         LOG("Boot delay complete. Running Bus Width Detection...");
         // EXPERIMENTAL: Stealth detect RCA and Bus Width
         DetectionResult detResult = BusWidthDetector::detect();
-        if (detResult.busWidth == 1) {
-            LOG("-> MAIN: Detected 1-Bit Width (Likely AirSense 10)");
-        } else if (detResult.busWidth == 4) {
-            LOG("-> MAIN: Detected 4-Bit Width (Likely AirSense 11)");
-        } else if (detResult.rca != 0) {
-            LOG("-> MAIN: RCA found but bus-width probe failed — card in unusual state");
-        } else {
-            LOG("-> MAIN: No RCA found (Standard Reader / CPAP Off) — falling back to standard SD mount");
+
+        // ── EXPERIMENTAL: Combined PCNT + RCA conclusion ──
+        // PCNT is the reliable discriminator:
+        //   AS10 (1-bit): 0 pulses on DAT3 (DAT3 unused in SPI/1-bit mode)
+        //   AS11 (4-bit): hundreds/thousands of pulses on DAT3
+        const char* pcntVerdict = (finalPulses == 0) ? "AS10 (no DAT3 activity)"
+                                : (finalPulses > 50) ? "AS11 (active DAT3)"
+                                                     : "Uncertain (low pulse count)";
+        LOG_INFOF("===EXPERIMENTAL=== DETECTION SUMMARY: PCNT=%d → %s | RCA=%s (0x%04X, sweep=%lums)",
+                  finalPulses, pcntVerdict,
+                  detResult.rca ? "found" : "none",
+                  detResult.rca, detResult.sweepTimeMs);
+
+        if (detResult.busWidth > 0) {
+            LOG_INFOF("===EXPERIMENTAL=== Bus width: %d-bit (likely %s)",
+                      detResult.busWidth, detResult.busWidth == 1 ? "AirSense 10" : "AirSense 11");
         }
         if (!detResult.wifiSSID.isEmpty()) {
             LOGF("===EXPERIMENTAL=== Stealth config.txt WIFI_SSID: %s", detResult.wifiSSID.c_str());
