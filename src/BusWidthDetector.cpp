@@ -793,39 +793,76 @@ void BusWidthDetector::selfTest() {
     // ── Step 1: Full SD card init sequence (bare-metal) ──
     LOG_INFO("===SELF-TEST=== Phase 1: Initialising card (CMD0→CMD8→ACMD41→CMD2→CMD3)...");
 
-    // CMD0 — GO_IDLE_STATE (no response)
-    sendCmd(0, 0, (1u << 14) /*send_initialization*/, nullptr, 10000);
-    delay(10);
+    // Extra delay after initHardware for clock stabilization
+    delay(50);
+
+    // CMD0 — GO_IDLE_STATE (no response expected — card resets to idle)
+    // Retry up to 3 times; CMD0 has no response so sendCmd may return false
+    // due to response timeout, which is expected — we just need the command sent.
+    for (int retry = 0; retry < 3; retry++) {
+        SDMMC.rintsts.val = 0xFFFFFFFF;
+        SDMMC.cmdarg = 0;
+        sdmmc_hw_cmd_t hw = {};
+        hw.cmd_index     = 0;
+        hw.send_init     = 1;  // Send 80 clocks before command
+        hw.wait_complete = 1;
+        hw.start_command = 1;
+        hw.card_num      = SDMMC_HOST_SLOT_1;
+        hw.use_hold_reg  = 1;
+        *(volatile uint32_t*)&SDMMC.cmd = *(uint32_t*)&hw;
+
+        // Wait for command to complete (no response expected — just wait for CIU done)
+        uint32_t t0 = (uint32_t)esp_timer_get_time();
+        while (((uint32_t)esp_timer_get_time() - t0) < 50000) {
+            uint32_t sts = SDMMC.rintsts.val;
+            if (sts & (INT_CMD_DONE | CMD_ERR_FLAGS)) break;
+        }
+        LOG_INFOF("===SELF-TEST=== CMD0 attempt %d: rintsts=0x%08X", retry + 1, SDMMC.rintsts.val);
+        delay(20);
+    }
+
+    // Give card time to reset (SD spec: Ncs = 8 clocks minimum, but some cards are slow)
+    delay(50);
 
     // CMD8 — SEND_IF_COND: check voltage, echo pattern 0x1AA
     // flags: response_expect(6), check_crc(8)
     uint32_t cmd8Resp = 0;
-    bool cmd8ok = sendCmd(8, 0x000001AA, (1u << 6) | (1u << 8), &cmd8Resp, 50000);
-    LOG_INFOF("===SELF-TEST=== CMD8: %s (resp=0x%08X)", cmd8ok ? "OK" : "FAIL/no response", cmd8Resp);
+    bool cmd8ok = sendCmd(8, 0x000001AA, (1u << 6) | (1u << 8), &cmd8Resp, 100000);
+    LOG_INFOF("===SELF-TEST=== CMD8: %s (resp=0x%08X, rintsts=0x%08X)",
+              cmd8ok ? "OK" : "FAIL", cmd8Resp, SDMMC.rintsts.val);
 
-    // ACMD41 loop — SD_SEND_OP_COND (up to 1 second)
+    // Even if CMD8 fails (SD v1.x card), we can still try ACMD41 without HCS
+    // ACMD41 loop — SD_SEND_OP_COND (up to 2 seconds)
     // Must prefix each ACMD41 with CMD55 (APP_CMD)
     bool cardReady = false;
     uint32_t ocr = 0;
-    for (int i = 0; i < 50; i++) {
+    for (int i = 0; i < 100; i++) {
         // CMD55 — APP_CMD: response_expect(6), check_crc(8), arg=0 (broadcast RCA)
-        sendCmd(55, 0, (1u << 6) | (1u << 8), nullptr, 50000);
+        uint32_t cmd55Resp = 0;
+        bool cmd55ok = sendCmd(55, 0, (1u << 6) | (1u << 8), &cmd55Resp, 100000);
+        if (i == 0) {
+            LOG_INFOF("===SELF-TEST=== CMD55: %s (resp=0x%08X)", cmd55ok ? "OK" : "FAIL", cmd55Resp);
+        }
 
-        // ACMD41: response_expect(6), NO check_crc (R3 has no CRC)
-        // arg: HCS=1 (bit30) + voltage window 3.2-3.4V (bits 20-21)
-        uint32_t acmd41Arg = (1u << 30) | (1u << 20);
-        if (cmd8ok) acmd41Arg |= (1u << 30); // HCS for SDHC
-        bool ok = sendCmd(41, acmd41Arg, (1u << 6), &ocr, 50000);
+        // ACMD41: response_expect(6), NO check_crc (R3 response has no CRC!)
+        // arg: voltage window 3.2-3.4V (bits 20-21) + HCS if CMD8 succeeded
+        uint32_t acmd41Arg = (1u << 20) | (1u << 21);  // 3.2-3.4V
+        if (cmd8ok) acmd41Arg |= (1u << 30);  // HCS (host supports SDHC)
+        bool ok = sendCmd(41, acmd41Arg, (1u << 6), &ocr, 100000);
+        if (i == 0) {
+            LOG_INFOF("===SELF-TEST=== ACMD41 first try: %s (OCR=0x%08X)", ok ? "OK" : "FAIL", ocr);
+        }
 
         if (ok && (ocr & (1u << 31))) {
             cardReady = true;
+            LOG_INFOF("===SELF-TEST=== ACMD41 ready after %d iterations", i + 1);
             break;
         }
         delay(20);
     }
 
     if (!cardReady) {
-        LOG_ERROR("===SELF-TEST=== ACMD41 failed — card didn't become ready");
+        LOG_ERRORF("===SELF-TEST=== ACMD41 failed — card not ready (last OCR=0x%08X)", ocr);
         deinitHardware();
         digitalWrite(SD_SWITCH_PIN, SD_SWITCH_CPAP_VALUE);
         return;
