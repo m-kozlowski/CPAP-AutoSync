@@ -361,12 +361,19 @@ uint16_t BusWidthDetector::sweepRCA(uint32_t* outStatus) {
         SDMMC.rintsts.val = 0xFFFFFFFF;
         *(volatile uint32_t*)&SDMMC.cmd = cmd13Word;
 
-        // Spin until start_command clears (CIU accepted)
-        while (SDMMC.cmd.start_command);
+        // Spin until start_command clears (CIU accepted) — 5ms timeout
+        uint32_t us0 = (uint32_t)esp_timer_get_time();
+        while (SDMMC.cmd.start_command) {
+            if (((uint32_t)esp_timer_get_time() - us0) > 5000) break;
+        }
 
-        // Spin until command completion or error
-        uint32_t sts;
-        do { sts = SDMMC.rintsts.val; } while (!(sts & (INT_CMD_DONE | CMD_ERR_FLAGS)));
+        // Spin until command completion or error — 5ms timeout
+        uint32_t sts = 0;
+        us0 = (uint32_t)esp_timer_get_time();
+        do {
+            sts = SDMMC.rintsts.val;
+            if (((uint32_t)esp_timer_get_time() - us0) > 5000) break;
+        } while (!(sts & (INT_CMD_DONE | CMD_ERR_FLAGS)));
 
         if ((sts & INT_CMD_DONE) && !(sts & CMD_ERR_FLAGS)) {
             *outStatus = SDMMC.resp[0];
@@ -390,13 +397,19 @@ uint16_t BusWidthDetector::sweepRCA(uint32_t* outStatus) {
         SDMMC.rintsts.val = 0xFFFFFFFF;
         *(volatile uint32_t*)&SDMMC.cmd = cmd13Word;
 
-        while (SDMMC.cmd.start_command);
+        // Spin until start_command clears — 2ms timeout
+        uint32_t us0 = (uint32_t)esp_timer_get_time();
+        while (SDMMC.cmd.start_command) {
+            if (((uint32_t)esp_timer_get_time() - us0) > 2000) break;
+        }
 
-        uint32_t sts;
-        uint32_t spins = 0;
+        // Spin until command completion or error — 2ms timeout
+        uint32_t sts = 0;
+        us0 = (uint32_t)esp_timer_get_time();
         do {
             sts = SDMMC.rintsts.val;
-        } while (!(sts & (INT_CMD_DONE | CMD_ERR_FLAGS)) && ++spins < 500);
+            if (((uint32_t)esp_timer_get_time() - us0) > 2000) break;
+        } while (!(sts & (INT_CMD_DONE | CMD_ERR_FLAGS)));
 
         if ((sts & INT_CMD_DONE) && !(sts & CMD_ERR_FLAGS)) {
             *outStatus = SDMMC.resp[0];
