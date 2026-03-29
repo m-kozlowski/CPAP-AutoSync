@@ -771,18 +771,25 @@ void BusWidthDetector::restoreAndRelease(uint16_t rca, uint8_t origState, bool w
 }
 
 // ============================================================================
-// Self-Test: positive control + MUX disruption proof
+// Stealth Test: validate zero-CMD0 RCA discovery + sector read
 // ============================================================================
-// Initialises the card ourselves (CMD0→CMD8→ACMD41→CMD2→CMD3) to get a known
-// RCA, then verifies the sweep code finds it.  Next, returns MUX to CPAP
-// briefly and grabs it back to prove the MUX switch kills the session.
+// Phase 1: Positive control — init card via ESP-IDF, get known RCA, then
+//          MASK SDMMC INTERRUPTS and verify bare-metal CMD13 finds that RCA.
+//          This proves the ISR-masking fix works.
+// Phase 2: True stealth — release MUX to CPAP (card keeps CPAP's RCA),
+//          grab MUX back, re-init SDMMC hardware (GPIO/clock only — NO CMD0),
+//          mask ISR, sweep CMD13 to find CPAP's RCA without disturbing card.
+// Phase 3: Stealth read — if RCA found, CMD7 select, CMD17 read sector 0,
+//          verify MBR signature, then restore card state and release MUX.
 
-void BusWidthDetector::selfTest() {
-    LOG_INFO("\n===SELF-TEST=== MUX disruption test (ESP-IDF card init) ===");
+void BusWidthDetector::stealthTest() {
+    LOG_INFO("\n===STEALTH-TEST=== Zero-CMD0 stealth validation ===");
     // NOTE: Caller must have already grabbed MUX and called initHardware().
 
-    // ── Phase 1: Init card via ESP-IDF ──
-    LOG_INFO("===SELF-TEST=== Phase 1: sdmmc_card_init() — first init...");
+    // ════════════════════════════════════════════════════════════════════════
+    // Phase 1: Positive control — does ISR masking fix bare-metal CMD13?
+    // ════════════════════════════════════════════════════════════════════════
+    LOG_INFO("===STEALTH=== Phase 1: Positive control (init card, then bare-metal CMD13)...");
 
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     host.slot = SDMMC_HOST_SLOT_1;
@@ -795,33 +802,319 @@ void BusWidthDetector::selfTest() {
 
     esp_err_t err = sdmmc_card_init(&host, &card);
     if (err != ESP_OK) {
-        LOG_ERRORF("===SELF-TEST=== First init FAILED: 0x%x (%s)", err, esp_err_to_name(err));
-        LOG_INFO("===SELF-TEST=== ABORTED ===\n");
+        LOG_ERRORF("===STEALTH=== Card init FAILED: 0x%x (%s)", err, esp_err_to_name(err));
+        LOG_INFO("===STEALTH=== ABORTED ===\n");
         return;
     }
 
-    uint16_t rca1 = card.rca;
-    LOG_INFOF("===SELF-TEST=== First init OK: RCA=0x%04X, SDHC=%s, %luMB",
-              rca1, (card.ocr & (1 << 30)) ? "yes" : "no",
+    uint16_t knownRCA = card.rca;
+    LOG_INFOF("===STEALTH=== Card init OK: RCA=0x%04X, SDHC=%s, %luMB",
+              knownRCA, (card.ocr & (1 << 30)) ? "yes" : "no",
               (unsigned long)(((uint64_t)card.csd.capacity) * card.csd.sector_size / (1024 * 1024)));
 
-    // ── Phase 2: Re-init WITHOUT MUX cycle (control — should succeed) ──
-    LOG_INFO("===SELF-TEST=== Phase 2: Re-init without MUX cycle (control)...");
-    memset(&card, 0, sizeof(card));
-    card.host = host;
-    err = sdmmc_card_init(&host, &card);
-    if (err != ESP_OK) {
-        LOG_ERRORF("===SELF-TEST=== Control re-init FAILED: 0x%x (%s)", err, esp_err_to_name(err));
-        LOG_INFO("===SELF-TEST=== ABORTED ===\n");
+    // ── THE FIX: Mask all SDMMC interrupts so the ISR doesn't consume CMD_DONE ──
+    // RINTSTS (raw interrupt status) still updates regardless of INTMASK.
+    // Our polling loop reads RINTSTS directly, so it will see CMD_DONE now.
+    uint32_t savedIntMask = SDMMC.intmask.val;
+    SDMMC.intmask.val = 0;
+    LOG_INFOF("===STEALTH=== INTMASK masked (was 0x%08X, now 0x00000000)", savedIntMask);
+
+    // Bare-metal CMD13 with the known RCA — this MUST work now
+    uint32_t status = 0;
+    bool cmd13ok = sendCmd13(knownRCA, &status);
+    uint8_t state = (status >> 9) & 0x0F;
+
+    if (cmd13ok) {
+        LOG_INFOF("===STEALTH=== Phase 1 PASS: CMD13(0x%04X) → resp=0x%08X state=%d(%s)",
+                  knownRCA, status, state, SD_STATE_NAME(state));
+    } else {
+        LOG_ERRORF("===STEALTH=== Phase 1 FAIL: CMD13(0x%04X) → resp=0x%08X rintsts=0x%08X",
+                   knownRCA, status, SDMMC.rintsts.val);
+        LOG_INFO("===STEALTH=== ISR masking did NOT fix bare-metal CMD13 — giving up");
+        SDMMC.intmask.val = savedIntMask;
+        LOG_INFO("===STEALTH=== ABORTED ===\n");
         return;
     }
-    uint16_t rca2 = card.rca;
-    LOG_INFOF("===SELF-TEST=== Control re-init OK: RCA=0x%04X (was 0x%04X)", rca2, rca1);
 
-    // ── Phase 3: MUX round-trip + re-init ──
-    LOG_INFO("===SELF-TEST=== Phase 3: MUX round-trip (release 500ms, grab back)...");
+    // Also try a quick sweep to confirm the sweep logic works with masking
+    LOG_INFO("===STEALTH=== Phase 1b: Quick sweep of first 100 RCAs + known RCA...");
+    int sweepHits = 0;
+    for (uint32_t rca = 1; rca <= 100; rca++) {
+        uint32_t r = 0;
+        if (sendCmd13((uint16_t)rca, &r)) {
+            uint8_t s = (r >> 9) & 0x0F;
+            if (s >= 3 && r != 0) {
+                LOG_INFOF("===STEALTH===   Sweep hit: RCA=0x%04X resp=0x%08X state=%d(%s)",
+                          (uint16_t)rca, r, s, SD_STATE_NAME(s));
+                sweepHits++;
+            }
+        }
+    }
+    // Also check the known RCA explicitly (it might be > 100)
+    if (knownRCA > 100) {
+        uint32_t r = 0;
+        if (sendCmd13(knownRCA, &r)) {
+            uint8_t s = (r >> 9) & 0x0F;
+            if (s >= 3 && r != 0) {
+                LOG_INFOF("===STEALTH===   Known RCA 0x%04X confirmed in sweep: state=%d(%s)",
+                          knownRCA, s, SD_STATE_NAME(s));
+                sweepHits++;
+            }
+        }
+    }
+    LOG_INFOF("===STEALTH=== Phase 1b: %d valid RCA(s) found in sweep", sweepHits);
 
-    // Tri-state pins, deinit, release MUX
+    // Restore INTMASK before deinit (ESP-IDF needs it for clean shutdown)
+    SDMMC.intmask.val = savedIntMask;
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Phase 2: True stealth — release MUX, let CPAP own card, grab back,
+    //          find CPAP's RCA without CMD0
+    // ════════════════════════════════════════════════════════════════════════
+    LOG_INFO("===STEALTH=== Phase 2: True stealth test (zero-CMD0 RCA discovery)...");
+
+    // Tri-state pins and deinit cleanly
+    const int sdPins[] = { SD_CMD_PIN, SD_CLK_PIN, SD_D0_PIN, SD_D1_PIN, SD_D2_PIN, SD_D3_PIN };
+    for (int pin : sdPins) {
+        gpio_reset_pin((gpio_num_t)pin);
+        gpio_set_direction((gpio_num_t)pin, GPIO_MODE_INPUT);
+        gpio_set_pull_mode((gpio_num_t)pin, GPIO_PULLUP_ONLY);
+    }
+    deinitHardware();
+
+    // Release MUX to CPAP for 2 seconds — CPAP re-initializes card with its own RCA
+    digitalWrite(SD_SWITCH_PIN, SD_SWITCH_CPAP_VALUE);
+    LOG_INFO("===STEALTH=== MUX released to CPAP for 2 seconds...");
+    delay(2000);
+
+    // Grab MUX back
+    LOG_INFO("===STEALTH=== Grabbing MUX back (stealth — NO CMD0)...");
+    digitalWrite(SD_SWITCH_PIN, SD_SWITCH_ESP_VALUE);
+    delay(200);
+
+    // Re-init SDMMC hardware (GPIO matrix, clock) — this does NOT send CMD0
+    // sdmmc_host_init() configures the peripheral; initHardware() also sends
+    // 80 init clocks which are harmless (card ignores them when already initialized)
+    if (!initHardware()) {
+        LOG_ERROR("===STEALTH=== Hardware re-init failed");
+        LOG_INFO("===STEALTH=== ABORTED ===\n");
+        return;
+    }
+
+    // ── MASK INTERRUPTS AGAIN (initHardware re-installed the ISR) ──
+    savedIntMask = SDMMC.intmask.val;
+    SDMMC.intmask.val = 0;
+    LOG_INFO("===STEALTH=== INTMASK masked for stealth sweep");
+
+    // CMD13 sweep to find the CPAP's RCA — the real stealth test!
+    // We have NOT sent CMD0. The card still has whatever RCA the CPAP assigned.
+    LOG_INFO("===STEALTH=== Sweeping CMD13 for CPAP's RCA (no CMD0 sent)...");
+
+    uint16_t foundRCA = 0;
+    uint32_t foundStatus = 0;
+    uint32_t sweepTimeouts = 0, sweepNoResp = 0;
+    unsigned long sweepT0 = millis();
+
+    // Try fast-path first: the known RCA from Phase 1 (card often picks same RCA)
+    {
+        uint32_t r = 0;
+        if (sendCmd13(knownRCA, &r)) {
+            uint8_t s = (r >> 9) & 0x0F;
+            if (s >= 3 && r != 0) {
+                foundRCA = knownRCA;
+                foundStatus = r;
+                LOG_INFOF("===STEALTH=== Fast-path hit: CPAP RCA=0x%04X (same as our init) state=%d(%s)",
+                          foundRCA, s, SD_STATE_NAME(s));
+            }
+        }
+    }
+
+    // Full sweep if fast-path missed
+    if (foundRCA == 0) {
+        for (uint32_t rca = 1; rca <= 0xFFFF; rca++) {
+            if ((rca & 0xFFF) == 0 && (millis() - sweepT0 > 30000)) {
+                LOG_WARNF("===STEALTH=== Sweep timeout at RCA %u", (unsigned)rca);
+                break;
+            }
+
+            uint32_t r = 0;
+            bool ok = sendCmd13((uint16_t)rca, &r);
+
+            if (ok) {
+                uint8_t s = (r >> 9) & 0x0F;
+                if (s >= 3 && r != 0) {
+                    // Double-tap confirmation
+                    uint32_t r2 = 0;
+                    bool ok2 = sendCmd13((uint16_t)rca, &r2);
+                    uint8_t s2 = (r2 >> 9) & 0x0F;
+                    if (ok2 && s2 >= 3 && r2 != 0) {
+                        foundRCA = (uint16_t)rca;
+                        foundStatus = r2;
+                        LOG_INFOF("===STEALTH=== RCA 0x%04X found at sweep pos %u (%lums) state=%d(%s)",
+                                  foundRCA, (unsigned)rca, millis() - sweepT0, s2, SD_STATE_NAME(s2));
+                        break;
+                    }
+                }
+            } else {
+                uint32_t sts = SDMMC.rintsts.val;
+                if (sts & INT_RTO) sweepTimeouts++;
+                else sweepNoResp++;
+            }
+
+            if (rca % 10000 == 0) {
+                LOG_INFOF("===STEALTH=== Sweep progress: %u/65535 (%lums, TO=%u noResp=%u)",
+                          (unsigned)rca, millis() - sweepT0, sweepTimeouts, sweepNoResp);
+            }
+        }
+    }
+
+    unsigned long sweepMs = millis() - sweepT0;
+
+    if (foundRCA == 0) {
+        LOG_WARNF("===STEALTH=== NO RCA found (%lums, TO=%u, noResp=%u)", sweepMs, sweepTimeouts, sweepNoResp);
+        LOG_INFO("===STEALTH=== Stealth mode NOT viable — card not responding to CMD13 after MUX grab");
+        SDMMC.intmask.val = savedIntMask;
+        LOG_INFO("===STEALTH=== DONE ===\n");
+        return;
+    }
+
+    LOG_INFOF("===STEALTH=== Phase 2 PASS: CPAP's RCA=0x%04X found WITHOUT CMD0! (%lums)",
+              foundRCA, sweepMs);
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Phase 3: Stealth sector read — CMD7 select, CMD17 read sector 0
+    // ════════════════════════════════════════════════════════════════════════
+    LOG_INFO("===STEALTH=== Phase 3: Stealth sector read (CMD7 + CMD17)...");
+
+    uint8_t cardState = (foundStatus >> 9) & 0x0F;
+
+    // If card is in Standby (3), select it with CMD7
+    if (cardState == 3) {
+        LOG_INFO("===STEALTH=== Card in Standby — selecting with CMD7...");
+        if (!sendCmd7(foundRCA)) {
+            LOG_ERROR("===STEALTH=== CMD7 SELECT failed");
+            SDMMC.intmask.val = savedIntMask;
+            LOG_INFO("===STEALTH=== Phase 3 FAILED ===\n");
+            return;
+        }
+        delay(2);
+
+        // Verify card is now in Transfer (4)
+        uint32_t st = 0;
+        if (sendCmd13(foundRCA, &st)) {
+            uint8_t s = (st >> 9) & 0x0F;
+            LOG_INFOF("===STEALTH=== After CMD7: state=%d(%s)", s, SD_STATE_NAME(s));
+        }
+    } else if (cardState == 4) {
+        LOG_INFOF("===STEALTH=== Card already in Transfer state — good");
+    } else {
+        LOG_WARNF("===STEALTH=== Card in state %d(%s) — attempting read anyway",
+                  cardState, SD_STATE_NAME(cardState));
+    }
+
+    // Read sector 0 — try 1-bit modes first (safe order per doc 62)
+    uint8_t sectorBuf[512] __attribute__((aligned(4)));
+    memset(sectorBuf, 0, sizeof(sectorBuf));
+
+    struct { int bits; int khz; const char* label; } readProbes[] = {
+        { 1,   400, "1-bit@400kHz" },
+        { 1, 25000, "1-bit@25MHz"  },
+        { 4,   400, "4-bit@400kHz" },
+        { 4, 25000, "4-bit@25MHz"  },
+    };
+
+    bool readOK = false;
+    int detectedBits = 0;
+    for (auto& p : readProbes) {
+        setHostBusWidth(p.bits);
+        setHostClock(p.khz);
+
+        if (readSector(0, sectorBuf)) {
+            bool validSig = (sectorBuf[510] == 0x55 && sectorBuf[511] == 0xAA);
+            LOG_INFOF("===STEALTH=== READ OK (%s): boot sig %s",
+                      p.label, validSig ? "0x55AA VALID" : "MISSING");
+            // Log first 16 bytes for visual verification
+            LOG_INFOF("===STEALTH===   Sector 0 [0..15]: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+                      sectorBuf[0], sectorBuf[1], sectorBuf[2], sectorBuf[3],
+                      sectorBuf[4], sectorBuf[5], sectorBuf[6], sectorBuf[7],
+                      sectorBuf[8], sectorBuf[9], sectorBuf[10], sectorBuf[11],
+                      sectorBuf[12], sectorBuf[13], sectorBuf[14], sectorBuf[15]);
+            readOK = true;
+            detectedBits = p.bits;
+            break;
+        } else {
+            LOG_INFOF("===STEALTH=== READ FAIL (%s) — CRC/timeout", p.label);
+            sendCmd12();
+            delay(2);
+        }
+    }
+
+    // Restore card state: deselect if it was in Standby
+    if (cardState == 3) {
+        LOG_INFO("===STEALTH=== Restoring card to Standby (CMD7 deselect)...");
+        sendCmd7(0);
+    }
+
+    // Restore INTMASK
+    SDMMC.intmask.val = savedIntMask;
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Summary
+    // ════════════════════════════════════════════════════════════════════════
+    LOG_INFO("===STEALTH=== ╔══════════════════════════════════════════════╗");
+    LOG_INFOF("===STEALTH=== ║ Phase 1 (ISR mask + CMD13):   PASS          ║");
+    if (foundRCA) {
+        LOG_INFOF("===STEALTH=== ║ Phase 2 (Zero-CMD0 RCA):     PASS 0x%04X   ║", foundRCA);
+    } else {
+        LOG_INFO("===STEALTH=== ║ Phase 2 (Zero-CMD0 RCA):     FAIL          ║");
+    }
+    if (readOK) {
+        LOG_INFOF("===STEALTH=== ║ Phase 3 (Stealth read):      PASS %d-bit    ║", detectedBits);
+    } else {
+        LOG_INFO("===STEALTH=== ║ Phase 3 (Stealth read):      FAIL          ║");
+    }
+    LOG_INFO("===STEALTH=== ╚══════════════════════════════════════════════╝");
+
+    if (foundRCA && readOK) {
+        LOG_INFO("===STEALTH=== CONCLUSION: Stealth mode IS VIABLE!");
+        LOG_INFO("===STEALTH===   Zero-CMD0 grab → find RCA → read card → release");
+        LOG_INFO("===STEALTH===   CPAP never sees CMD0, card state fully preserved.");
+    } else if (foundRCA && !readOK) {
+        LOG_INFO("===STEALTH=== CONCLUSION: RCA found but read failed — bus width mismatch?");
+    } else {
+        LOG_INFO("===STEALTH=== CONCLUSION: Stealth mode NOT viable — card invisible to CMD13");
+    }
+
+    LOG_INFO("===STEALTH=== DONE ===\n");
+}
+
+// ============================================================================
+// Main Detection Entry Point
+// ============================================================================
+
+DetectionResult BusWidthDetector::detect() {
+    DetectionResult result = {};
+
+    LOG_INFO("\n===EXPERIMENTAL=== BUS-WIDTH DETECTOR START ===");
+
+    // Grab MUX
+    LOG_INFO("[BWD] Grabbing SD MUX...");
+    pinMode(SD_SWITCH_PIN, OUTPUT);
+    digitalWrite(SD_SWITCH_PIN, SD_SWITCH_ESP_VALUE);
+    delay(200);
+
+    // Initialize SDMMC hardware
+    if (!initHardware()) {
+        LOG_ERROR("[BWD] Hardware init failed — aborting");
+        digitalWrite(SD_SWITCH_PIN, SD_SWITCH_CPAP_VALUE);
+        LOG_INFO("===EXPERIMENTAL=== BUS-WIDTH DETECTOR END (hw fail) ===\n");
+        return result;
+    }
+
+    // Run the stealth validation test
+    stealthTest();
+
+    // Clean up: tri-state pins, deinit, release MUX
     const int sdPins[] = { SD_CMD_PIN, SD_CLK_PIN, SD_D0_PIN, SD_D1_PIN, SD_D2_PIN, SD_D3_PIN };
     for (int pin : sdPins) {
         gpio_reset_pin((gpio_num_t)pin);
@@ -830,62 +1123,8 @@ void BusWidthDetector::selfTest() {
     }
     deinitHardware();
     digitalWrite(SD_SWITCH_PIN, SD_SWITCH_CPAP_VALUE);
-    LOG_INFO("===SELF-TEST=== MUX released to CPAP, waiting 500ms...");
-    delay(500);
+    LOG_INFO("[BWD] MUX returned to CPAP.");
+    LOG_INFO("===EXPERIMENTAL=== BUS-WIDTH DETECTOR END ===\n");
 
-    // Grab MUX back and re-init
-    LOG_INFO("===SELF-TEST=== Grabbing MUX back...");
-    digitalWrite(SD_SWITCH_PIN, SD_SWITCH_ESP_VALUE);
-    delay(200);
-
-    if (!initHardware()) {
-        LOG_ERROR("===SELF-TEST=== Hardware re-init failed after MUX round-trip");
-        LOG_INFO("===SELF-TEST=== ABORTED ===\n");
-        return;
-    }
-
-    // Try card init again
-    LOG_INFO("===SELF-TEST=== Phase 3b: sdmmc_card_init() after MUX round-trip...");
-    memset(&card, 0, sizeof(card));
-    card.host = host;
-    err = sdmmc_card_init(&host, &card);
-    if (err != ESP_OK) {
-        LOG_ERRORF("===SELF-TEST=== Post-MUX init FAILED: 0x%x (%s) — card lost session!",
-                   err, esp_err_to_name(err));
-        LOG_INFO("===SELF-TEST=== CONFIRMED: MUX round-trip kills card — init fails completely ===\n");
-        return;
-    }
-
-    uint16_t rca3 = card.rca;
-    LOG_INFOF("===SELF-TEST=== Post-MUX init OK: RCA=0x%04X (was 0x%04X / 0x%04X)", rca3, rca1, rca2);
-
-    if (rca3 == rca2) {
-        LOG_INFOF("===SELF-TEST=== SURPRISE: Card retained same RCA across MUX cycle!");
-    } else {
-        LOG_INFOF("===SELF-TEST=== Card got new RCA after MUX cycle (0x%04X → 0x%04X) — session was reset",
-                  rca2, rca3);
-    }
-
-    // Also: bare-metal sweep is broken (can't find ESP-IDF-initialized RCA).
-    // The ESP-IDF SDMMC driver's ISR consumes interrupts before our polling loop.
-    LOG_WARN("===SELF-TEST=== NOTE: Bare-metal CMD13 sweep is incompatible with ESP-IDF SDMMC driver");
-
-    LOG_INFO("===SELF-TEST=== Complete ===\n");
-}
-
-// ============================================================================
-// Main Detection Entry Point
-// ============================================================================
-
-DetectionResult BusWidthDetector::detect() {
-    // EXPERIMENTAL CONCLUSION (dev+18):
-    // - Bare-metal CMD13 sweep is incompatible with ESP-IDF SDMMC driver (ISR conflict)
-    // - MUX does NOT kill card session (sdmmc_card_init succeeds after MUX cycling)
-    // - PCNT is the sole reliable AS10/AS11 discriminator
-    // - All RCA sweep, bus-width probing, FAT32 reading code is dead
-    //
-    // This function now returns an empty result immediately.
-    // Detection is done entirely via EarlyPCNT in main.cpp.
-    DetectionResult result = {};
     return result;
 }

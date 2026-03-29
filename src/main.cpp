@@ -660,15 +660,15 @@ void setup() {
 
         LOG("Boot delay complete.");
 
-        // ── EXPERIMENTAL: PCNT-only AS10/AS11 detection ──
-        // PCNT is the sole reliable discriminator:
-        //   AS10 (1-bit): 0 pulses on DAT3 (DAT3 unused in SPI/1-bit mode)
-        //   AS11 (4-bit): hundreds/thousands of pulses on DAT3
-        // Bare-metal RCA sweep was removed (incompatible with ESP-IDF SDMMC driver).
+        // ── EXPERIMENTAL: PCNT detection ──
         const char* pcntVerdict = (finalPulses == 0) ? "AS10 (no DAT3 activity)"
                                 : (finalPulses > 50) ? "AS11 (active DAT3)"
                                                      : "Uncertain (low pulse count)";
         LOG_INFOF("===EXPERIMENTAL=== DETECTION: PCNT=%d pulses → %s", finalPulses, pcntVerdict);
+
+        // ── EXPERIMENTAL: Stealth test (zero-CMD0 RCA discovery + sector read) ──
+        LOG("Running stealth validation test...");
+        BusWidthDetector::detect();
 
         LOG("Attempting SD card access for normal boot...");
 
