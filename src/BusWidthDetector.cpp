@@ -93,7 +93,7 @@ namespace EarlyPCNT {
 // Hardware Init / Deinit
 // ============================================================================
 
-bool BusWidthDetector::initHardware() {
+bool BusWidthDetector::initHardware(bool stealth) {
     // Use ESP-IDF sdmmc_host_init to properly configure the GPIO matrix.
     // Without this, the SDMMC peripheral cannot drive or sample the SD pins.
     esp_err_t err = sdmmc_host_init();
@@ -124,17 +124,26 @@ bool BusWidthDetector::initHardware() {
     setHostClock(400);  // 400 kHz — safe identification speed
     delay(10);
 
-    // Send 80 initialization clocks to synchronize the card's CIU
-    sdmmc_hw_cmd_t initCmd = {};
-    initCmd.send_init     = 1;
-    initCmd.wait_complete = 1;
-    initCmd.card_num      = SDMMC_HOST_SLOT_1;
-    initCmd.start_command = 1;
-    *(volatile uint32_t*)&SDMMC.cmd = *(uint32_t*)&initCmd;
+    if (!stealth) {
+        // Send 80 initialization clocks to synchronize the card's CIU.
+        // WARNING: cmd_index defaults to 0 = CMD0 (GO_IDLE_STATE).
+        // The DWC controller sends the init clocks THEN the command.
+        // This effectively sends CMD0 which resets the card to Idle state!
+        // For stealth mode, we MUST skip this to preserve the CPAP's card session.
+        sdmmc_hw_cmd_t initCmd = {};
+        initCmd.send_init     = 1;
+        initCmd.wait_complete = 1;
+        initCmd.card_num      = SDMMC_HOST_SLOT_1;
+        initCmd.start_command = 1;
+        *(volatile uint32_t*)&SDMMC.cmd = *(uint32_t*)&initCmd;
 
-    uint32_t t0 = millis();
-    while (SDMMC.cmd.start_command && (millis() - t0 < 100));
-    delay(5);
+        uint32_t t0 = millis();
+        while (SDMMC.cmd.start_command && (millis() - t0 < 100));
+        delay(5);
+    } else {
+        LOG_INFO("[BWD] Stealth mode: skipping init clocks (would send CMD0)");
+        delay(50);  // Brief stabilization for clock to settle
+    }
 
     return true;
 }
@@ -843,9 +852,17 @@ void BusWidthDetector::stealthTest() {
                     break;
                 } else {
                     sweepGhosts++;
+                    if (sweepGhosts <= 5) {
+                        LOG_WARNF("===STEALTH=== Ghost #%u: RCA=0x%04X resp=0x%08X/0x%08X state=%d/%d (confirm fail)",
+                                  sweepGhosts, (uint16_t)rca, r, r2, s, s2);
+                    }
                 }
             } else {
                 sweepGhosts++;
+                if (sweepGhosts <= 5) {
+                    LOG_WARNF("===STEALTH=== Ghost #%u: RCA=0x%04X resp=0x%08X state=%d (<%3 or zero)",
+                              sweepGhosts, (uint16_t)rca, r, s);
+                }
             }
         } else {
             uint32_t sts = SDMMC.rintsts.val;
@@ -1041,8 +1058,8 @@ DetectionResult BusWidthDetector::detect() {
     digitalWrite(SD_SWITCH_PIN, SD_SWITCH_ESP_VALUE);
     delay(200);
 
-    // Initialize SDMMC hardware
-    if (!initHardware()) {
+    // Initialize SDMMC hardware in STEALTH mode (no init clocks = no CMD0)
+    if (!initHardware(/*stealth=*/true)) {
         LOG_ERROR("[BWD] Hardware init failed — aborting");
         digitalWrite(SD_SWITCH_PIN, SD_SWITCH_CPAP_VALUE);
         LOG_INFO("===EXPERIMENTAL=== BUS-WIDTH DETECTOR END (hw fail) ===\n");

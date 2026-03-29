@@ -44,7 +44,7 @@ public:
 
 private:
     // Low-level bare-metal SDMMC command dispatch (no ESP-IDF transaction API)
-    static bool     initHardware();
+    static bool     initHardware(bool stealth = false);
     static void     deinitHardware();
     static bool     sendCmd(uint8_t cmdIdx, uint32_t arg, uint32_t flags, uint32_t* resp, uint32_t timeoutUs);
     static bool     sendCmd13(uint16_t rca, uint32_t* status);
