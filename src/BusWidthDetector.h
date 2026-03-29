@@ -40,6 +40,7 @@ namespace EarlyPCNT {
 class BusWidthDetector {
 public:
     static DetectionResult detect();
+    static void selfTest();   // Diagnostic: init card, verify sweep, MUX round-trip
 
 private:
     // Low-level bare-metal SDMMC command dispatch (no ESP-IDF transaction API)
