@@ -2,6 +2,7 @@
 #include "pins_config.h"
 #include "Logger.h"
 #include <driver/sdmmc_host.h>
+#include <sdmmc_cmd.h>
 #include "soc/sdmmc_reg.h"
 #include "soc/sdmmc_struct.h"
 
@@ -781,108 +782,37 @@ void BusWidthDetector::selfTest() {
     // NOTE: Caller must have already grabbed MUX and called initHardware().
     // We assume SDMMC peripheral is live and MUX points to ESP32.
 
-    // ── Step 1: Full SD card init sequence (bare-metal) ──
-    LOG_INFO("===SELF-TEST=== Phase 1: Initialising card (CMD0→CMD8→ACMD41→CMD2→CMD3)...");
+    // ── Step 1: Full SD card init via ESP-IDF (handles all timing/retries) ──
+    LOG_INFO("===SELF-TEST=== Phase 1: Initialising card via sdmmc_card_init()...");
 
-    // Extra delay after initHardware for clock stabilization
-    delay(50);
+    // Build host config matching our already-initialized slot
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    host.slot = SDMMC_HOST_SLOT_1;
+    host.max_freq_khz = 400;
+    host.flags = SDMMC_HOST_FLAG_1BIT;  // Safe 1-bit mode
 
-    // CMD0 — GO_IDLE_STATE (no response expected — card resets to idle)
-    // Retry up to 3 times; CMD0 has no response so sendCmd may return false
-    // due to response timeout, which is expected — we just need the command sent.
-    for (int retry = 0; retry < 3; retry++) {
-        SDMMC.rintsts.val = 0xFFFFFFFF;
-        SDMMC.cmdarg = 0;
-        sdmmc_hw_cmd_t hw = {};
-        hw.cmd_index     = 0;
-        hw.send_init     = 1;  // Send 80 clocks before command
-        hw.wait_complete = 1;
-        hw.start_command = 1;
-        hw.card_num      = SDMMC_HOST_SLOT_1;
-        hw.use_hold_reg  = 1;
-        *(volatile uint32_t*)&SDMMC.cmd = *(uint32_t*)&hw;
+    sdmmc_card_t card;
+    memset(&card, 0, sizeof(card));
+    card.host = host;
 
-        // Wait for command to complete (no response expected — just wait for CIU done)
-        uint32_t t0 = (uint32_t)esp_timer_get_time();
-        while (((uint32_t)esp_timer_get_time() - t0) < 50000) {
-            uint32_t sts = SDMMC.rintsts.val;
-            if (sts & (INT_CMD_DONE | CMD_ERR_FLAGS)) break;
-        }
-        LOG_INFOF("===SELF-TEST=== CMD0 attempt %d: rintsts=0x%08X", retry + 1, SDMMC.rintsts.val);
-        delay(20);
-    }
-
-    // Give card time to reset (SD spec: Ncs = 8 clocks minimum, but some cards are slow)
-    delay(50);
-
-    // CMD8 — SEND_IF_COND: check voltage, echo pattern 0x1AA
-    // flags: response_expect(6), check_crc(8)
-    uint32_t cmd8Resp = 0;
-    bool cmd8ok = sendCmd(8, 0x000001AA, (1u << 6) | (1u << 8), &cmd8Resp, 100000);
-    LOG_INFOF("===SELF-TEST=== CMD8: %s (resp=0x%08X, rintsts=0x%08X)",
-              cmd8ok ? "OK" : "FAIL", cmd8Resp, SDMMC.rintsts.val);
-
-    // Even if CMD8 fails (SD v1.x card), we can still try ACMD41 without HCS
-    // ACMD41 loop — SD_SEND_OP_COND (up to 2 seconds)
-    // Must prefix each ACMD41 with CMD55 (APP_CMD)
-    bool cardReady = false;
-    uint32_t ocr = 0;
-    for (int i = 0; i < 100; i++) {
-        // CMD55 — APP_CMD: response_expect(6), check_crc(8), arg=0 (broadcast RCA)
-        uint32_t cmd55Resp = 0;
-        bool cmd55ok = sendCmd(55, 0, (1u << 6) | (1u << 8), &cmd55Resp, 100000);
-        if (i == 0) {
-            LOG_INFOF("===SELF-TEST=== CMD55: %s (resp=0x%08X)", cmd55ok ? "OK" : "FAIL", cmd55Resp);
-        }
-
-        // ACMD41: response_expect(6), NO check_crc (R3 response has no CRC!)
-        // arg: voltage window 3.2-3.4V (bits 20-21) + HCS if CMD8 succeeded
-        uint32_t acmd41Arg = (1u << 20) | (1u << 21);  // 3.2-3.4V
-        if (cmd8ok) acmd41Arg |= (1u << 30);  // HCS (host supports SDHC)
-        bool ok = sendCmd(41, acmd41Arg, (1u << 6), &ocr, 100000);
-        if (i == 0) {
-            LOG_INFOF("===SELF-TEST=== ACMD41 first try: %s (OCR=0x%08X)", ok ? "OK" : "FAIL", ocr);
-        }
-
-        if (ok && (ocr & (1u << 31))) {
-            cardReady = true;
-            LOG_INFOF("===SELF-TEST=== ACMD41 ready after %d iterations", i + 1);
-            break;
-        }
-        delay(20);
-    }
-
-    if (!cardReady) {
-        LOG_ERRORF("===SELF-TEST=== ACMD41 failed — card not ready (last OCR=0x%08X)", ocr);
+    esp_err_t err = sdmmc_card_init(&host, &card);
+    if (err != ESP_OK) {
+        LOG_ERRORF("===SELF-TEST=== sdmmc_card_init failed: 0x%x (%s)", err, esp_err_to_name(err));
         LOG_INFO("===SELF-TEST=== ABORTED (card init failed) ===\n");
         return;  // Caller handles cleanup
     }
-    LOG_INFOF("===SELF-TEST=== ACMD41 OK: OCR=0x%08X (SDHC=%s)", ocr, (ocr & (1u << 30)) ? "yes" : "no");
 
-    // CMD2 — ALL_SEND_CID: response_expect(6), response_long(7), no CRC check
-    uint32_t cidResp = 0;
-    bool cmd2ok = sendCmd(2, 0, (1u << 6) | (1u << 7), &cidResp, 50000);
-    LOG_INFOF("===SELF-TEST=== CMD2 (CID): %s", cmd2ok ? "OK" : "FAIL");
+    uint16_t selfRCA = card.rca;
+    LOG_INFOF("===SELF-TEST=== Card init OK: RCA=0x%04X, type=%s, %luMB",
+              selfRCA,
+              (card.ocr & (1 << 30)) ? "SDHC" : "SDSC",
+              (unsigned long)(((uint64_t)card.csd.capacity) * card.csd.sector_size / (1024 * 1024)));
 
-    // CMD3 — SEND_RELATIVE_ADDR: card publishes its RCA
-    // flags: response_expect(6), check_crc(8)
-    uint32_t cmd3Resp = 0;
-    bool cmd3ok = sendCmd(3, 0, (1u << 6) | (1u << 8), &cmd3Resp, 50000);
-    uint16_t selfRCA = (uint16_t)(cmd3Resp >> 16);
-    LOG_INFOF("===SELF-TEST=== CMD3: %s — RCA=0x%04X (raw resp=0x%08X)",
-              cmd3ok ? "OK" : "FAIL", selfRCA, cmd3Resp);
-
-    if (!cmd3ok || selfRCA == 0) {
-        LOG_ERROR("===SELF-TEST=== Card init failed — no RCA assigned");
-        LOG_INFO("===SELF-TEST=== ABORTED ===\n");
-        return;  // Caller handles cleanup
-    }
-
-    // ── Step 2: Verify CMD13 works on our self-assigned RCA ──
+    // ── Step 2: Verify our bare-metal CMD13 works on the ESP-IDF-assigned RCA ──
     uint32_t status = 0;
     bool cmd13ok = sendCmd13(selfRCA, &status);
     uint8_t state = (status >> 9) & 0x0F;
-    LOG_INFOF("===SELF-TEST=== Direct CMD13 to 0x%04X: %s — state=%d(%s) status=0x%08X",
+    LOG_INFOF("===SELF-TEST=== Bare-metal CMD13 to 0x%04X: %s — state=%d(%s) status=0x%08X",
               selfRCA, cmd13ok ? "OK" : "FAIL", state, SD_STATE_NAME(state), status);
 
     // ── Step 3: Run sweep — it MUST find our RCA (positive control) ──
