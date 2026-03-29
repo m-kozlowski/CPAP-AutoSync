@@ -1004,6 +1004,93 @@ void BusWidthDetector::stealthTest() {
         }
     }
 
+    // ════════════════════════════════════════════════════════════════════════
+    // Phase 3: ISOLATION — what exactly kills the card?
+    // After Phase 2, card has RCA controlRCA and CMD13 works. Now test:
+    //   3a: MUX round-trip WITHOUT deiniting SDMMC (MUX switch alone)
+    //   3b: Full deinit + initHardware(stealth) (SDMMC reinit without CMD0)
+    //   3c: Full deinit + initHardware(normal)  (SDMMC reinit WITH CMD0)
+    // ════════════════════════════════════════════════════════════════════════
+    bool phase3a = false, phase3b = false, phase3c = false;
+
+    if (controlPass) {
+        LOG_INFO("===STEALTH=== Phase 3: ISOLATION — what kills the card?");
+
+        // ── 3a: MUX round-trip, SDMMC stays running ──
+        LOG_INFO("===STEALTH=== 3a: MUX round-trip (SDMMC stays running)...");
+        SDMMC.intmask.val = 0;  // Keep ISR masked
+
+        // Release MUX — SDMMC peripheral still drives its pins,
+        // but MUX disconnects them from the card
+        digitalWrite(SD_SWITCH_PIN, SD_SWITCH_CPAP_VALUE);
+        LOG_INFO("===STEALTH===   MUX → CPAP (2s)...");
+        delay(2000);
+
+        // Grab MUX back — card reconnected to our SDMMC pins
+        digitalWrite(SD_SWITCH_PIN, SD_SWITCH_ESP_VALUE);
+        delay(200);
+
+        {
+            uint32_t st = 0;
+            bool ok = sendCmd13(controlRCA, &st);
+            uint8_t s = (st >> 9) & 0x0F;
+            phase3a = ok;
+            if (ok) {
+                LOG_INFOF("===STEALTH=== 3a PASS: CMD13(0x%04X) → state=%d(%s) resp=0x%08X",
+                          controlRCA, s, SD_STATE_NAME(s), st);
+            } else {
+                LOG_WARNF("===STEALTH=== 3a FAIL: CMD13(0x%04X) → resp=0x%08X rintsts=0x%08X",
+                          controlRCA, st, SDMMC.rintsts.val);
+            }
+        }
+
+        // ── 3b: Full deinit + reinit(stealth) ──
+        LOG_INFO("===STEALTH=== 3b: deinit + initHardware(stealth)...");
+        SDMMC.intmask.val = savedIntMask;  // Restore for deinit
+        deinitHardware();
+        delay(50);
+
+        if (!initHardware(/*stealth=*/true)) {
+            LOG_ERROR("===STEALTH=== 3b: initHardware(stealth) failed");
+        } else {
+            SDMMC.intmask.val = 0;
+            uint32_t st = 0;
+            bool ok = sendCmd13(controlRCA, &st);
+            uint8_t s = (st >> 9) & 0x0F;
+            phase3b = ok;
+            if (ok) {
+                LOG_INFOF("===STEALTH=== 3b PASS: CMD13(0x%04X) → state=%d(%s) resp=0x%08X",
+                          controlRCA, s, SD_STATE_NAME(s), st);
+            } else {
+                LOG_WARNF("===STEALTH=== 3b FAIL: CMD13(0x%04X) → resp=0x%08X rintsts=0x%08X",
+                          controlRCA, st, SDMMC.rintsts.val);
+            }
+        }
+
+        // ── 3c: Full deinit + reinit(normal — with init clocks/CMD0) ──
+        LOG_INFO("===STEALTH=== 3c: deinit + initHardware(normal — init clocks)...");
+        SDMMC.intmask.val = savedIntMask;
+        deinitHardware();
+        delay(50);
+
+        if (!initHardware(/*stealth=*/false)) {
+            LOG_ERROR("===STEALTH=== 3c: initHardware(normal) failed");
+        } else {
+            SDMMC.intmask.val = 0;
+            uint32_t st = 0;
+            bool ok = sendCmd13(controlRCA, &st);
+            uint8_t s = (st >> 9) & 0x0F;
+            phase3c = ok;
+            if (ok) {
+                LOG_INFOF("===STEALTH=== 3c PASS: CMD13(0x%04X) → state=%d(%s) resp=0x%08X",
+                          controlRCA, s, SD_STATE_NAME(s), st);
+            } else {
+                LOG_WARNF("===STEALTH=== 3c FAIL: CMD13(0x%04X) → resp=0x%08X rintsts=0x%08X",
+                          controlRCA, st, SDMMC.rintsts.val);
+            }
+        }
+    }
+
     // Restore INTMASK
     SDMMC.intmask.val = savedIntMask;
 
@@ -1011,33 +1098,33 @@ void BusWidthDetector::stealthTest() {
     // Summary
     // ════════════════════════════════════════════════════════════════════════
     LOG_INFO("===STEALTH=== ════════════════════════════════════════════");
-    if (stealthRCAFound) {
-        LOG_INFOF("===STEALTH===  Phase 1 (Stealth RCA):    PASS  0x%04X", foundRCA);
-    } else {
-        LOG_INFO("===STEALTH===  Phase 1 (Stealth RCA):    FAIL");
-    }
-    if (readOK) {
-        LOG_INFOF("===STEALTH===  Phase 1b (Stealth read):  PASS  %d-bit", detectedBits);
-    } else if (stealthRCAFound) {
-        LOG_INFO("===STEALTH===  Phase 1b (Stealth read):  FAIL");
-    } else {
-        LOG_INFO("===STEALTH===  Phase 1b (Stealth read):  SKIP  (no RCA)");
-    }
-    LOG_INFOF("===STEALTH===  Phase 2 (Positive ctrl):  %s", controlPass ? "PASS" : "FAIL");
+    LOG_INFOF("===STEALTH===  Phase 1  (Stealth RCA):     %s", stealthRCAFound ? "PASS" : "FAIL");
+    LOG_INFOF("===STEALTH===  Phase 1b (Stealth read):    %s",
+              readOK ? "PASS" : (stealthRCAFound ? "FAIL" : "SKIP"));
+    LOG_INFOF("===STEALTH===  Phase 2  (Positive ctrl):   %s", controlPass ? "PASS" : "FAIL");
+    LOG_INFOF("===STEALTH===  Phase 3a (MUX only):        %s", controlPass ? (phase3a ? "PASS" : "FAIL") : "SKIP");
+    LOG_INFOF("===STEALTH===  Phase 3b (reinit stealth):  %s", controlPass ? (phase3b ? "PASS" : "FAIL") : "SKIP");
+    LOG_INFOF("===STEALTH===  Phase 3c (reinit normal):   %s", controlPass ? (phase3c ? "PASS" : "FAIL") : "SKIP");
     LOG_INFO("===STEALTH=== ════════════════════════════════════════════");
 
     if (stealthRCAFound && readOK) {
         LOG_INFO("===STEALTH=== CONCLUSION: STEALTH MODE IS VIABLE!");
-        LOG_INFO("===STEALTH===   Zero-CMD0 grab → find RCA → read card → release");
-        LOG_INFO("===STEALTH===   CPAP never sees CMD0, card state fully preserved.");
-    } else if (stealthRCAFound && !readOK) {
-        LOG_INFO("===STEALTH=== CONCLUSION: RCA found but read failed — bus width issue?");
-    } else if (!stealthRCAFound && controlPass) {
-        LOG_INFO("===STEALTH=== CONCLUSION: ISR masking works but stealth RCA not found.");
-        LOG_INFO("===STEALTH===   Card may be in Idle state (CPAP left it uninitialized?).");
-        LOG_INFO("===STEALTH===   Or 80 init clocks in initHardware() disturbed the card.");
-    } else {
-        LOG_INFO("===STEALTH=== CONCLUSION: Both phases failed — hardware issue?");
+    } else if (controlPass) {
+        if (phase3a) {
+            LOG_INFO("===STEALTH=== FINDING: MUX round-trip preserves card — issue is CPAP's card state");
+        } else {
+            LOG_INFO("===STEALTH=== FINDING: MUX round-trip KILLS card — stealth not possible with MUX");
+        }
+        if (phase3b && !phase3a) {
+            LOG_INFO("===STEALTH=== FINDING: SDMMC reinit(stealth) preserves card — issue is MUX alone");
+        } else if (!phase3b && phase3a) {
+            LOG_INFO("===STEALTH=== FINDING: SDMMC reinit kills card — need to keep peripheral running");
+        }
+        if (phase3c) {
+            LOG_INFO("===STEALTH=== FINDING: Init clocks (CMD0) do NOT kill — card survives CMD0?!");
+        } else if (phase3b && !phase3c) {
+            LOG_INFO("===STEALTH=== FINDING: Init clocks (CMD0) kill card — stealth init required");
+        }
     }
 
     LOG_INFO("===STEALTH=== DONE ===\n");
