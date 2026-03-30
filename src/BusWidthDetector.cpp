@@ -896,6 +896,12 @@ void BusWidthDetector::stealthTest() {
     if (stealthRCAFound) {
         LOG_INFO("===STEALTH=== Phase 1b: Stealth sector read (CMD7 + CMD17)...");
 
+        // Disable internal DMA — sdmmc_host_init() enables IDMAC by default,
+        // which drains the FIFO before our polling loop can read it.
+        SDMMC.ctrl.use_internal_dma = 0;
+        SDMMC.bmod.enable = 0;
+        LOG_INFO("===STEALTH=== DMA disabled for FIFO-based reads");
+
         uint8_t cardState = (foundStatus >> 9) & 0x0F;
 
         if (cardState == 3) {
@@ -916,6 +922,22 @@ void BusWidthDetector::stealthTest() {
             LOG_WARNF("===STEALTH=== Card in state %d(%s) — trying read anyway",
                       cardState, SD_STATE_NAME(cardState));
         }
+
+        // Force card to 1-bit mode via CMD55+ACMD6(0).
+        // The previous boot's normal SD stack may have configured 4-bit mode,
+        // causing DCRC when we try to read in 1-bit. ACMD6(0) = set bus width 1-bit.
+        {
+            uint32_t resp55 = 0, resp6 = 0;
+            uint32_t acmdFlags = (1u << 6) | (1u << 8) | (1u << 13) | (1u << 29);  // resp_expect, crc, wait, hold
+            bool ok55 = sendCmd(55, (uint32_t)foundRCA << 16, acmdFlags, &resp55, 50000);
+            bool ok6  = sendCmd(6, 0, acmdFlags, &resp6, 50000);  // arg=0 → 1-bit
+            LOG_INFOF("===STEALTH=== ACMD6(0): CMD55 %s (0x%08X), ACMD6 %s (0x%08X) → forced 1-bit",
+                      ok55 ? "OK" : "FAIL", resp55, ok6 ? "OK" : "FAIL", resp6);
+        }
+
+        // Ensure host is also at 1-bit baseline
+        setHostBusWidth(1);
+        setHostClock(400);
 
         memset(sectorBuf, 0, sizeof(sectorBuf));
 
@@ -1124,22 +1146,24 @@ void BusWidthDetector::stealthTest() {
     LOG_INFO("===STEALTH=== ════════════════════════════════════════════");
 
     if (stealthRCAFound && readOK) {
-        LOG_INFO("===STEALTH=== CONCLUSION: STEALTH MODE IS VIABLE!");
-    } else if (controlPass) {
+        LOG_INFO("===STEALTH=== CONCLUSION: STEALTH MODE IS VIABLE — full read succeeded!");
+    } else if (stealthRCAFound && !readOK) {
+        LOG_INFO("===STEALTH=== CONCLUSION: RCA found but read failed — DMA/bus-width issue");
+    } else if (!stealthRCAFound && controlPass) {
+        LOG_INFO("===STEALTH=== CONCLUSION: Stealth NOT viable — card has no RCA when we grab MUX");
+        LOG_INFO("===STEALTH===   CPAP either never initialized card, or sent CMD0 before going idle.");
+        LOG_INFO("===STEALTH===   This is consistent across AS10 (both users) and AS11 (cold boot).");
+    }
+
+    if (controlPass) {
         if (phase3a) {
-            LOG_INFO("===STEALTH=== FINDING: MUX round-trip preserves card — issue is CPAP's card state");
-        } else {
-            LOG_INFO("===STEALTH=== FINDING: MUX round-trip KILLS card — stealth not possible with MUX");
+            LOG_INFO("===STEALTH=== FINDING: MUX round-trip preserves card — MUX is safe");
         }
-        if (phase3b && !phase3a) {
-            LOG_INFO("===STEALTH=== FINDING: SDMMC reinit(stealth) preserves card — issue is MUX alone");
-        } else if (!phase3b && phase3a) {
-            LOG_INFO("===STEALTH=== FINDING: SDMMC reinit kills card — need to keep peripheral running");
+        if (phase3b) {
+            LOG_INFO("===STEALTH=== FINDING: Stealth init preserves card — no CMD0 is safe");
         }
-        if (phase3c) {
-            LOG_INFO("===STEALTH=== FINDING: Init clocks (CMD0) do NOT kill — card survives CMD0?!");
-        } else if (phase3b && !phase3c) {
-            LOG_INFO("===STEALTH=== FINDING: Init clocks (CMD0) kill card — stealth init required");
+        if (!phase3c && phase3b) {
+            LOG_INFO("===STEALTH=== FINDING: Init clocks (CMD0) kill card — CONFIRMED");
         }
     }
 
