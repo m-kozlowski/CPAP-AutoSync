@@ -580,7 +580,7 @@ static uint32_t readLE16(const uint8_t* p) { return p[0] | (p[1] << 8); }
 static uint32_t readLE32(const uint8_t* p) { return p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24); }
 
 bool BusWidthDetector::readConfigTxt(int busWidth, uint16_t rca, uint8_t* sec, String& outSSID) {
-    LOG_INFO("[BWD] Phase 3: Stealth config.txt read...");
+    LOG_INFO("[BWD] Stealth FAT32: reading config.txt...");
 
     // Ensure card is selected and in Transfer state
     uint32_t st = 0;
@@ -1022,9 +1022,25 @@ void BusWidthDetector::stealthTest() {
             sendCmd7(0);
         }
 
-        // Reset to 1-bit 400kHz for Phase 2
+        // Reset to 1-bit 400kHz
         setHostBusWidth(1);
         setHostClock(400);
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Phase 1c: Read config.txt via minimal FAT32 reader (only if read works)
+    // ════════════════════════════════════════════════════════════════════════
+    String stealthSSID;
+    bool configOK = false;
+
+    if (readOK) {
+        LOG_INFO("===STEALTH=== Phase 1c: Reading config.txt via stealth FAT32 reader...");
+        configOK = readConfigTxt(detectedBits, foundRCA, sectorBuf, stealthSSID);
+        if (configOK) {
+            LOG_INFOF("===STEALTH=== Phase 1c PASS: WIFI_SSID = '%s'", stealthSSID.c_str());
+        } else {
+            LOG_WARN("===STEALTH=== Phase 1c FAIL: Could not read config.txt or extract WIFI_SSID");
+        }
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -1177,20 +1193,22 @@ void BusWidthDetector::stealthTest() {
     LOG_INFOF("===STEALTH===  Phase 1  (Stealth RCA):     %s", stealthRCAFound ? "PASS" : "FAIL");
     LOG_INFOF("===STEALTH===  Phase 1b (Stealth read):    %s",
               readOK ? "PASS" : (stealthRCAFound ? "FAIL" : "SKIP"));
+    LOG_INFOF("===STEALTH===  Phase 1c (config.txt):      %s",
+              configOK ? "PASS" : (readOK ? "FAIL" : "SKIP"));
     LOG_INFOF("===STEALTH===  Phase 2  (Positive ctrl):   %s", controlPass ? "PASS" : "FAIL");
     LOG_INFOF("===STEALTH===  Phase 3a (MUX only):        %s", controlPass ? (phase3a ? "PASS" : "FAIL") : "SKIP");
     LOG_INFOF("===STEALTH===  Phase 3b (reinit stealth):  %s", controlPass ? (phase3b ? "PASS" : "FAIL") : "SKIP");
     LOG_INFOF("===STEALTH===  Phase 3c (reinit normal):   %s", controlPass ? (phase3c ? "PASS" : "FAIL") : "SKIP");
     LOG_INFO("===STEALTH=== ════════════════════════════════════════════");
 
-    if (stealthRCAFound && readOK) {
-        LOG_INFO("===STEALTH=== CONCLUSION: STEALTH MODE IS VIABLE — full read succeeded!");
+    if (configOK) {
+        LOG_INFOF("===STEALTH=== CONCLUSION: FULL STEALTH SUCCESS — WIFI_SSID='%s'", stealthSSID.c_str());
+    } else if (stealthRCAFound && readOK) {
+        LOG_INFO("===STEALTH=== CONCLUSION: Sector reads work but config.txt parse failed");
     } else if (stealthRCAFound && !readOK) {
         LOG_INFO("===STEALTH=== CONCLUSION: RCA found but read failed — DMA/bus-width issue");
     } else if (!stealthRCAFound && controlPass) {
         LOG_INFO("===STEALTH=== CONCLUSION: Stealth NOT viable — card has no RCA when we grab MUX");
-        LOG_INFO("===STEALTH===   CPAP either never initialized card, or sent CMD0 before going idle.");
-        LOG_INFO("===STEALTH===   This is consistent across AS10 (both users) and AS11 (cold boot).");
     }
 
     if (controlPass) {
