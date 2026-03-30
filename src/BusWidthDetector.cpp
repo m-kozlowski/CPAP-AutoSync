@@ -800,9 +800,9 @@ void BusWidthDetector::stealthTest() {
     // NO CMD0 has been sent. The card still has the CPAP's RCA.
 
     // ════════════════════════════════════════════════════════════════════════
-    // Phase 1: TRUE STEALTH — find CPAP's RCA without CMD0
+    // Phase 1: TRUE STEALTH — check known RCA without CMD0
     // ════════════════════════════════════════════════════════════════════════
-    LOG_INFO("===STEALTH=== Phase 1: TRUE STEALTH (zero-CMD0 RCA discovery)...");
+    LOG_INFO("===STEALTH=== Phase 1: TRUE STEALTH (zero-CMD0, direct RCA check)...");
     LOG_INFO("===STEALTH=== Card is in CPAP's pristine state — we have NOT sent CMD0");
 
     // ── Mask all SDMMC interrupts so the ISR doesn't consume CMD_DONE ──
@@ -810,80 +810,118 @@ void BusWidthDetector::stealthTest() {
     SDMMC.intmask.val = 0;
     LOG_INFOF("===STEALTH=== INTMASK masked (was 0x%08X, now 0x00000000)", savedIntMask);
 
-    // Quick diagnostic: try a single CMD13 with RCA=1 to confirm the hardware works
-    {
-        SDMMC.rintsts.val = 0xFFFFFFFF;
-        uint32_t diagResp = 0;
-        bool diagOK = sendCmd13(1, &diagResp);
-        uint32_t diagSts = SDMMC.rintsts.val;
-        LOG_INFOF("===STEALTH=== Diagnostic CMD13(0x0001): ok=%d resp=0x%08X rintsts=0x%08X %s",
-                  diagOK, diagResp, diagSts,
-                  (diagSts & INT_RTO) ? "(RTO — normal for wrong RCA)" :
-                  (diagSts & INT_CMD_DONE) ? "(CMD_DONE — card responded!)" : "(other)");
-    }
-
-    // CMD13 sweep — find the CPAP's RCA
+    // ── Step 1: Direct CMD13(0x1388) — known RCA from all previous tests ──
+    const uint16_t KNOWN_RCA = 0x1388;
     uint16_t foundRCA = 0;
     uint32_t foundStatus = 0;
-    uint32_t sweepTimeouts = 0, sweepNoResp = 0, sweepGhosts = 0;
-    unsigned long sweepT0 = millis();
 
-    for (uint32_t rca = 1; rca <= 0xFFFF; rca++) {
-        if ((rca & 0xFFF) == 0 && (millis() - sweepT0 > 30000)) {
-            LOG_WARNF("===STEALTH=== Sweep timeout at RCA %u", (unsigned)rca);
-            break;
-        }
+    {
+        uint32_t r1 = 0, r2 = 0;
+        bool ok1 = sendCmd13(KNOWN_RCA, &r1);
+        uint8_t s1 = (r1 >> 9) & 0x0F;
+        uint32_t sts1 = SDMMC.rintsts.val;
 
-        uint32_t r = 0;
-        bool ok = sendCmd13((uint16_t)rca, &r);
+        LOG_INFOF("===STEALTH=== CMD13(0x%04X): ok=%d resp=0x%08X state=%d(%s) rintsts=0x%08X",
+                  KNOWN_RCA, ok1, r1, s1, SD_STATE_NAME(s1), sts1);
 
-        if (ok) {
-            uint8_t s = (r >> 9) & 0x0F;
-            if (s >= 3 && r != 0) {
-                // Double-tap confirmation
-                uint32_t r2 = 0;
-                bool ok2 = sendCmd13((uint16_t)rca, &r2);
-                uint8_t s2 = (r2 >> 9) & 0x0F;
-                if (ok2 && s2 >= 3 && r2 != 0) {
-                    foundRCA = (uint16_t)rca;
-                    foundStatus = r2;
-                    LOG_INFOF("===STEALTH=== RCA 0x%04X FOUND! sweep pos %u (%lums) state=%d(%s) resp=0x%08X",
-                              foundRCA, (unsigned)rca, millis() - sweepT0, s2, SD_STATE_NAME(s2), r2);
-                    break;
-                } else {
-                    sweepGhosts++;
-                    if (sweepGhosts <= 5) {
-                        LOG_WARNF("===STEALTH=== Ghost #%u: RCA=0x%04X resp=0x%08X/0x%08X state=%d/%d (confirm fail)",
-                                  sweepGhosts, (uint16_t)rca, r, r2, s, s2);
-                    }
-                }
-            } else {
-                sweepGhosts++;
-                if (sweepGhosts <= 5) {
-                    LOG_WARNF("===STEALTH=== Ghost #%u: RCA=0x%04X resp=0x%08X state=%d (<%3 or zero)",
-                              sweepGhosts, (uint16_t)rca, r, s);
-                }
+        if (ok1 && s1 >= 3 && r1 != 0) {
+            // Double-tap confirmation
+            bool ok2 = sendCmd13(KNOWN_RCA, &r2);
+            uint8_t s2 = (r2 >> 9) & 0x0F;
+            LOG_INFOF("===STEALTH=== CMD13 confirm: ok=%d resp=0x%08X state=%d(%s)",
+                      ok2, r2, s2, SD_STATE_NAME(s2));
+            if (ok2 && s2 >= 3 && r2 != 0) {
+                foundRCA = KNOWN_RCA;
+                foundStatus = r2;
             }
-        } else {
-            uint32_t sts = SDMMC.rintsts.val;
-            if (sts & INT_RTO) sweepTimeouts++;
-            else sweepNoResp++;
-        }
-
-        if (rca % 10000 == 0) {
-            LOG_INFOF("===STEALTH=== Sweep progress: %u/65535 (%lums, TO=%u ghosts=%u noResp=%u)",
-                      (unsigned)rca, millis() - sweepT0, sweepTimeouts, sweepGhosts, sweepNoResp);
         }
     }
 
-    unsigned long sweepMs = millis() - sweepT0;
+    // ── Step 2: If known RCA failed, try a quick scan of nearby values ──
+    if (!foundRCA) {
+        LOG_INFO("===STEALTH=== Known RCA failed. Scanning 0x0001-0x0020 and 0x1380-0x1398...");
+        uint16_t scanRanges[][2] = { {0x0001, 0x0020}, {0x1380, 0x1398} };
+        for (auto& range : scanRanges) {
+            for (uint16_t rca = range[0]; rca <= range[1] && !foundRCA; rca++) {
+                uint32_t r = 0;
+                if (sendCmd13(rca, &r)) {
+                    uint8_t s = (r >> 9) & 0x0F;
+                    if (s >= 3 && r != 0) {
+                        uint32_t r2 = 0;
+                        if (sendCmd13(rca, &r2) && ((r2 >> 9) & 0x0F) >= 3 && r2 != 0) {
+                            foundRCA = rca;
+                            foundStatus = r2;
+                            LOG_INFOF("===STEALTH=== RCA 0x%04X found via scan! state=%d resp=0x%08X",
+                                      rca, (r2 >> 9) & 0x0F, r2);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Step 3: Diagnostic — determine card state if no RCA found ──
+    bool cardInIdle = false;
+    bool cardAlive = false;
+
+    if (!foundRCA) {
+        // CMD8 (SEND_IF_COND): only works in Idle state.
+        // arg = 0x1AA (VHS=1 for 2.7-3.6V, check_pattern=0xAA)
+        // If card responds → it's in Idle state (has been CMD0'd)
+        // If RTO → card is NOT in Idle (Transfer/Standby/Inactive, or not responding)
+        uint32_t cmd8Resp = 0;
+        uint32_t cmd8Flags = (1u << 6) | (1u << 8) | (1u << 13) | (1u << 29);
+        bool cmd8OK = sendCmd(8, 0x000001AA, cmd8Flags, &cmd8Resp, 50000);
+        uint32_t cmd8Sts = SDMMC.rintsts.val;
+
+        LOG_INFOF("===STEALTH=== CMD8(SEND_IF_COND): ok=%d resp=0x%08X rintsts=0x%08X",
+                  cmd8OK, cmd8Resp, cmd8Sts);
+
+        if (cmd8OK && (cmd8Resp & 0xFF) == 0xAA) {
+            cardInIdle = true;
+            cardAlive = true;
+            LOG_WARN("===STEALTH=== Card IS in Idle state — it was CMD0'd by something!");
+        } else if (cmd8Sts & INT_RTO) {
+            LOG_INFO("===STEALTH=== CMD8 got RTO — card not in Idle state");
+
+            // Card not in Idle AND not responding to CMD13. Could be:
+            // - Inactive state (CMD15 was sent)
+            // - SPI mode (won't respond to SD commands)
+            // - Not initialized at all (fresh power-up before any CMD0)
+            // Send CMD0 ourselves to force Idle, then CMD8 to check if card is alive
+            LOG_INFO("===STEALTH=== Sending CMD0 to test if card is alive...");
+            {
+                uint32_t cmd0Resp = 0;
+                uint32_t cmd0Flags = (1u << 13) | (1u << 29);  // wait_complete, use_hold
+                sendCmd(0, 0, cmd0Flags, &cmd0Resp, 50000);
+                delay(5);
+
+                uint32_t cmd8Resp2 = 0;
+                bool cmd8OK2 = sendCmd(8, 0x000001AA, cmd8Flags, &cmd8Resp2, 50000);
+                LOG_INFOF("===STEALTH=== After CMD0 → CMD8: ok=%d resp=0x%08X",
+                          cmd8OK2, cmd8Resp2);
+
+                if (cmd8OK2 && (cmd8Resp2 & 0xFF) == 0xAA) {
+                    cardAlive = true;
+                    LOG_INFO("===STEALTH=== Card IS alive (responds after CMD0). Was in non-Idle, non-Transfer state.");
+                } else {
+                    LOG_WARN("===STEALTH=== Card does NOT respond even after CMD0 — hardware issue?");
+                }
+            }
+        }
+    }
+
     bool stealthRCAFound = (foundRCA != 0);
 
-    if (!stealthRCAFound) {
-        LOG_WARNF("===STEALTH=== Phase 1: NO RCA found (%lums, TO=%u, ghosts=%u, noResp=%u)",
-                  sweepMs, sweepTimeouts, sweepGhosts, sweepNoResp);
+    if (stealthRCAFound) {
+        LOG_INFOF("===STEALTH=== Phase 1 PASS: RCA=0x%04X state=%d(%s)",
+                  foundRCA, (foundStatus >> 9) & 0x0F, SD_STATE_NAME((foundStatus >> 9) & 0x0F));
+    } else if (cardInIdle) {
+        LOG_WARN("===STEALTH=== Phase 1 FAIL: Card in Idle — something sent CMD0!");
+    } else if (cardAlive) {
+        LOG_WARN("===STEALTH=== Phase 1 FAIL: Card alive but was in unknown state (not Idle, not Transfer)");
     } else {
-        LOG_INFOF("===STEALTH=== Phase 1 PASS: RCA=0x%04X found in %lums", foundRCA, sweepMs);
+        LOG_WARN("===STEALTH=== Phase 1 FAIL: Card not responding to any command");
     }
 
     // ════════════════════════════════════════════════════════════════════════
