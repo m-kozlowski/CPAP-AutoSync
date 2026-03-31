@@ -172,6 +172,19 @@ See the [Full Setup Guide](release/README.md#️-sd-card-errors--use-scheduled-m
 
 ---
 
+## CPAP Compatibility
+
+| Feature | AirSense 10 (AS10) | AirSense 11 (AS11) |
+|---------|--------------------|--------------------|
+| Upload mode: Smart | ❌ Not supported* | ✅ Supported |
+| Upload mode: Scheduled | ✅ Supported | ✅ Supported |
+| Stealth config read | ✅ Works | ✅ Works |
+| SD bus mode | 1-bit (no DAT3) | 4-bit (DAT3 active) |
+
+*AS10 uses 1-bit SD communication. The ESP32 cannot detect CPAP SD bus activity on DAT3, which Smart mode requires for automatic upload triggering. If `UPLOAD_MODE=smart` is set, the firmware automatically falls back to scheduled mode on AS10 units.
+
+---
+
 ## What You Get
 
 - **Automatic uploads after every therapy session** — smart mode detects when your CPAP finishes and starts uploading within minutes

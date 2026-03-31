@@ -3,8 +3,6 @@
 #include "pins_config.h"
 #include <SD_MMC.h>
 #include <driver/gpio.h>
-#include <driver/sdmmc_host.h>
-#include <sdmmc_cmd.h>
 
 // Global config reference for SD mode selection
 #include "Config.h"
@@ -94,28 +92,6 @@ void SDCardManager::releaseControl() {
 
     unsigned long holdDurationMs = millis() - controlAcquiredAt;
     LOGF("Releasing SD card. Total mount duration: %lu ms", holdDurationMs);
-
-    // ── AS10 FIX: Send CMD0 (GO_IDLE_STATE) before unmounting ──
-    // The SDMMC peripheral is still initialized at this point.
-    // CMD0 resets the SD card's internal state machine back to "Idle" so that
-    // when the MUX hands the card back to the CPAP, it sees a freshly-reset
-    // card (no stale RCA, no leftover Transfer/Standby state).
-    // Without this, AirSense 10 (STM32-based) hits a 300ms DMA timeout on
-    // the first write because the card ignores commands with the wrong RCA,
-    // triggering its error handler → full SDIO power-cycle.
-    // Disabled by default for AS11 compatibility. Enable via SD_CMD0_ON_RELEASE=true.
-    if (config.getSdCmd0OnRelease()) {
-        sdmmc_command_t cmd = {};
-        cmd.opcode = 0;  // CMD0 (GO_IDLE_STATE)
-        cmd.arg = 0;
-        cmd.flags = SCF_CMD_BC;          // Broadcast, no response expected
-        esp_err_t err = sdmmc_host_do_transaction(1, &cmd);  // Slot 1
-        if (err == ESP_OK) {
-            LOG("[SD] CMD0 (GO_IDLE) sent before release");
-        } else {
-            LOGF("[SD] CMD0 failed (0x%x) — card may not be in idle state", err);
-        }
-    }
 
     SD_MMC.end();
     initialized = false;

@@ -1,9 +1,9 @@
 # 64 — Stealth Mode Experiment: Results
 
-**Status**: PROVEN VIABLE on AS11 — AS10 testing pending  
-**Builds**: dev+20 through dev+26  
+**Status**: PROVEN VIABLE on both AS10 and AS11  
+**Builds**: dev+20 through dev+27  
 **Devices tested**: 3 (1× AS11, 2× AS10 from different users)  
-**Total test boots**: 10
+**Total test boots**: 14
 
 ## Background
 
@@ -27,7 +27,7 @@ Phase 1 runs FIRST (before any CMD0) to preserve the CPAP's card state.
 
 ## Results Summary
 
-### Phase 3 Isolation (100% consistent across all 10 boots)
+### Phase 3 Isolation (100% consistent across all 14 boots)
 
 | Test | Result | Meaning |
 |------|--------|---------|
@@ -48,16 +48,20 @@ Phase 1 runs FIRST (before any CMD0) to preserve the CPAP's card state.
 
 The brute-force RCA sweep (CMD13 for all 65535 RCAs) failed on cold boot and was unreliable on soft-reset. **dev+26 proved the sweep itself was the problem** — rapid-fire CMD13s to wrong RCAs disrupted the card. The direct CMD13(0x1388) approach works instantly on both cold boot and soft-reset.
 
-### AS10 Results (dev+24 — brute-force sweep, needs re-test with dev+26)
+### AS10 Stealth Results (dev+27 — direct RCA approach)
 
-| Device | Boot type | Phase 1 | Notes |
-|--------|-----------|---------|-------|
-| AS10 User 1 | Cold boot | ❌ FAIL | PCNT=0, needs re-test with direct RCA |
-| AS10 User 1 | Soft-reset | ❌ FAIL | Needs re-test with direct RCA |
-| AS10 User 2 | Cold boot | ❌ FAIL | Same — sweep may have been the issue |
-| AS10 User 2 | Soft-reset | ❌ FAIL | Same |
+| Device | Boot type | Phase 1 | Phase 1b | Phase 1c | Card state | Notes |
+|--------|-----------|---------|----------|----------|------------|-------|
+| AS10 User 1 | Cold boot (#1318) | ✅ PASS | ✅ READ OK | ✅ SSID='T4C' | Stby (state 3) | PCNT=0, RCA 0x1388, instant |
+| AS10 User 1 | Soft-reset (#1319) | ✅ PASS | ✅ READ OK | ✅ SSID='T4C' | Tran (state 4) | Instant response |
 
-**AS10 re-testing with dev+26 (direct RCA) is pending.**
+**Full end-to-end stealth proven on AS10**: grab MUX → stealth init → CMD13(0x1388) → CMD7 select → ACMD6(1-bit) → FAT32 read → config.txt parsed → WIFI_SSID extracted. No CMD0 sent. Card state fully preserved.
+
+Key AS10 difference: cold boot card starts in **Standby** (state 3) vs AS11's **Transfer** (state 4). The stealth reader handles both — CMD7 selects the card if needed.
+
+### Earlier AS10 Results (dev+24 — brute-force sweep, NOW SUPERSEDED)
+
+All 4 AS10 boots failed with the brute-force sweep. dev+27 confirmed the sweep was the problem — direct RCA works perfectly.
 
 ## Key Technical Findings
 
@@ -102,7 +106,15 @@ CMD8 (SEND_IF_COND) only works in Idle state. When Phase 1 fails:
 
 Total time: <500ms. No CMD0 sent. Card state preserved.
 
-## Files Modified
+## Next Steps
+
+See **doc 65** (`65-PREPARE-TO-IMPLEMENT.md`) for the full implementation plan:
+- Extract stealth reader into production `StealthConfigReader` module
+- Use it as the primary config.txt reader on every boot (both AS10 and AS11)
+- Remove cached-config workaround, AS10 flag, CMD0-on-release toggle
+- Add PCNT capability detection to NVS → gate smart mode on AS10
+
+## Files Modified (Experimental)
 
 - `src/BusWidthDetector.cpp` — `stealthTest()`, `initHardware(bool stealth)`, `readConfigTxt()`
 - `src/BusWidthDetector.h` — `initHardware(bool stealth = false)` declaration

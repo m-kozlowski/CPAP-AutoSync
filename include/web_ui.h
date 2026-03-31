@@ -273,6 +273,9 @@ Editing and saving config requires <strong>reading from and writing to the CPAP&
 
 <!-- CONFIG -->
 <div id=cfg class=page>
+<div id=cfg-pcnt-banner style="display:none;background:#1a2a3a;border:1px solid #2a5070;border-radius:6px;padding:10px 14px;margin-bottom:10px;font-size:.84em;color:#8faab8;line-height:1.5">
+&#9432; <strong style="color:#66c0f4">Smart mode unavailable:</strong> This CPAP uses 1-bit SD communication (no DAT3 activity). If <code>UPLOAD_MODE=smart</code> is set, it will be automatically overridden to <code>scheduled</code> mode at boot.
+</div>
 <div id=cfg-lock-banner style="display:none;background:#2a2a00;border:1px solid #aa9900;border-radius:6px;padding:10px 14px;margin-bottom:10px;font-size:.85em;color:#ddcc88">
 &#128274; <strong>Upload running</strong> &mdash; Config editor is active. Press <em>Cancel</em> to close without saving, or <em>Save &amp; Reboot</em> to apply changes. After reboot, <strong>always</strong> physically eject and reinsert the CPAP&rsquo;s SD card before powering it on.
 </div>
@@ -524,7 +527,11 @@ function renderStatus(d){
   seti('d-st',badgeHtml(currentFsmState||'?'));
   var ins=d.in_state_sec||0;set('d-ins',ins<60?ins+'s':Math.floor(ins/60)+'m '+ins%60+'s');
   var mode=(cfg.upload_mode||'—').toUpperCase();
-  set('d-mode',mode);
+  var pcntOk=d.pcnt_capable!==false;
+  cfg._pcntCapable=pcntOk;
+  if(!pcntOk&&mode==='SCHEDULED'){
+    seti('d-mode',mode+' <span title="Smart mode requires 4-bit SD bus activity (not available on this CPAP). Using scheduled mode instead." style="cursor:help;color:#ffaa44;font-size:.85em">\u24d8</span>');
+  }else{set('d-mode',mode);}
   set('d-tsync',d.time_synced?'Yes':'No');
   var sh=cfg.upload_start_hour,eh=cfg.upload_end_hour;
   var ws=(sh!=null&&eh!=null)?sh+':00 - '+eh+':00':'—';
@@ -627,6 +634,8 @@ function renderStatus(d){
   set('hd-c0',c0+'%');set('hd-c1',c1+'%');
   cpuHistory.push({c0:c0,c1:c1,ts:now});while(cpuHistory.length&&cpuHistory[0].ts<cutoff)cpuHistory.shift();
   if(curTab==='mem'){updateHeapChart();updateCpuChart();}
+  var pb=document.getElementById('cfg-pcnt-banner');
+  if(pb)pb.style.display=pcntOk?'none':'block';
   var bb=document.getElementById('brownout-banner');
   if(bb)bb.style.display=(cfg.brownout_detect_mode==='OFF')?'block':'none';
   _mtSyncServerTabs(d.recent_tabs);

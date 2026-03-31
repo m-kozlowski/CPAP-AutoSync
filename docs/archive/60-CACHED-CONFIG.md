@@ -1,5 +1,7 @@
 # AirSense 10 Therapy-Safe Boot (Cached Config)
 
+> **⚠️ SUPERSEDED** — This approach has been replaced by the universal stealth config read (see doc 65). The cached config workaround, `AS10=true` flag, consecutive-POR tracking, and `SD_CMD0_ON_RELEASE` toggle have all been removed from the codebase. The stealth reader reads `config.txt` without sending CMD0, eliminating the reboot loop on both AS10 and AS11 without any machine-specific flags.
+
 ## The Problem: The "Deadly Embrace" Reboot Loop
 When the ESP32 takes control of the SD card via the MUX, it interrupts the AirSense 10's (AS10) active session. Because the physical SD-WIFI-PRO board remains in the slot, the CPAP's mechanical Card Detect (CD) switch is never released. The CPAP firmware believes the card is still present and attempts to resume I/O operations using its established state (specifically, the Relative Card Address or RCA).
 

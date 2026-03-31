@@ -31,6 +31,9 @@ extern volatile bool uploadTaskRunning;
 extern volatile uint32_t g_idleCount0, g_idleCount1;
 extern uint32_t g_cpuLoad0, g_cpuLoad1;
 
+// PCNT capability flag (defined in main.cpp, set during boot)
+extern bool g_pcntCapable;
+
 namespace {
 static constexpr unsigned long kUploadUiMinIntervalMs = 400;
 static constexpr unsigned long kUploadNotFoundMinIntervalMs = 250;
@@ -841,6 +844,7 @@ void CpapWebServer::updateStatusSnapshot() {
         ",\"in_window\":%s"
         ",\"live_active\":%s,\"live_folder\":\"%s\",\"live_up\":%d,\"live_total\":%d"
         ",\"cpu0\":%u,\"cpu1\":%u"
+        ",\"pcnt_capable\":%s"
         ",\"recent_tabs\":\"%s\""
         ",\"firmware\":\"%s\"}",
         st, inStateSec, upSec,
@@ -855,6 +859,7 @@ void CpapWebServer::updateStatusSnapshot() {
         inWindow ? "true" : "false",
         liveActive ? "true" : "false", liveFolder, liveUp, liveTotal,
         (unsigned)g_cpuLoad0, (unsigned)g_cpuLoad1,
+        g_pcntCapable ? "true" : "false",
         recentTabs,
         FIRMWARE_VERSION);
     if (n > 0 && n < (int)sizeof(buf)) {

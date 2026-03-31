@@ -46,7 +46,7 @@ Only required when `ENDPOINT_TYPE` includes `CLOUD`.
 
 | Key | Default | Description |
 |---|---|---|
-| `UPLOAD_MODE` | `smart` | Upload strategy. `smart` = continuous monitoring, upload whenever CPAP is idle. `scheduled` = only upload within the configured time window. |
+| `UPLOAD_MODE` | `smart` | Upload strategy. `smart` = continuous monitoring, upload whenever CPAP is idle. `scheduled` = only upload within the configured time window. **Note:** Smart mode requires 4-bit SD bus activity (DAT3). On AirSense 10 CPAPs (which use 1-bit SD), the firmware automatically detects this at boot and overrides `smart` to `scheduled`. The web dashboard shows an indicator when this override is active. |
 | `UPLOAD_START_HOUR` | `9` | Start of upload window (0–23, local time). Ignored in smart mode for fresh data. |
 | `UPLOAD_END_HOUR` | `21` | End of upload window (0–23, local time). Set equal to `UPLOAD_START_HOUR` for a 24/7 always-open window. |
 | `GMT_OFFSET_HOURS` | `0` | Timezone offset from UTC in whole hours (e.g. `11` for AEDT, `-5` for EST). Used for NTP time and upload window calculation. |

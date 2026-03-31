@@ -22,7 +22,8 @@
 #include "Logger.h"
 #include "pins_config.h"
 #include "version.h"
-#include "BusWidthDetector.h"
+#include "EarlyPCNT.h"
+#include "StealthConfigReader.h"
 
 #include "TrafficMonitor.h"
 #include "UploadFSM.h"
@@ -90,6 +91,11 @@ bool g_nothingToUpload = false;  // Set when pre-flight finds no work — skip r
 // CPAP hasn't produced any new data — a significant power savings.
 bool g_noWorkSuppressed = false;
 
+// ── PCNT capability: true if CPAP uses 4-bit SD (DAT3 pulses detected) ──
+// Persisted to NVS on power-on boot; read from NVS on soft/watchdog reboots.
+// When false, "smart" upload mode is not available (forced to "scheduled").
+bool g_pcntCapable = false;
+
 // Monitoring mode flags
 bool monitoringRequested = false;
 bool stopMonitoringRequested = false;
@@ -134,33 +140,6 @@ static void setRebootReason(const char* reason) {
     p.begin("cpap_flags", false);
     p.putString("reboot_why", reason);
     p.end();
-}
-
-// ── AS10: NVS config cache helpers ──
-// Cache raw config.txt content to NVS so rapid power-on reboots (AS10 therapy
-// kill) can load config without touching the SD card MUX.
-static void cacheConfigToNVS(fs::FS& sd) {
-    File f = sd.open("/config.txt", FILE_READ);
-    if (!f) {
-        LOG_WARN("[AS10] Failed to open config.txt for caching");
-        return;
-    }
-    String content = f.readString();
-    f.close();
-
-    Preferences p;
-    p.begin("cfg_cache", false);
-    p.putString("raw", content);
-    p.end();
-    LOGF("[AS10] Config cached to NVS (%d bytes)", content.length());
-}
-
-static String loadCachedConfigFromNVS() {
-    Preferences p;
-    p.begin("cfg_cache", true);  // read-only
-    String content = p.getString("raw", "");
-    p.end();
-    return content;
 }
 
 struct UploadTaskParams {
@@ -422,33 +401,14 @@ void setup() {
         }
     }
 
-    // ── 2B: NVS boot counter + consecutive power-on reset detection ──
-    // Tracks total boots and consecutive power-on resets (ESP_RST_POWERON).
-    // A high consecutive count indicates external power cycling (e.g. CPAP
-    // periodically cutting SD slot VCC during therapy).  Any non-POWERON
-    // reset (software reboot, watchdog, brownout) breaks the chain.
-    uint16_t consecutivePOR = 0;
+    // ── 2B: NVS boot counter ──
     {
         Preferences bootStats;
         bootStats.begin("boot_stats", false);
         uint32_t totalBoots = bootStats.getUInt("total", 0) + 1;
         bootStats.putUInt("total", totalBoots);
-
-        consecutivePOR = bootStats.getUShort("consec_por", 0);
-        if (resetReason == ESP_RST_POWERON) {
-            consecutivePOR++;
-        } else {
-            consecutivePOR = 0;
-        }
-        bootStats.putUShort("consec_por", consecutivePOR);
         bootStats.end();
-
-        if (resetReason == ESP_RST_POWERON && consecutivePOR > 1) {
-            LOG_WARNF("[BOOT] Boot #%u — consecutive power-on resets: %u (possible external power cycling)",
-                      totalBoots, consecutivePOR);
-        } else {
-            LOG_INFOF("[BOOT] Boot #%u (consecutive power-on resets: %u)", totalBoots, consecutivePOR);
-        }
+        LOG_INFOF("[BOOT] Boot #%u", totalBoots);
     }
 
     // Register CPU idle hooks for load measurement (before any blocking waits)
@@ -523,25 +483,6 @@ void setup() {
     // checkpoint readings are complete.
     trafficMonitor.begin(CS_SENSE);
 
-    // ── AS10: Therapy-safe cached boot ──
-    // If this is a rapid power-on reboot (consecutivePOR >= 2) and we have a
-    // cached config with AS10=true, skip the SD card MUX grab entirely.
-    // This breaks the AS10 infinite reboot loop: the CPAP power-cycles the
-    // SD slot (killing the ESP32), the ESP32 reboots and would normally grab
-    // the MUX to read config.txt, destroying the CPAP's SD session again.
-    // By using cached config, we avoid touching the MUX, letting the CPAP's
-    // reinit succeed and therapy continue uninterrupted.
-    bool usedCachedConfig = false;
-    if (resetReason == ESP_RST_POWERON && consecutivePOR >= 2) {
-        String cached = loadCachedConfigFromNVS();
-        if (!cached.isEmpty()) {
-            if (config.loadFromCachedString(cached) && config.getAS10Mode()) {
-                // usedCachedConfig = true; // EXPERIMENTAL: Force SD access for Bus Width Detection
-                LOG_WARN("[AS10] Therapy-safe boot — NVS config loaded, but forcing SD access for experimental test");
-            }
-        }
-    }
-
     // Determine boot type: software reset (ESP_RST_SW) = soft-reboot / FastBoot.
     // Cold boots (power-on, brownout, watchdog) use distinct reason codes.
     g_heapRecoveryBoot = (esp_reset_reason() == ESP_RST_SW);
@@ -603,16 +544,8 @@ void setup() {
         }
     }
 
-    if (usedCachedConfig) {
-        // Cached-config path — no detector will run, tear down early PCNT now
-        int p = EarlyPCNT::read();
-        LOG_INFOF("===EXPERIMENTAL=== Early PCNT final (cached-config path): %d pulses", p);
-        EarlyPCNT::teardown();
-    }
-
-    if (!usedCachedConfig) {
-        // ── Normal boot path: wait for bus silence, take SD, load config ──
-
+    // ── Boot path: wait for bus silence, stealth config read, load config ──
+    {
         // Smart Wait constants — same values for both cold and soft-reboot.
         // 5 s of continuous SD bus silence required before taking control.
         const unsigned long SMART_WAIT_REQUIRED_MS = 5000;
@@ -630,91 +563,113 @@ void setup() {
         };
 
         if (fastBoot) {
-            LOG("[FastBoot] Software reset — skipping 15s electrical stabilization");
+            LOG("[FastBoot] Software reset — skipping electrical stabilization");
             {
                 int p = EarlyPCNT::read();
-                LOG_INFOF("===EXPERIMENTAL=== Early PCNT checkpoint 2 (pre-SmartWait, FastBoot): %d pulses", p);
+                LOG_INFOF("[PCNT] Pre-SmartWait (FastBoot): %d pulses", p);
             }
             runSmartWait();
         } else {
             {
                 int p = EarlyPCNT::read();
-                LOG_INFOF("===EXPERIMENTAL=== Early PCNT checkpoint 2 (pre-stabilization): %d pulses", p);
+                LOG_INFOF("[PCNT] Pre-stabilization: %d pulses", p);
             }
             LOG("Waiting 8s for electrical stabilization...");
             delay(8000);
             {
                 int p = EarlyPCNT::read();
-                LOG_INFOF("===EXPERIMENTAL=== Early PCNT checkpoint 3 (post-stabilization): %d pulses", p);
+                LOG_INFOF("[PCNT] Post-stabilization: %d pulses", p);
             }
             runSmartWait();
         }
         
-        // ── EXPERIMENTAL: Final PCNT reading + teardown ──
-        int finalPulses;
-        {
-            finalPulses = EarlyPCNT::read();
-            LOG_INFOF("===EXPERIMENTAL=== Early PCNT final (pre-detect): %d pulses", finalPulses);
-        }
+        // ── Final PCNT reading + NVS persistence + teardown ──
+        int finalPulses = EarlyPCNT::read();
+        LOG_INFOF("[PCNT] Final reading: %d pulses", finalPulses);
         EarlyPCNT::teardown();
+
+        // ── PCNT capability detection ──
+        // On power-on boot: PCNT had the full init window to count CPAP SD activity.
+        //   pulses > 0  → CPAP uses 4-bit SD (AS11), DAT3 is active → smart mode works
+        //   pulses == 0 → CPAP uses 1-bit/SPI (AS10), DAT3 idle → smart mode unavailable
+        // On non-power-on boot: PCNT misses the init window, so read from NVS.
+        {
+            Preferences pcntPrefs;
+            pcntPrefs.begin("pcnt_cap", false);
+            if (resetReason == ESP_RST_POWERON) {
+                g_pcntCapable = (finalPulses > 0);
+                pcntPrefs.putBool("capable", g_pcntCapable);
+                LOG_INFOF("[PCNT] Power-on detection: %s (%d pulses)",
+                          g_pcntCapable ? "CAPABLE (4-bit SD, smart mode OK)" : "NOT CAPABLE (1-bit SD, scheduled only)",
+                          finalPulses);
+            } else {
+                g_pcntCapable = pcntPrefs.getBool("capable", false);
+                LOG_INFOF("[PCNT] Using cached capability: %s",
+                          g_pcntCapable ? "CAPABLE" : "NOT CAPABLE");
+            }
+            pcntPrefs.end();
+        }
 
         LOG("Boot delay complete.");
 
-        // ── EXPERIMENTAL: PCNT detection ──
-        const char* pcntVerdict = (finalPulses == 0) ? "AS10 (no DAT3 activity)"
-                                : (finalPulses > 50) ? "AS11 (active DAT3)"
-                                                     : "Uncertain (low pulse count)";
-        LOG_INFOF("===EXPERIMENTAL=== DETECTION: PCNT=%d pulses → %s", finalPulses, pcntVerdict);
-
-        // ── EXPERIMENTAL: Stealth test (zero-CMD0 RCA discovery + sector read) ──
-        LOG("Running stealth validation test...");
-        BusWidthDetector::detect();
-
-        LOG("Attempting SD card access for normal boot...");
-
-        // Take control of SD card
-        LOG("Waiting to access SD card...");
-        while (!sdManager.takeControl()) {
-            delay(1000);
+        // ── Stealth config.txt read (unified AS10 + AS11) ──
+        // Reads config.txt WITHOUT sending CMD0 — the CPAP's SD session is preserved.
+        // This replaces the old cached-config workaround and avoids the AS10 reboot loop.
+        bool stealthConfigOK = false;
+        String rawConfig = StealthConfigReader::readConfigTxt();
+        if (!rawConfig.isEmpty()) {
+            stealthConfigOK = config.loadFromString(rawConfig);
+            if (stealthConfigOK) {
+                LOG_INFO("[Stealth] Config loaded successfully via stealth read");
+            } else {
+                LOG_WARN("[Stealth] Stealth read returned data but parsing failed");
+            }
+        } else {
+            LOG_WARN("[Stealth] Stealth config read failed — will fall back to regular SD mount");
         }
 
-        // Read config file from SD card
-        LOG("Loading configuration...");
-        if (!config.loadFromSD(sdManager.getFS())) {
-            LOG_ERROR("Failed to load configuration - cannot continue");
-            LOG_ERROR("Please check config.txt file on SD card");
-            
-            // ── EMERGENCY BOOT ERROR DUMP ──
-            LOG_ERROR("FATAL ERROR: System halted due to config failure. Please check config.txt.");
-            Logger::getInstance().dumpToSD(sdManager.getFS(), "/uploader_error.txt", "Config load failure");
-            
-            sdManager.releaseControl();
-            
-            bool dumped = Logger::getInstance().dumpSavedLogs("config_load_failed");
-            if (!dumped) {
-                LOG_WARN("Failed to persist logs (config_load_failed)");
+        // ── Fallback: regular SD mount if stealth config read failed ──
+        if (!stealthConfigOK) {
+            LOG("Falling back to regular SD card access for config...");
+
+            while (!sdManager.takeControl()) {
+                delay(1000);
             }
 
-            // Fail-safe: always force SD switch back to CPAP before aborting setup
-            digitalWrite(SD_SWITCH_PIN, SD_SWITCH_CPAP_VALUE);
-            
-            return;
+            if (!config.loadFromSD(sdManager.getFS())) {
+                LOG_ERROR("Failed to load configuration - cannot continue");
+                LOG_ERROR("Please check config.txt file on SD card");
+                
+                LOG_ERROR("FATAL ERROR: System halted due to config failure. Please check config.txt.");
+                Logger::getInstance().dumpToSD(sdManager.getFS(), "/uploader_error.txt", "Config load failure");
+                
+                sdManager.releaseControl();
+                
+                bool dumped = Logger::getInstance().dumpSavedLogs("config_load_failed");
+                if (!dumped) {
+                    LOG_WARN("Failed to persist logs (config_load_failed)");
+                }
+
+                digitalWrite(SD_SWITCH_PIN, SD_SWITCH_CPAP_VALUE);
+                
+                return;
+            }
+
+            // Check if a previous boot left an emergency error log on the SD card
+            Logger::getInstance().checkPreviousBootError(sdManager.getFS());
+
+            sdManager.releaseControl();
         }
-
-        // Check if a previous boot left an emergency error log on the SD card
-        Logger::getInstance().checkPreviousBootError(sdManager.getFS());
-
-        // Cache config to NVS if AS10 mode is enabled
-        if (config.getAS10Mode()) {
-            cacheConfigToNVS(sdManager.getFS());
-        }
-
-        // Release SD card back to CPAP machine
-        sdManager.releaseControl();
     }
 
-    // ── Common path: config post-processing (runs for both cached and SD boot) ──
+    // ── Config post-processing ──
     LOG("Configuration loaded successfully");
+
+    // ── PCNT gating: force scheduled mode if smart mode is not supported ──
+    if (!g_pcntCapable && config.isSmartMode()) {
+        LOG_WARN("[PCNT] Smart mode not supported on this CPAP (no DAT3 activity) — forcing scheduled mode");
+        config.overrideUploadMode("scheduled");
+    }
     g_debugMode = config.getDebugMode();
     if (g_debugMode) {
         LOG_WARN("DEBUG mode enabled — verbose pre-flight logs and heap stats active");
