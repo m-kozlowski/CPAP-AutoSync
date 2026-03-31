@@ -1,7 +1,11 @@
 #include "ScheduleManager.h"
 #include "Logger.h"
+#include <esp_sntp.h>
 
 extern bool g_heapRecoveryBoot;  // defined in main.cpp (RTC_DATA_ATTR)
+
+// Static singleton instance for the SNTP callback to reach
+ScheduleManager* ScheduleManager::_instance = nullptr;
 
 ScheduleManager::ScheduleManager() :
     uploadStartHour(8),
@@ -35,8 +39,7 @@ bool ScheduleManager::begin(const String& mode, int startHour, int endHour,
         LOGF("[Schedule] Mode: %s, Window: %d:00-%d:00, GMT%+d",
              mode.c_str(), startHour, endHour, gmtOffset);
     }
-    LOGF("[Schedule] NTP server: %s", ntpServer.c_str());
-    
+
     syncTime();
     return true;
 }
@@ -53,11 +56,53 @@ bool ScheduleManager::begin(int uploadHour, int gmtOffsetHours) {
     return begin("scheduled", this->uploadHour, (this->uploadHour + 2) % 24, gmtOffsetHours);
 }
 
+// callback fired from lwIP task context on every successful ntp sync
+void ScheduleManager::ntpSyncCallback(struct timeval *tv) {
+    if (!_instance) return;
+
+    bool wasFirstSync = !_instance->ntpSynced;
+    _instance->ntpSynced = true;
+
+    if (wasFirstSync) {
+        // restore default interval
+        sntp_set_sync_interval(CONFIG_LWIP_SNTP_UPDATE_DELAY);
+        sntp_restart();
+
+        struct tm timeinfo;
+        if (getLocalTime(&timeinfo, 0)) {
+            LOGF("[NTP] Time synchronized: %04d-%02d-%02d %02d:%02d:%02d",
+                 timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                 timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+        } else {
+            LOG("[NTP] Time synchronized successfully");
+        }
+        LOGF("[NTP] Re-sync interval restored to %lu ms", (unsigned long)CONFIG_LWIP_SNTP_UPDATE_DELAY);
+    }
+}
+
+// NTP server selection: config -> DHCP -> pool.ntp.org
+void ScheduleManager::configureNtpServers() {
+    if (ntpServer.length() > 0) {
+        esp_sntp_setservername(0, ntpServer.c_str());
+        LOGF("[NTP] Using configured server: %s", ntpServer.c_str());
+    } else {
+        const char* dhcpNtpServer = esp_sntp_getservername(0);
+        if (dhcpNtpServer && dhcpNtpServer[0] != '\0') {
+            // DHCP populated slot 0, just keep it.
+            LOGF("[NTP] Using DHCP-provided server: %s", dhcpNtpServer);
+        } else {
+            esp_sntp_setservername(0, "pool.ntp.org");
+            LOG("[NTP] Using default server: pool.ntp.org");
+        }
+    }
+}
+
+// syncTime: start SNTP daemon and return immediately
 bool ScheduleManager::syncTime() {
-    LOGF("[NTP] Starting time sync with server: %s", ntpServer.c_str());
-    LOGF("[NTP] TZ string: %s", tzString.c_str());
-    LOGF("[NTP] GMT offset: %d hours", gmtOffsetHours);
-    
+    LOG("[NTP] Starting time synchronization...");
+
+    _instance = this;
+
     // Allow network to stabilize after WiFi connection.
     // Skip on heap-recovery reboots — WiFi re-connects to a known AP in <1 s.
     if (g_heapRecoveryBoot) {
@@ -66,54 +111,37 @@ bool ScheduleManager::syncTime() {
         LOG("[NTP] Waiting 2 seconds for network to stabilize...");
         delay(2000);
     }
-    
-    // Skip ICMP ping pre-check to reduce dependency footprint.
-    // ICMP reachability is not required for NTP (uses UDP/123).
-    LOG("[NTP] Proceeding directly with UDP NTP sync (ICMP pre-check disabled)");
-    
+
+    // Set timezone (replicates what configTzTime/configTime do)
     if (tzString.length() > 0) {
         LOGF("[NTP] Using POSIX timezone: %s", tzString.c_str());
-        configTzTime(tzString.c_str(), ntpServer.c_str());
+        setenv("TZ", tzString.c_str(), 1);
+        tzset();
     } else {
-        LOGF("[NTP] Using GMT offset: %d hours (no DST)", gmtOffsetHours);
-        long gmtOffsetSeconds = gmtOffsetHours * 3600L;
-        configTime(gmtOffsetSeconds, 0, ntpServer.c_str());
+        // note inverted sign, TZ "UTC-5" is "GMT+5"
+        char tz[24];
+        snprintf(tz, sizeof(tz), "UTC%d", -gmtOffsetHours);
+        LOGF("[NTP] Using GMT offset: %d hours (TZ=%s)", gmtOffsetHours, tz);
+        setenv("TZ", tz, 1);
+        tzset();
     }
-    
-    // Wait for time to be set (with timeout)
-    int retries = 0;
-    const int maxRetries = 20;  // Increased timeout
-    
-    LOG("[NTP] Waiting for time synchronization...");
-    while (retries < maxRetries) {
-        time_t now = time(nullptr);
-        LOGF("[NTP] Retry %d/%d: Current timestamp: %lu", retries + 1, maxRetries, (unsigned long)now);
-        
-        if (now > 24 * 3600) {  // Time is set if it's past Jan 1, 1970 + 1 day
-            struct tm timeinfo;
-            if (getLocalTime(&timeinfo)) {
-                ntpSynced = true;
-                LOG("[NTP] Time synchronized successfully!");
-                LOGF("[NTP] Current time: %04d-%02d-%02d %02d:%02d:%02d", 
-                     timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
-                     timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
-                return true;
-            } else {
-                LOG("[NTP] WARNING: Timestamp valid but getLocalTime failed");
-            }
-        }
-        delay(1000);  // Increased from 500ms to 1000ms for high-latency networks
-        retries++;
+
+    if (esp_sntp_enabled()) {
+        esp_sntp_stop();
     }
-    
-    LOG("[NTP] ERROR: Failed to sync time after maximum retries");
-    LOG("[NTP] Possible causes:");
-    LOG("[NTP]   - Network firewall blocking NTP (UDP port 123)");
-    LOG("[NTP]   - DNS resolution failure for pool.ntp.org");
-    LOG("[NTP]   - No internet connectivity");
-    LOG("[NTP]   - NTP server unreachable from this network");
-    ntpSynced = false;
-    return false;
+
+    sntp_set_time_sync_notification_cb(ntpSyncCallback);
+
+    // Use aggressive 60-second retry interval until first successful sync,
+    sntp_set_sync_interval(60 * 1000);
+
+    esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+    configureNtpServers();
+
+    esp_sntp_init();
+
+    LOG("[NTP] SNTP daemon started");
+    return true;
 }
 
 // ============================================================================
