@@ -86,10 +86,10 @@ void ScheduleManager::configureNtpServers() {
         esp_sntp_setservername(0, ntpServer.c_str());
         LOGF("[NTP] Using configured server: %s", ntpServer.c_str());
     } else {
-        const char* dhcpNtpServer = esp_sntp_getservername(0);
-        if (dhcpNtpServer && dhcpNtpServer[0] != '\0') {
-            // DHCP populated slot 0, just keep it.
-            LOGF("[NTP] Using DHCP-provided server: %s", dhcpNtpServer);
+        const ip_addr_t* dhcpNtpServer = esp_sntp_getserver(0);
+        if (dhcpNtpServer && !ip_addr_isany(dhcpNtpServer)) {
+            // DHCP populated slot 0 with an IP, keep it
+            LOGF("[NTP] Using DHCP-provided server: " IPSTR, IP2STR(&dhcpNtpServer->u_addr.ip4));
         } else {
             esp_sntp_setservername(0, "pool.ntp.org");
             LOG("[NTP] Using default server: pool.ntp.org");
