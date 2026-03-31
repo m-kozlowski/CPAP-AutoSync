@@ -116,6 +116,7 @@ private:
     void parseLine(String& line);
     void setConfigValue(String key, String value);
     String trimComment(String line);
+    void validateAndNormalize();
 
 public:
     Config();

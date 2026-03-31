@@ -438,7 +438,9 @@ bool Config::loadFromString(const String& rawConfig) {
         _hasWebdavEndpoint = (upper.indexOf("WEBDAV") >= 0);
     }
 
-    // Minimal validation — full range checks were done on original load
+    // Normalize and validate config values
+    validateAndNormalize();
+
     isValid = !wifiSSID.isEmpty();
 
     if (isValid) {
@@ -615,28 +617,7 @@ bool Config::loadFromSD(fs::FS &sd) {
         }
     }
     
-    // Validation of numeric ranges
-    if (maxDays <= 0) { maxDays = 365; }
-    else if (maxDays > 366) { maxDays = 366; }
-    
-    if (recentFolderDays < 0) { recentFolderDays = 2; }
-    
-    if (uploadMode != "scheduled" && uploadMode != "smart") { uploadMode = "smart"; }
-    
-    if (uploadStartHour < 0 || uploadStartHour > 23) { uploadStartHour = 9; }
-    if (uploadEndHour < 0 || uploadEndHour > 23) { uploadEndHour = 21; }
-    
-    if (inactivitySeconds < 10) { inactivitySeconds = 10; }
-    else if (inactivitySeconds > 3600) { inactivitySeconds = 3600; }
-    
-    if (exclusiveAccessMinutes < 1) { exclusiveAccessMinutes = 1; }
-    else if (exclusiveAccessMinutes > 30) { exclusiveAccessMinutes = 30; }
-    
-    if (cooldownMinutes < 1) { cooldownMinutes = 1; }
-    else if (cooldownMinutes > 60) { cooldownMinutes = 60; }
-    
-    if (cpuSpeedMhz < 80) { cpuSpeedMhz = 80; }
-    else if (cpuSpeedMhz > 240) { cpuSpeedMhz = 240; }
+    validateAndNormalize();
     
     isValid = !wifiSSID.isEmpty() && hasValidEndpoint;
     
@@ -726,7 +707,33 @@ void Config::overrideUploadMode(const String& mode) {
     uploadMode = mode;
 }
 bool Config::getFlushLogsDuringUpload() const { return flushLogsDuringUpload; }
-bool Config::isSmartMode() const { return uploadMode == "smart"; }
+bool Config::isSmartMode() const { return uploadMode.equalsIgnoreCase("smart"); }
+
+void Config::validateAndNormalize() {
+    // Validation of numeric ranges
+    if (maxDays <= 0) { maxDays = 365; }
+    else if (maxDays > 366) { maxDays = 366; }
+    
+    if (recentFolderDays < 0) { recentFolderDays = 2; }
+    
+    uploadMode.toLowerCase();
+    if (uploadMode != "scheduled" && uploadMode != "smart") { uploadMode = "smart"; }
+    
+    if (uploadStartHour < 0 || uploadStartHour > 23) { uploadStartHour = 9; }
+    if (uploadEndHour < 0 || uploadEndHour > 23) { uploadEndHour = 21; }
+    
+    if (inactivitySeconds < 10) { inactivitySeconds = 10; }
+    else if (inactivitySeconds > 3600) { inactivitySeconds = 3600; }
+    
+    if (exclusiveAccessMinutes < 1) { exclusiveAccessMinutes = 1; }
+    else if (exclusiveAccessMinutes > 30) { exclusiveAccessMinutes = 30; }
+    
+    if (cooldownMinutes < 1) { cooldownMinutes = 1; }
+    else if (cooldownMinutes > 60) { cooldownMinutes = 60; }
+    
+    if (cpuSpeedMhz < 80) { cpuSpeedMhz = 80; }
+    else if (cpuSpeedMhz > 240) { cpuSpeedMhz = 240; }
+}
 
 // Helper methods for enum conversion
 WifiTxPower Config::parseWifiTxPower(const String& str) {
