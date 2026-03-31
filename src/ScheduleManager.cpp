@@ -16,7 +16,7 @@ ScheduleManager::ScheduleManager() :
     lastCompletedDay(-1),
     lastUploadTimestamp(0),
     ntpSynced(false),
-    ntpServer("pool.ntp.org"),
+    ntpServer(""),
     gmtOffsetHours(0)
 {}
 

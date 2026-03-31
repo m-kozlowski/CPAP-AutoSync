@@ -36,7 +36,7 @@ public:
     // New FSM-aware begin
     bool begin(const String& mode, int startHour, int endHour,
                int gmtOffsetHours, const String& tzString = "",
-               const String& ntpServer = "pool.ntp.org");
+               const String& ntpServer = "");
 
     // Legacy begin (backward compat — creates a 2-hour window from uploadHour)
     bool begin(int uploadHour, int gmtOffsetHours);

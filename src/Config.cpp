@@ -10,7 +10,7 @@ const char* Config::CENSORED_VALUE = "***STORED_IN_FLASH***";
 
 Config::Config() : 
     gmtOffsetHours(0),  // Default: UTC
-    ntpServer("pool.ntp.org"),
+    ntpServer(""),
     saveLogs(false),  // Default: do not persist logs (debugging only)
     debugMode(false),    // Default: suppress verbose pre-flight and heap stats
     isValid(false),
