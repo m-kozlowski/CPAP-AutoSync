@@ -20,20 +20,9 @@ private:
     
     // NTP
     unsigned long lastUploadTimestamp;
-<<<<<<< HEAD
     String ntpServer;
     String tzString;
-=======
-    volatile bool ntpSynced;
-    String ntpServer;
->>>>>>> main
     int gmtOffsetHours;
-    String tzString;       // POSIX TZ string (e.g. "EST5EDT,M3.2.0,M11.1.0")
-    static void ntpSyncCallback(struct timeval *tv);
-    void configureNtpServers();
-
-    // Singleton instance for static callback
-    static ScheduleManager* _instance;
 
 public:
     ScheduleManager();
