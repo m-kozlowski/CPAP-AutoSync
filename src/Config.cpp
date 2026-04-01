@@ -198,8 +198,6 @@ void Config::setConfigValue(String key, String value) {
         gmtOffsetHours = value.toInt();
     } else if (key == "TZ_STRING") {
         tzString = value;
-    } else if (key == "NTP_SERVER") {
-        ntpServer = value;
     } else if (key == "PERSISTENT_LOGS") {
         saveLogs = (value.equalsIgnoreCase("true") || value.toInt() == 1);
     } else if (key == "DEBUG") {
