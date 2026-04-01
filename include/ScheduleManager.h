@@ -20,16 +20,24 @@ private:
     
     // NTP
     unsigned long lastUploadTimestamp;
-    bool ntpSynced;
-    const char* ntpServer;
+    volatile bool ntpSynced;
+    String ntpServer;
     int gmtOffsetHours;
+    String tzString;       // POSIX TZ string (e.g. "EST5EDT,M3.2.0,M11.1.0")
+    static void ntpSyncCallback(struct timeval *tv);
+    void configureNtpServers();
+
+    // Singleton instance for static callback
+    static ScheduleManager* _instance;
 
 public:
     ScheduleManager();
     
     // New FSM-aware begin
-    bool begin(const String& mode, int startHour, int endHour, int gmtOffsetHours);
-    
+    bool begin(const String& mode, int startHour, int endHour,
+               int gmtOffsetHours, const String& tzString = "",
+               const String& ntpServer = "");
+
     // Legacy begin (backward compat — creates a 2-hour window from uploadHour)
     bool begin(int uploadHour, int gmtOffsetHours);
     
