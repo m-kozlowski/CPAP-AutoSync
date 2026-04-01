@@ -267,6 +267,7 @@ bool FileUploader::begin() {
 
     // ── Schedule manager ─────────────────────────────────────────────────────
     scheduleManager = new ScheduleManager();
+    scheduleManager->setNtpServer(config->getNtpServer());
     if (!scheduleManager->begin(
             config->getUploadMode(),
             config->getUploadStartHour(),

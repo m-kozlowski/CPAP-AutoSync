@@ -4,6 +4,7 @@
 WIFI_SSID = YourNetworkName
 WIFI_PASSWORD = YourNetworkPassword
 HOSTNAME = cpap
+# NTP_SERVER=pool.ntp.org
 
 # SMB Upload Settings
 ENDPOINT_TYPE = SMB

@@ -621,7 +621,8 @@ function renderStatus(d){
   }else{nbEl.style.display='none';}
   var fst=inc>0?'&#9888; '+inc+' folder(s) pending':(done>0?'&#10003; All synced':'Waiting for first scan');
   seti('d-fst',fst);
-  set('sub','Firmware '+d.firmware+' \u00b7 '+fmtUp(d.uptime||0)+' uptime');
+  document.title=(d.hostname||'CPAP')+' \u200e- CPAP Uploader';
+  set('sub','Firmware '+d.firmware+' \u00b7 '+(d.hostname||'cpap')+' \u00b7 '+fmtUp(d.uptime||0)+' uptime');
   checkMonUploadState();
   var fhV=d.free_heap||0,maV=d.max_alloc||0;
   var fh=fhV?Math.round(fhV/1024)+' KB':'\u2014';

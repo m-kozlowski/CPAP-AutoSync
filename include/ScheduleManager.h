@@ -20,8 +20,7 @@ private:
     
     // NTP
     unsigned long lastUploadTimestamp;
-    bool ntpSynced;
-    const char* ntpServer;
+    String ntpServer;
     int gmtOffsetHours;
 
 public:
@@ -32,6 +31,8 @@ public:
     
     // Legacy begin (backward compat — creates a 2-hour window from uploadHour)
     bool begin(int uploadHour, int gmtOffsetHours);
+    
+    void setNtpServer(const String& server);
     
     bool syncTime();
     

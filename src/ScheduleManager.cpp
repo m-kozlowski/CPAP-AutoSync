@@ -1,5 +1,8 @@
 #include "ScheduleManager.h"
 #include "Logger.h"
+#if defined(ESP32)
+#include "esp_sntp.h"
+#endif
 
 extern bool g_heapRecoveryBoot;  // defined in main.cpp (RTC_DATA_ATTR)
 
@@ -11,10 +14,15 @@ ScheduleManager::ScheduleManager() :
     uploadCompletedToday(false),
     lastCompletedDay(-1),
     lastUploadTimestamp(0),
-    ntpSynced(false),
     ntpServer("pool.ntp.org"),
     gmtOffsetHours(0)
 {}
+
+void ScheduleManager::setNtpServer(const String& server) {
+    if (server.length() > 0) {
+        ntpServer = server;
+    }
+}
 
 bool ScheduleManager::begin(const String& mode, int startHour, int endHour, int gmtOffset) {
     this->uploadMode = mode;
@@ -61,9 +69,19 @@ bool ScheduleManager::syncTime() {
     // ICMP reachability is not required for NTP (uses UDP/123).
     LOG("[NTP] Proceeding directly with UDP NTP sync (ICMP pre-check disabled)");
     
-    // Configure time with NTP server and timezone offset (convert hours to seconds)
     long gmtOffsetSeconds = gmtOffsetHours * 3600L;
-    configTime(gmtOffsetSeconds, 0, ntpServer);
+    
+    if (ntpServer != "pool.ntp.org") {
+#if defined(ESP32)
+        esp_sntp_servermode_dhcp(0);
+#endif
+        configTime(gmtOffsetSeconds, 0, ntpServer.c_str());
+    } else {
+#if defined(ESP32)
+        esp_sntp_servermode_dhcp(1);
+#endif
+        configTime(gmtOffsetSeconds, 0, "pool.ntp.org");
+    }
     
     // Wait for time to be set (with timeout)
     int retries = 0;
@@ -77,7 +95,6 @@ bool ScheduleManager::syncTime() {
         if (now > 24 * 3600) {  // Time is set if it's past Jan 1, 1970 + 1 day
             struct tm timeinfo;
             if (getLocalTime(&timeinfo)) {
-                ntpSynced = true;
                 LOG("[NTP] Time synchronized successfully!");
                 LOGF("[NTP] Current time: %04d-%02d-%02d %02d:%02d:%02d", 
                      timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
@@ -97,7 +114,6 @@ bool ScheduleManager::syncTime() {
     LOG("[NTP]   - DNS resolution failure for pool.ntp.org");
     LOG("[NTP]   - No internet connectivity");
     LOG("[NTP]   - NTP server unreachable from this network");
-    ntpSynced = false;
     return false;
 }
 
@@ -106,7 +122,7 @@ bool ScheduleManager::syncTime() {
 // ============================================================================
 
 bool ScheduleManager::isInUploadWindow() {
-    if (!ntpSynced) return false;
+    if (!isTimeSynced()) return false;
     
     struct tm timeinfo;
     if (!getLocalTime(&timeinfo)) return false;
@@ -126,7 +142,7 @@ bool ScheduleManager::isInUploadWindow() {
 }
 
 bool ScheduleManager::canUploadFreshData() {
-    if (!ntpSynced) return false;
+    if (!isTimeSynced()) return false;
     
     if (isSmartMode()) {
         // Smart mode: fresh data can upload anytime
@@ -137,14 +153,14 @@ bool ScheduleManager::canUploadFreshData() {
 }
 
 bool ScheduleManager::canUploadOldData() {
-    if (!ntpSynced) return false;
+    if (!isTimeSynced()) return false;
     
     // Both modes: old data only within upload window
     return isInUploadWindow();
 }
 
 bool ScheduleManager::isUploadEligible(bool hasFreshData, bool hasOldData) {
-    if (!ntpSynced) return false;
+    if (!isTimeSynced()) return false;
     
     // In scheduled mode, check if already completed today
     if (!isSmartMode() && isDayCompleted()) {
@@ -187,7 +203,7 @@ bool ScheduleManager::isDayCompleted() {
 // ============================================================================
 
 bool ScheduleManager::isUploadTime() {
-    if (!ntpSynced) {
+    if (!isTimeSynced()) {
         LOG("Time not synced, cannot check upload schedule");
         return false;
     }
@@ -203,7 +219,7 @@ void ScheduleManager::markUploadCompleted() {
 }
 
 unsigned long ScheduleManager::getSecondsUntilNextUpload() {
-    if (!ntpSynced) {
+    if (!isTimeSynced()) {
         return 0;
     }
     
@@ -241,7 +257,7 @@ unsigned long ScheduleManager::getSecondsUntilNextUpload() {
 // ============================================================================
 
 bool ScheduleManager::isTimeSynced() const {
-    return ntpSynced;
+    return time(nullptr) > 1000000000;
 }
 
 unsigned long ScheduleManager::getLastUploadTimestamp() const {
@@ -253,7 +269,7 @@ void ScheduleManager::setLastUploadTimestamp(unsigned long timestamp) {
 }
 
 String ScheduleManager::getCurrentLocalTime() const {
-    if (!ntpSynced) {
+    if (!isTimeSynced()) {
         return "Time not synchronized";
     }
     

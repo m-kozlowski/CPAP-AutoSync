@@ -181,6 +181,8 @@ void Config::setConfigValue(String key, String value) {
         wifiPassword = value;
     } else if (key == "HOSTNAME") {
         hostname = value;
+    } else if (key == "NTP_SERVER") {
+        ntpServer = value;
     } else if (key == "SCHEDULE") {
         schedule = value;
     } else if (key == "ENDPOINT") {
@@ -644,6 +646,7 @@ bool Config::loadFromSD(fs::FS &sd) {
 const String& Config::getWifiSSID() const { return wifiSSID; }
 const String& Config::getWifiPassword() const { return wifiPassword; }
 const String& Config::getHostname() const { return hostname; }
+const String& Config::getNtpServer() const { return ntpServer; }
 const String& Config::getSchedule() const { return schedule; }
 const String& Config::getEndpoint() const { return endpoint; }
 const String& Config::getEndpointType() const { return endpointType; }

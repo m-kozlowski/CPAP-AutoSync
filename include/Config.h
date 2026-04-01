@@ -41,6 +41,7 @@ private:
     String wifiSSID;
     String wifiPassword;
     String hostname;  // mDNS hostname (defaults to "cpap")
+    String ntpServer; // Custom NTP server
     String schedule;
     String endpoint;
     String endpointType;  // SMB, CLOUD, SMB,CLOUD
@@ -129,6 +130,7 @@ public:
     const String& getWifiSSID() const;
     const String& getWifiPassword() const;
     const String& getHostname() const;
+    const String& getNtpServer() const;
     const String& getSchedule() const;
     const String& getEndpoint() const;
     const String& getEndpointType() const;

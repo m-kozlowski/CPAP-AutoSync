@@ -39,6 +39,7 @@ ENDPOINT = //192.168.1.100/cpap_backups
 ### Network Settings
 - `WIFI_SSID` / `WIFI_PASSWORD` - WiFi credentials
 - `HOSTNAME` - mDNS hostname (default: "cpap")
+- `NTP_SERVER` - Custom NTP server (default: empty for DHCP Option 42 with pool.ntp.org fallback)
 
 ### Upload Destinations
 - `ENDPOINT_TYPE` - SMB, CLOUD, WEBDAV or comma-separated combinations

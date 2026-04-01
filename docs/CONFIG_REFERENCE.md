@@ -11,6 +11,7 @@ All settings are read from `/config.txt` on the SD card at boot. The file uses s
 | `WIFI_SSID` | *(required)* | WiFi network name to connect to |
 | `WIFI_PASSWORD` | *(empty)* | WiFi password. Supports all characters including `@`, `!`, `#`. After first successful boot the password is migrated to encrypted flash (NVS) and censored in the config file. |
 | `HOSTNAME` | `cpap` | mDNS hostname. Device becomes reachable at `http://<hostname>.local`. |
+| `NTP_SERVER` | *(empty)* | Custom NTP server for time synchronization. If empty, the device uses the NTP server provided by the router (DHCP Option 42), falling back to `pool.ntp.org` if none is provided. |
 
 ---
 

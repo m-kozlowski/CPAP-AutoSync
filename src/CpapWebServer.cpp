@@ -846,6 +846,7 @@ void CpapWebServer::updateStatusSnapshot() {
         ",\"cpu0\":%u,\"cpu1\":%u"
         ",\"pcnt_capable\":%s"
         ",\"recent_tabs\":\"%s\""
+        ",\"hostname\":\"%s\""
         ",\"firmware\":\"%s\"}",
         st, inStateSec, upSec,
         timeBuf, timeSynced ? "true" : "false",
@@ -861,6 +862,7 @@ void CpapWebServer::updateStatusSnapshot() {
         (unsigned)g_cpuLoad0, (unsigned)g_cpuLoad1,
         g_pcntCapable ? "true" : "false",
         recentTabs,
+        config ? config->getHostname().c_str() : "cpap",
         FIRMWARE_VERSION);
     if (n > 0 && n < (int)sizeof(buf)) {
         memcpy(g_webStatusBuf, buf, n + 1);

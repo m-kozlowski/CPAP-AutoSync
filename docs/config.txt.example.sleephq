@@ -4,6 +4,7 @@
 WIFI_SSID = YourNetworkName
 WIFI_PASSWORD = YourNetworkPassword
 HOSTNAME = cpap
+# NTP_SERVER=pool.ntp.org
 
 # Cloud Upload Settings (SleepHQ)
 ENDPOINT_TYPE = CLOUD
