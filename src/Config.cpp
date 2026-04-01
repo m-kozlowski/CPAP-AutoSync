@@ -659,7 +659,6 @@ const String& Config::getEndpointUser() const { return endpointUser; }
 const String& Config::getEndpointPassword() const { return endpointPassword; }
 int Config::getGmtOffsetHours() const { return gmtOffsetHours; }
 const String& Config::getTzString() const { return tzString; }
-const String& Config::getNtpServer() const { return ntpServer; }
 bool Config::getSaveLogs() const { return saveLogs; }
 bool Config::getDebugMode() const { return debugMode; }
 bool Config::valid() const { return isValid; }
