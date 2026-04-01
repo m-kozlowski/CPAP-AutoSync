@@ -22,7 +22,7 @@ public:
     WiFiManager();
     
     void setupEventHandlers();
-    bool connectStation(const String& ssid, const String& password);
+    bool connectStation(const String& ssid, const String& password, const String& hostname);
     bool isConnected() const;
     void disconnect();
     String getIPAddress() const;

@@ -711,7 +711,7 @@ void setup() {
     wifiManager.applyTxPowerEarly(config.getWifiTxPower());
 
     // Initialize WiFi in station mode
-    if (!wifiManager.connectStation(config.getWifiSSID(), config.getWifiPassword())) {
+    if (!wifiManager.connectStation(config.getWifiSSID(), config.getWifiPassword(), config.getHostname())) {
         LOG("Failed to connect to WiFi");
         // Note: WiFiManager already persists logs on connection failures
         
@@ -1588,7 +1588,7 @@ void loop() {
                 CLEAR_PERI_REG_MASK(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_ENA);
             }
             
-            if (!wifiManager.connectStation(config.getWifiSSID(), config.getWifiPassword())) {
+            if (!wifiManager.connectStation(config.getWifiSSID(), config.getWifiPassword(), config.getHostname())) {
                 LOG_ERROR("Failed to reconnect to WiFi");
                 lastWifiReconnectAttempt = currentTime;
                 

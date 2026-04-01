@@ -168,7 +168,7 @@ void WiFiManager::onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
     }
 }
 
-bool WiFiManager::connectStation(const String& ssid, const String& password) {
+bool WiFiManager::connectStation(const String& ssid, const String& password, const String& hostname) {
     // Validate SSID before attempting connection
     if (ssid.isEmpty()) {
         LOG_ERROR("Cannot connect to WiFi: SSID is empty");
@@ -191,6 +191,11 @@ bool WiFiManager::connectStation(const String& ssid, const String& password) {
     LOGF("SSID length: %d characters", ssid.length());
 
     WiFi.mode(WIFI_STA);
+    
+    if (!hostname.isEmpty()) {
+        WiFi.setHostname(hostname.c_str());
+        LOGF("DHCP Hostname set to: %s", hostname.c_str());
+    }
     
     // ── Power optimization: disable 802.11b (DSSS) ──
     // 802.11b uses up to 370 mA peak TX. Restricting to 802.11g/n (OFDM)
