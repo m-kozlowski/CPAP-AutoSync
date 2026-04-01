@@ -5,6 +5,7 @@
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <esp_wifi.h>
+#include <esp_sntp.h>
 
 volatile uint8_t WiFiManager::_lastDisconnectReason = 0;
 
@@ -203,6 +204,11 @@ bool WiFiManager::connectStation(const String& ssid, const String& password, con
     esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
     LOG_DEBUG("WiFi protocol restricted to 802.11g/n (802.11b disabled)");
     
+    // Enable DHCP NTP server capture before connecting.
+    // This passively stores any NTP servers the router advertises;
+    // ScheduleManager decides whether to use them based on config priority.
+    esp_sntp_servermode_dhcp(true);
+
     WiFi.begin(ssid.c_str(), password.c_str());
     
     // Apply deferred TX power AFTER WiFi.begin() — WiFi.mode(WIFI_STA) is async
