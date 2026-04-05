@@ -5,14 +5,20 @@
 
 // ============================================================================
 // Early PCNT — lightweight standalone pulse counter for boot-time detection.
-// Uses its own PCNT unit, separate from TrafficMonitor.
-// Must be initialized as early as possible in setup(), torn down before
-// TrafficMonitor.begin() is called.
+// Initialized as early as possible (GCC constructor, before app_main).
+// Ownership is transferred to TrafficMonitor via detach() — no teardown needed.
 // ============================================================================
+
+struct PcntHandles {
+    pcnt_unit_handle_t    unit;
+    pcnt_channel_handle_t channel;
+};
+
 namespace EarlyPCNT {
     void init(int gpio);     // Create PCNT unit on gpio, start counting immediately
     int  read();             // Read accumulated pulse count (non-destructive)
-    void teardown();         // Delete PCNT unit to free resources
+    void teardown();         // Delete PCNT unit to free resources (only if NOT detached)
+    PcntHandles detach();    // Transfer ownership — caller now owns the unit+channel
 }
 
 #endif // EARLY_PCNT_H

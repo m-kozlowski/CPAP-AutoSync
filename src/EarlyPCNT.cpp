@@ -48,4 +48,11 @@ namespace EarlyPCNT {
         if (s_chan)  { pcnt_del_channel(s_chan); s_chan = nullptr; }
         if (s_unit) { pcnt_unit_stop(s_unit); pcnt_unit_disable(s_unit); pcnt_del_unit(s_unit); s_unit = nullptr; }
     }
+
+    PcntHandles detach() {
+        PcntHandles h = { s_unit, s_chan };
+        s_unit = nullptr;
+        s_chan  = nullptr;
+        return h;
+    }
 }

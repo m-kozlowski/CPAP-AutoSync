@@ -314,6 +314,26 @@ const char* getResetReasonString(esp_reset_reason_t reason) {
 }
 
 // ============================================================================
+// Pre-Main Constructor: Earliest PCNT + MUX Lock
+// Runs before app_main() / setup() — captures the very first CPAP bus pulses.
+// Priority 101 (0-100 reserved for system/compiler).
+// ============================================================================
+__attribute__((constructor(101)))
+static void preinitPcntAndMux() {
+    // 1. Lock MUX to CPAP immediately — eliminates floating-pin jitter
+    gpio_reset_pin((gpio_num_t)SD_SWITCH_PIN);
+    gpio_set_direction((gpio_num_t)SD_SWITCH_PIN, GPIO_MODE_OUTPUT);
+    gpio_set_level((gpio_num_t)SD_SWITCH_PIN, SD_SWITCH_CPAP_VALUE);
+
+    // 2. Release any stale RTC hold on CS_SENSE (legacy ULP firmware residue)
+    rtc_gpio_hold_dis((gpio_num_t)CS_SENSE);
+    rtc_gpio_deinit((gpio_num_t)CS_SENSE);
+
+    // 3. Start PCNT immediately — capture the very first CPAP bus pulses
+    EarlyPCNT::init(CS_SENSE);
+}
+
+// ============================================================================
 // Setup Function
 // ============================================================================
 void setup() {
@@ -344,28 +364,9 @@ void setup() {
     // preventing TLS from fragmenting the general heap.
     tlsArenaInit();
     
-    // CRITICAL: Immediately release SD card control to CPAP machine
-    // This must happen before any delays to prevent CPAP machine errors
-    // Initialize control pins
-    // ── Fix for ULP firmware residue: release RTC GPIO hold on CS_SENSE ──
-    // A previous firmware version configured GPIO 33 as an RTC GPIO with
-    // rtc_gpio_hold_en().  RTC hold survives software resets (OTA updates),
-    // locking the pin in RTC mode and disconnecting it from the digital GPIO
-    // matrix — which makes PCNT invisible to the signal.  Explicitly release
-    // the hold and switch back to normal GPIO before anything else touches
-    // the pin.  Safe to call even if the hold was never set (no-op).
-    rtc_gpio_hold_dis((gpio_num_t)CS_SENSE);
-    rtc_gpio_deinit((gpio_num_t)CS_SENSE);
-
-    pinMode(CS_SENSE, INPUT);
-    pinMode(SD_SWITCH_PIN, OUTPUT);
-    digitalWrite(SD_SWITCH_PIN, SD_SWITCH_CPAP_VALUE);
-
-    // ── EXPERIMENTAL: Start early PCNT immediately ──
-    // Count DAT3 (CS_SENSE) edges from the very first moment of boot.
-    // AS11 (4-bit mode) generates many pulses during card init;
-    // AS10 (1-bit mode) generates few or zero (DAT3 is unused).
-    EarlyPCNT::init(CS_SENSE);
+    // MUX lock, RTC hold release, and EarlyPCNT::init() are now in
+    // preinitPcntAndMux() — a GCC constructor that runs before app_main().
+    // This captures CPAP bus pulses ~500ms earlier than the old position here.
     
     delay(1000);
     LOG("\n\n=== CPAP Data Auto-Uploader ===");
@@ -390,14 +391,14 @@ void setup() {
         LOG_INFOF("Reset reason (raw): Core0=%d Core1=%d", rawCore0, rawCore1);
     }
 
-    // ── EXPERIMENTAL: Early PCNT checkpoint #1 (after ~1s of boot) ──
+    // ── Early PCNT checkpoint (after ~1s of boot, before detach to TrafficMonitor) ──
     {
         int earlyPulses = EarlyPCNT::read();
-        LOG_INFOF("===EXPERIMENTAL=== Early PCNT checkpoint 1 (boot+1s): %d pulses on DAT3", earlyPulses);
+        LOG_INFOF("[PCNT] Early checkpoint (boot+1s): %d pulses on DAT3", earlyPulses);
         if (resetReason == ESP_RST_POWERON) {
-            LOG_INFOF("===EXPERIMENTAL=== Power-on boot — PCNT captures CPAP card init activity");
+            LOG_INFO("[PCNT] Power-on boot — PCNT started in pre-main constructor");
         } else {
-            LOG_INFOF("===EXPERIMENTAL=== Non-power-on boot (reason=%d) — PCNT may miss init window", (int)resetReason);
+            LOG_INFOF("[PCNT] Non-power-on boot (reason=%d) — PCNT may miss init window", (int)resetReason);
         }
     }
 
@@ -477,11 +478,10 @@ void setup() {
         return;
     }
     
-    // Initialize TrafficMonitor (PCNT-based bus activity detection on CS_SENSE pin)
-    // EarlyPCNT and TrafficMonitor use separate PCNT units (ESP32 has 8) on the
-    // same GPIO — they coexist safely.  EarlyPCNT is torn down later, after all
-    // checkpoint readings are complete.
-    trafficMonitor.begin(CS_SENSE);
+    // Transfer EarlyPCNT's PCNT unit to TrafficMonitor — single unit, zero gap.
+    // EarlyPCNT was started in the pre-main constructor; TrafficMonitor now owns it.
+    // The accumulated pulse count is preserved for the checkpoint readings below.
+    trafficMonitor.adoptUnit(EarlyPCNT::detach(), CS_SENSE);
 
     // Determine boot type: software reset (ESP_RST_SW) = soft-reboot / FastBoot.
     // Cold boots (power-on, brownout, watchdog) use distinct reason codes.
@@ -564,44 +564,48 @@ void setup() {
 
         if (fastBoot) {
             LOG("[FastBoot] Software reset — skipping electrical stabilization");
-            {
-                int p = EarlyPCNT::read();
-                LOG_INFOF("[PCNT] Pre-SmartWait (FastBoot): %d pulses", p);
-            }
+            // Run one update() to drain any accumulated pulses into activity tracking
+            trafficMonitor.update();
+            LOG_INFOF("[PCNT] Pre-SmartWait (FastBoot): active=%d idle=%lums",
+                      trafficMonitor.hasActivityLatch() ? 1 : 0,
+                      (unsigned long)trafficMonitor.getConsecutiveIdleMs());
             runSmartWait();
         } else {
-            {
-                int p = EarlyPCNT::read();
-                LOG_INFOF("[PCNT] Pre-stabilization: %d pulses", p);
-            }
+            // Run one update() to drain accumulated pulses from the constructor era
+            trafficMonitor.update();
+            LOG_INFOF("[PCNT] Pre-stabilization: active=%d",
+                      trafficMonitor.hasActivityLatch() ? 1 : 0);
             LOG("Waiting 8s for electrical stabilization...");
             delay(8000);
-            {
-                int p = EarlyPCNT::read();
-                LOG_INFOF("[PCNT] Post-stabilization: %d pulses", p);
-            }
+            // Continue sampling during stabilization
+            trafficMonitor.update();
+            LOG_INFOF("[PCNT] Post-stabilization: activeSamples=%lu idleSamples=%lu latch=%d",
+                      (unsigned long)trafficMonitor.getTotalActiveSamples(),
+                      (unsigned long)trafficMonitor.getTotalIdleSamples(),
+                      trafficMonitor.hasActivityLatch() ? 1 : 0);
             runSmartWait();
         }
         
-        // ── Final PCNT reading + NVS persistence + teardown ──
-        int finalPulses = EarlyPCNT::read();
-        LOG_INFOF("[PCNT] Final reading: %d pulses", finalPulses);
-        EarlyPCNT::teardown();
-
         // ── PCNT capability detection ──
-        // On power-on boot: PCNT had the full init window to count CPAP SD activity.
-        //   pulses > 0  → CPAP uses 4-bit SD (AS11), DAT3 is active → smart mode works
-        //   pulses == 0 → CPAP uses 1-bit/SPI (AS10), DAT3 idle → smart mode unavailable
+        // The single PCNT unit has been counting since the pre-main constructor.
+        // TrafficMonitor's activity latch captures ANY pulses detected since boot.
+        // On power-on boot: write result unconditionally to NVS.
+        //   Users may switch cards between AS10 and AS11 — power-on boot is
+        //   required when moving the card, so NVS must reflect the current machine.
         // On non-power-on boot: PCNT misses the init window, so read from NVS.
         {
+            bool activityDetected = trafficMonitor.hasActivityLatch();
+            LOG_INFOF("[PCNT] Activity latch: %s (activeSamples=%lu)",
+                      activityDetected ? "YES" : "NO",
+                      (unsigned long)trafficMonitor.getTotalActiveSamples());
+
             Preferences pcntPrefs;
             pcntPrefs.begin("pcnt_cap", false);
             if (resetReason == ESP_RST_POWERON) {
-                g_pcntCapable = (finalPulses > 0);
+                g_pcntCapable = activityDetected;
                 pcntPrefs.putBool("capable", g_pcntCapable);
-                LOG_INFOF("[PCNT] Power-on detection: %s (%d pulses)",
-                          g_pcntCapable ? "CAPABLE (4-bit SD, smart mode OK)" : "NOT CAPABLE (1-bit SD, scheduled only)",
-                          finalPulses);
+                LOG_INFOF("[PCNT] Power-on detection: %s",
+                          g_pcntCapable ? "CAPABLE (4-bit SD, smart mode OK)" : "NOT CAPABLE (1-bit SD, scheduled only)");
             } else {
                 g_pcntCapable = pcntPrefs.getBool("capable", false);
                 LOG_INFOF("[PCNT] Using cached capability: %s",
@@ -612,24 +616,46 @@ void setup() {
 
         LOG("Boot delay complete.");
 
-        // ── Stealth config.txt read (unified AS10 + AS11) ──
-        // Reads config.txt WITHOUT sending CMD0 — the CPAP's SD session is preserved.
-        // This replaces the old cached-config workaround and avoids the AS10 reboot loop.
-        bool stealthConfigOK = false;
-        String rawConfig = StealthConfigReader::readConfigTxt();
-        if (!rawConfig.isEmpty()) {
-            stealthConfigOK = config.loadFromString(rawConfig);
-            if (stealthConfigOK) {
-                LOG_INFO("[Stealth] Config loaded successfully via stealth read");
+        // ── Config read: conditional on PCNT detection ──
+        // AS11 (pcntCapable): regular SD init — AS11 gracefully re-inits the card
+        //   when MUX returns. Avoids the unclean card state caused by stealth mode.
+        // AS10 (!pcntCapable): stealth config read — preserves card state, prevents
+        //   the AS10 reboot loop caused by regular SD init.
+        bool configLoaded = false;
+
+        if (g_pcntCapable) {
+            // AS11: regular SD init is safe
+            LOG_INFO("[Config] AS11 detected — using regular SD init for config read");
+            if (sdManager.takeControl()) {
+                configLoaded = config.loadFromSD(sdManager.getFS());
+                if (configLoaded) {
+                    LOG_INFO("[Config] Config loaded via regular SD init");
+                    Logger::getInstance().checkPreviousBootError(sdManager.getFS());
+                } else {
+                    LOG_WARN("[Config] Regular SD init succeeded but config parse failed");
+                }
+                sdManager.releaseControl();
             } else {
-                LOG_WARN("[Stealth] Stealth read returned data but parsing failed");
+                LOG_WARN("[Config] SD takeControl failed — will try stealth fallback");
             }
         } else {
-            LOG_WARN("[Stealth] Stealth config read failed — will fall back to regular SD mount");
+            // AS10: stealth mode required
+            LOG_INFO("[Config] AS10 detected — using stealth config read");
+            String rawConfig = StealthConfigReader::readConfigTxt();
+            if (!rawConfig.isEmpty()) {
+                configLoaded = config.loadFromString(rawConfig);
+                if (configLoaded) {
+                    LOG_INFO("[Config] Config loaded via stealth read");
+                } else {
+                    LOG_WARN("[Config] Stealth read returned data but parsing failed");
+                }
+            } else {
+                LOG_WARN("[Config] Stealth config read failed");
+            }
         }
 
-        // ── Fallback: regular SD mount if stealth config read failed ──
-        if (!stealthConfigOK) {
+        // ── Fallback: regular SD mount if primary config read failed ──
+        if (!configLoaded) {
             LOG("Falling back to regular SD card access for config...");
 
             while (!sdManager.takeControl()) {
@@ -655,7 +681,6 @@ void setup() {
                 return;
             }
 
-            // Check if a previous boot left an emergency error log on the SD card
             Logger::getInstance().checkPreviousBootError(sdManager.getFS());
 
             sdManager.releaseControl();
@@ -944,6 +969,20 @@ void handleListening() {
             g_noWorkSuppressed = false;
             trafficMonitor.clearActivityLatch();
             LOG("[FSM] No-work suppression cleared — new bus activity detected");
+        }
+
+        // AS10 fallback: no PCNT activity possible (DAT3 unused in 1-bit mode),
+        // so clear suppression on a timer to enable periodic re-scans for new data.
+        // Uses INACTIVITY_SECONDS as the interval — the natural "silence" threshold.
+        if (!g_pcntCapable && g_noWorkSuppressed) {
+            static unsigned long lastPeriodicClearMs = 0;
+            if (lastPeriodicClearMs == 0) lastPeriodicClearMs = millis();
+            unsigned long periodicIntervalMs = (unsigned long)config.getInactivitySeconds() * 1000UL;
+            if (millis() - lastPeriodicClearMs >= periodicIntervalMs) {
+                lastPeriodicClearMs = millis();
+                g_noWorkSuppressed = false;
+                LOG("[FSM] AS10 periodic check — clearing no-work suppression (no PCNT available)");
+            }
         }
 
         ScheduleManager* sm = uploader->getScheduleManager();
