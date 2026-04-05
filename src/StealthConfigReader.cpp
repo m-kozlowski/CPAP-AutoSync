@@ -540,3 +540,79 @@ dir_done:
     LOG_INFO("[Stealth] === Stealth config.txt read complete ===");
     return result;
 }
+
+// ============================================================================
+// restoreCardState — restore card to Standby after SD_MMC.end()
+//
+// After a regular upload cycle, SD_MMC.end() deinits the SDMMC host but does
+// NOT send CMD0 — the card retains its state at RCA 0x1388.  We re-init the
+// SDMMC host in stealth mode (no CMD0), verify the card, force 1-bit mode
+// (AS10 native), and deselect (CMD7(0)) to put the card back in Standby.
+// This is the state the AS10 CPAP expects when it resumes SD access.
+//
+// Caller MUST still hold the MUX on ESP side.  This function does NOT touch
+// the MUX — SDCardManager::releaseControl() handles the MUX switch after.
+// ============================================================================
+bool StealthConfigReader::restoreCardState() {
+    LOG_INFO("[StealthRestore] Attempting card state restoration...");
+
+    // Step 1: Re-init SDMMC in stealth mode (no CMD0, no init clocks)
+    if (!scrInitHardware()) {
+        LOG_ERROR("[StealthRestore] Hardware re-init failed — card state NOT restored");
+        return false;
+    }
+
+    // Step 2: Mask SDMMC ISR so bare-metal polling works
+    uint32_t savedIntMask = SDMMC.intmask.val;
+    SDMMC.intmask.val = 0;
+
+    // Step 3: CMD13(0x1388) — verify card is still alive
+    const uint16_t KNOWN_RCA = 0x1388;
+    uint32_t r1 = 0;
+    bool ok = scrSendCmd13(KNOWN_RCA, &r1);
+    uint8_t cardState = (r1 >> 9) & 0x0F;
+
+    if (!ok || cardState < 3 || r1 == 0) {
+        LOG_WARNF("[StealthRestore] CMD13 failed (ok=%d state=%d r1=0x%08X) — cannot restore",
+                  ok, cardState, r1);
+        SDMMC.intmask.val = savedIntMask;
+        scrDeinitHardware();
+        return false;
+    }
+
+    LOG_INFOF("[StealthRestore] Card alive: state=%d(%s)", cardState, SCR_SD_STATE_NAME(cardState));
+
+    // Step 4: Force 1-bit mode via ACMD6(0) — AS10 native bus width
+    if (cardState == 4) {  // Transfer state — card is selected
+        uint32_t resp55 = 0, resp6 = 0;
+        uint32_t acmdFlags = (1u << 6) | (1u << 8) | (1u << 13) | (1u << 29);
+        scrSendCmd(55, (uint32_t)KNOWN_RCA << 16, acmdFlags, &resp55, 50000);
+        scrSendCmd(6, 0, acmdFlags, &resp6, 50000);
+        scrSetHostBusWidth(1);
+    }
+
+    // Step 5: Deselect card → Standby state (CMD7 with RCA=0)
+    if (cardState >= 4) {  // Transfer, Data, Rcv, Prg states — need deselect
+        if (!scrSendCmd7(0)) {
+            LOG_WARN("[StealthRestore] CMD7(0) deselect failed — card may not be in Standby");
+        } else {
+            LOG_INFO("[StealthRestore] Card deselected → Standby");
+        }
+    } else if (cardState == 3) {
+        LOG_INFO("[StealthRestore] Card already in Standby — no deselect needed");
+    }
+
+    // Step 6: Verify final state
+    r1 = 0;
+    if (scrSendCmd13(KNOWN_RCA, &r1)) {
+        uint8_t finalState = (r1 >> 9) & 0x0F;
+        LOG_INFOF("[StealthRestore] Final card state: %d(%s)", finalState, SCR_SD_STATE_NAME(finalState));
+    }
+
+    // Step 7: Restore ISR mask and deinit hardware
+    SDMMC.intmask.val = savedIntMask;
+    scrDeinitHardware();
+
+    LOG_INFO("[StealthRestore] Card state restoration complete");
+    return true;
+}

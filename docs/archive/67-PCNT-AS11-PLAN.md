@@ -1,8 +1,8 @@
 # 67 — Implementation Plan: Earliest PCNT, Conditional Stealth, AS10 Periodic Checks
 
-**Status**: PLAN — awaiting approval  
+**Status**: IMPLEMENTED (v3.5i-beta1)  
 **Prerequisite**: Docs 60–66, GitHub issues #53, #54, #55  
-**Goal**: Fix all three open beta bugs and lay groundwork for AS10 stealth card restoration
+**Goal**: Fix all three open beta bugs and implement AS10 stealth card restoration
 
 ---
 
@@ -16,7 +16,7 @@ Five coordinated changes, ordered by priority:
 | 2 | Unify EarlyPCNT + TrafficMonitor into single PCNT unit | Simplicity, #53 | Low |
 | 3 | Conditional stealth: stealth for AS10, regular SD init for AS11 | #54 (SD Card Error) | Low |
 | 4 | AS10 periodic re-checks in scheduled mode | #55 (stuck LISTENING) | Low |
-| 5 | Stealth card-state restoration before AS10 MUX handoff | Prevent AS10 power-cycle | Medium |
+| 5 | Stealth card-state restoration before AS10 MUX handoff (`STEALTH_RESTORE`) | Prevent AS10 power-cycle | Medium |
 
 ---
 
@@ -281,24 +281,26 @@ After SD_MMC.end():
 - **Testing required**: Must verify on real AS10 hardware that the card retains RCA 0x1388 after `SD_MMC.end()`.
 - **Partial benefit**: Even if this works, the AS10 CPAP may have other reasons to power-cycle (it periodically resets the SD card every ~60s during therapy). This fix would only help for the upload-handoff scenario.
 
-### Recommendation
+### Implementation (v3.5i-beta1)
 
-**Defer to a follow-up release.** This is the most complex change and the one with the most unknowns. Changes 1–4 address all three reported bugs. Change 5 is an optimization that improves AS10 multi-cycle upload behavior but is not strictly necessary — the existing soft-reboot after upload handles the power-cycle gracefully.
-
-If implemented, the stealth restoration should be added to `SDCardManager::releaseControl()` behind a guard:
+Implemented in `SDCardManager::releaseControl()` behind a config guard. The new `STEALTH_RESTORE` config key (default: `true`) controls whether the restore runs. Only active on AS10 (`!g_pcntCapable`).
 
 ```cpp
-void SDCardManager::releaseControl() {
-    // ... existing SD_MMC.end() ...
-
-    if (!g_pcntCapable) {
-        // AS10: attempt stealth restoration to prevent power-cycle
-        stealthRestoreCardState();
-    }
-
-    // ... existing tri-state + MUX release ...
+// In SDCardManager::releaseControl(), after SD_MMC.end():
+if (!g_pcntCapable && config.getStealthRestore()) {
+    StealthConfigReader::restoreCardState();
 }
 ```
+
+`StealthConfigReader::restoreCardState()` implements the sequence from the feasibility analysis:
+1. `scrInitHardware()` — stealth SDMMC init (no CMD0)
+2. `CMD13(0x1388)` — verify card alive, get state
+3. `ACMD6(0)` — force 1-bit mode if in Transfer state
+4. `CMD7(0)` — deselect → Standby
+5. Verify final state via CMD13
+6. `scrDeinitHardware()` — deinit SDMMC peripheral
+
+The caller (`releaseControl`) then proceeds with the existing tri-state + MUX release.
 
 ---
 
@@ -339,7 +341,7 @@ void SDCardManager::releaseControl() {
 │   └─ AS10: periodic re-check every INACTIVITY_SECONDS         │
 │  UPLOADING → RELEASING:                                       │
 │   ├─ AS11: SD_MMC.end() + release (AS11 re-inits gracefully)  │
-│   └─ AS10: SD_MMC.end() + release (+ future: stealth restore) │
+│   └─ AS10: SD_MMC.end() + stealth restore + release            │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -347,10 +349,12 @@ void SDCardManager::releaseControl() {
 
 ## Implementation Order
 
-1. **§1 + §2** (single PR): Earliest PCNT + unified unit. Low risk, fixes #53.
-2. **§3** (single PR): Conditional stealth. Low risk, fixes #54. Depends on §1.
-3. **§4** (single PR): AS10 periodic re-checks. Low risk, fixes #55. Independent of §3.
-4. **§5** (future PR): Stealth card restoration. Medium risk. Requires AS10 hardware testing.
+All five changes implemented in v3.5i-beta1:
+
+1. **§1 + §2**: Earliest PCNT + unified unit. Fixes #53.
+2. **§3**: Conditional stealth (AS10=stealth, AS11=regular SD). Fixes #54.
+3. **§4**: AS10 periodic re-checks. Fixes #55.
+4. **§5**: Stealth card restoration (`STEALTH_RESTORE=true` default). AS10 optimization.
 
 ---
 

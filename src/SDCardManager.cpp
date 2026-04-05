@@ -8,6 +8,10 @@
 #include "Config.h"
 extern Config config;
 
+// Stealth restore: restore card state after upload (AS10 only)
+#include "StealthConfigReader.h"
+extern bool g_pcntCapable;
+
 SDCardManager::SDCardManager() : 
     initialized(false), 
     espHasControl(false),
@@ -95,6 +99,19 @@ void SDCardManager::releaseControl() {
 
     SD_MMC.end();
     initialized = false;
+
+    // ── Stealth card-state restoration (AS10 only) ──
+    // After SD_MMC.end(), the SDMMC host is deinitialized but the card retains
+    // its state at RCA 0x1388 (no CMD0 was sent).  Re-init the host in stealth
+    // mode, force 1-bit, and deselect (CMD7(0)) → Standby.  This is the state
+    // the AS10 CPAP expects — prevents it from power-cycling the ESP.
+    if (!g_pcntCapable && config.getStealthRestore()) {
+        if (StealthConfigReader::restoreCardState()) {
+            LOG_INFO("[SDCard] Card state restored to Standby via stealth (AS10 mode)");
+        } else {
+            LOG_WARN("[SDCard] Stealth card-state restoration failed — AS10 may power-cycle");
+        }
+    }
 
     // ── AS10 FIX: Hold SD bus lines high (idle) during MUX transition ──
     // After SD_MMC.end() the SDMMC peripheral releases the GPIOs, leaving
