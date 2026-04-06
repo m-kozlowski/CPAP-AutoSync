@@ -9,7 +9,26 @@
 
 volatile uint8_t WiFiManager::_lastDisconnectReason = 0;
 
-WiFiManager::WiFiManager() : connected(false), mdnsStarted(false), _pendingTxPower(0), _hasPendingTxPower(false) {}
+WiFiManager::WiFiManager() : connected(false), mdnsStarted(false), apMode(false), _pendingTxPower(0), _hasPendingTxPower(false) {}
+
+void WiFiManager::startAP() {
+    LOG("Starting AP Mode (CPAP-AutoSync) for configuration");
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP("CPAP-AutoSync");
+    
+    LOGF("AP IP address: %s", WiFi.softAPIP().toString().c_str());
+    
+    // Start Captive Portal DNS server
+    dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
+    dnsServer.start(53, "*", WiFi.softAPIP());
+    apMode = true;
+}
+
+void WiFiManager::processDNS() {
+    if (apMode) {
+        dnsServer.processNextRequest();
+    }
+}
 
 void WiFiManager::setupEventHandlers() {
     WiFi.onEvent(onWiFiEvent);

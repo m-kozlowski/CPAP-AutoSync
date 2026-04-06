@@ -4,6 +4,7 @@
 #include "version.h"
 #include "web_ui.h"
 #include "WebStatus.h"
+#include "setup_html_gz.h"
 #include <time.h>
 #include <SD_MMC.h>
 #include <LittleFS.h>
@@ -26,6 +27,7 @@ extern UploadState currentState;
 extern unsigned long stateEnteredAt;
 extern unsigned long cooldownStartedAt;
 extern volatile bool uploadTaskRunning;
+extern bool g_apSetupMode;
 
 // CPU load globals (defined in main.cpp, updated by idle hooks)
 extern volatile uint32_t g_idleCount0, g_idleCount1;
@@ -217,7 +219,15 @@ bool CpapWebServer::begin() {
     // Register request handlers
     server->on("/", [this]() {
         if (this->redirectToIpIfMdnsRequest()) return;
-        this->handleRoot();
+        if (g_apSetupMode) {
+            this->handleSetupPage();
+        } else {
+            this->handleRoot();
+        }
+    });
+    server->on("/setup", [this]() {
+        if (this->redirectToIpIfMdnsRequest()) return;
+        this->handleSetupPage();
     });
     server->on("/trigger-upload", [this]() {
         if (this->redirectToIpIfMdnsRequest()) return;
@@ -246,6 +256,10 @@ bool CpapWebServer::begin() {
     server->on("/api/status", [this]() {
         if (this->redirectToIpIfMdnsRequest()) return;
         this->handleApiStatus();
+    });
+    server->on("/api/wifi-scan", [this]() {
+        if (this->redirectToIpIfMdnsRequest()) return;
+        this->handleApiWifiScan();
     });
     server->on("/api/config", [this]() {
         if (this->redirectToIpIfMdnsRequest()) return;
@@ -485,6 +499,47 @@ void CpapWebServer::handleApiConfig() {
     server->send(200, "application/json", g_webConfigBuf);
 }
 
+void CpapWebServer::handleSetupPage() {
+    server->sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+    server->sendHeader("Connection", "close");
+    server->sendHeader("Content-Encoding", "gzip");
+    server->send_P(200, "text/html", (const char*)setup_html_gz, setup_html_gz_len);
+}
+
+void CpapWebServer::handleApiWifiScan() {
+    addCorsHeaders(server);
+    server->sendHeader("Cache-Control", "no-store");
+    
+    int n = WiFi.scanNetworks(false, true); // sync scan, show hidden
+    if (n == WIFI_SCAN_FAILED) {
+        server->send(500, "application/json", "{\"error\":\"Scan failed\"}");
+        return;
+    }
+    
+    server->setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server->send(200, "application/json", "");
+    server->sendContent("[");
+    
+    for (int i = 0; i < n; ++i) {
+        String ssid = WiFi.SSID(i);
+        // Escape quotes and backslashes
+        ssid.replace("\\", "\\\\");
+        ssid.replace("\"", "\\\"");
+        
+        String json = "{";
+        json += "\"ssid\":\"" + ssid + "\",";
+        json += "\"rssi\":" + String(WiFi.RSSI(i)) + ",";
+        json += "\"auth\":" + String(WiFi.encryptionType(i));
+        json += "}";
+        
+        if (i < n - 1) json += ",";
+        server->sendContent(json);
+    }
+    
+    server->sendContent("]");
+    WiFi.scanDelete();
+}
+
 // Handle 404 errors
 void CpapWebServer::handleNotFound() {
     String uri = server->uri();
@@ -492,6 +547,14 @@ void CpapWebServer::handleNotFound() {
     server->sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
     server->sendHeader("Pragma", "no-cache");
     server->sendHeader("Connection", "close");
+    
+    if (g_apSetupMode) {
+        String url = "http://" + wifiManager->getIPAddress() + "/setup";
+        server->sendHeader("Location", url, true);
+        server->send(302, "text/plain", "");
+        server->client().stop();
+        return;
+    }
     
     // Silently handle common browser requests that we don't care about
     if (uri == "/favicon.ico" || uri == "/apple-touch-icon.png" || 
@@ -948,17 +1011,41 @@ void CpapWebServer::handleApiConfigRawGet() {
         server->send(404, "application/json", "{\"error\":\"config.txt not found\"}");
         return;
     }
-    size_t sz = f.size();
-    server->setContentLength(sz);
-    server->send(200, "text/plain", "");
-    // Stream in small chunks — no large heap allocation
-    static char chunk[256];
-    while (f.available()) {
-        int n = f.readBytes(chunk, sizeof(chunk));
-        if (n > 0) server->sendContent(chunk, n);
-    }
+    
+    String raw = f.readString();
     f.close();
     if (tookControl) sdManager->releaseControl();
+
+    String masked = "";
+    int start = 0;
+    while (start < raw.length()) {
+        int end = raw.indexOf('\n', start);
+        if (end == -1) end = raw.length();
+        
+        String line = raw.substring(start, end);
+        String trimmed = line;
+        trimmed.trim();
+        
+        String prefix = "";
+        if (trimmed.startsWith("WIFI_PASS=") && trimmed.length() > 10) prefix = "WIFI_PASS=";
+        else if (trimmed.startsWith("SMB_PASS=") && trimmed.length() > 9) prefix = "SMB_PASS=";
+        else if (trimmed.startsWith("SLEEPHQ_CLIENT_SECRET=") && trimmed.length() > 22) prefix = "SLEEPHQ_CLIENT_SECRET=";
+        
+        if (prefix.length() > 0) {
+            if (line.endsWith("\r")) {
+                masked += prefix + "******\r";
+            } else {
+                masked += prefix + "******";
+            }
+        } else {
+            masked += line;
+        }
+        
+        if (end < raw.length()) masked += "\n";
+        start = end + 1;
+    }
+
+    server->send(200, "text/plain", masked);
 }
 
 // ---------------------------------------------------------------------------
@@ -997,6 +1084,46 @@ void CpapWebServer::handleApiConfigRawPost() {
     }
 
     const String& body = server->arg("plain");
+
+    String unmasked = "";
+    int start = 0;
+    while (start < body.length()) {
+        int end = body.indexOf('\n', start);
+        if (end == -1) end = body.length();
+        
+        String line = body.substring(start, end);
+        String trimmed = line;
+        trimmed.trim();
+        
+        String prefix = "";
+        String origVal = "";
+        
+        if (trimmed == "WIFI_PASS=******") {
+            prefix = "WIFI_PASS=";
+            origVal = config ? config->getWifiPassword() : "";
+        } else if (trimmed == "SMB_PASS=******") {
+            prefix = "SMB_PASS=";
+            origVal = config ? config->getEndpointPassword() : "";
+        } else if (trimmed == "SLEEPHQ_CLIENT_SECRET=******") {
+            prefix = "SLEEPHQ_CLIENT_SECRET=";
+            origVal = config ? config->getCloudClientSecret() : "";
+        }
+        
+        if (prefix.length() > 0) {
+            if (line.endsWith("\r")) {
+                unmasked += prefix + origVal + "\r";
+            } else {
+                unmasked += prefix + origVal;
+            }
+        } else {
+            unmasked += line;
+        }
+        
+        if (end < body.length()) unmasked += "\n";
+        start = end + 1;
+    }
+
+    size_t unmaskedLen = unmasked.length();
     fs::FS& sd = sdManager->getFS();
 
     // Write atomically: write to temp file, then rename
@@ -1009,15 +1136,15 @@ void CpapWebServer::handleApiConfigRawPost() {
     }
 
     size_t written = 0;
-    while (written < bodyLen) {
-        size_t toWrite = bodyLen - written;
+    while (written < unmaskedLen) {
+        size_t toWrite = unmaskedLen - written;
         if (toWrite > 512) toWrite = 512;
-        size_t n = f.write((const uint8_t*)body.c_str() + written, toWrite);
+        size_t n = f.write((const uint8_t*)unmasked.c_str() + written, toWrite);
         if (n == 0) break;
         written += n;
     }
 
-    if (written != bodyLen) {
+    if (written != unmaskedLen) {
         sd.remove("/config.txt.tmp");
         f.close();
         if (tookControl) sdManager->releaseControl();

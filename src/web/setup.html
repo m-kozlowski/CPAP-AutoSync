@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CPAP AutoSync Configuration</title>
+    <style>
+        body { font-family: system-ui, -apple-system, sans-serif; line-height: 1.5; max-width: 800px; margin: 0 auto; padding: 20px; background: #f5f5f5; color: #333; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        h1, h2, h3 { color: #2c3e50; margin-top: 0; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; font-weight: bold; margin-bottom: 5px; }
+        input[type="text"], input[type="password"], input[type="number"], select, textarea { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        input[type="checkbox"] { transform: scale(1.2); margin-right: 10px; }
+        .checkbox-label { display: flex; align-items: center; font-weight: normal; }
+        button { background: #3498db; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 16px; transition: background 0.2s; }
+        button:hover { background: #2980b9; }
+        button:disabled { background: #95a5a6; cursor: not-allowed; }
+        .scan-btn { background: #2ecc71; padding: 8px 12px; margin-top: 5px; width: auto; font-size: 14px; }
+        .scan-btn:hover { background: #27ae60; }
+        .danger-btn { background: #e74c3c; }
+        .danger-btn:hover { background: #c0392b; }
+        .hidden { display: none !important; }
+        .help-text { font-size: 0.85em; color: #7f8c8d; margin-top: 4px; display: block; }
+        .status { padding: 10px; border-radius: 4px; margin-bottom: 15px; display: none; }
+        .status.success { background: #d4edda; color: #27ae60; display: block; }
+        .status.error { background: #f8d7da; color: #c0392b; display: block; }
+        .status.info { background: #d1ecf1; color: #0c5460; display: block; }
+        .header-actions { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        #advanced-raw { font-family: monospace; white-space: pre; height: 300px; resize: vertical; }
+        .input-group { display: flex; gap: 10px; align-items: flex-start; flex-direction: column; }
+        .input-group > div { width: 100%; display: flex; gap: 10px; }
+        @media (max-width: 600px) { .input-group > div { flex-direction: column; } }
+    </style>
+</head>
+<body>
+    <div class="header-actions">
+        <h1>CPAP AutoSync</h1>
+        <div>
+            <button id="btn-save" onclick="saveConfig()">Save & Restart</button>
+        </div>
+    </div>
+
+    <div id="status-msg" class="status"></div>
+
+    <div id="loading" class="card">
+        <p>Loading configuration...</p>
+    </div>
+
+    <div id="app" class="hidden">
+        <form id="config-form" onsubmit="event.preventDefault();"></form>
+        
+        <div class="card">
+            <h2>Advanced</h2>
+            <div class="form-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" id="show-raw" onchange="document.getElementById('raw-container').classList.toggle('hidden', !this.checked)">
+                    Show Raw Config / Unrecognized Entries
+                </label>
+            </div>
+            <div id="raw-container" class="hidden form-group">
+                <label for="advanced-raw">Raw config.txt Preview (Auto-generated on Save)</label>
+                <textarea id="advanced-raw" readonly></textarea>
+                <span class="help-text">Any configuration keys not present in the visual editor are preserved here. Comments are also preserved in the final output.</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Schema definition for visual editor
+        const SCHEMA = [
+            {
+                section: "WiFi Connection",
+                fields: [
+                    { key: "WIFI_SSID", label: "WiFi Network Name (SSID)", type: "text", help: "The exact name of your WiFi network." },
+                    { key: "WIFI_PASS", label: "WiFi Password", type: "password", help: "Leave as ****** to keep current password." },
+                    { key: "WIFI_BSSID", label: "Lock to BSSID (Optional)", type: "text", help: "MAC address of specific AP to connect to (e.g., AA:BB:CC:DD:EE:FF)." }
+                ]
+            },
+            {
+                section: "Time & Schedule",
+                fields: [
+                    { key: "TZ_STRING", label: "Timezone", type: "tz-select", help: "Your local timezone." },
+                    { key: "UPLOAD_START_HOUR", label: "Upload Window Start Hour (0-23)", type: "number", min: 0, max: 23 },
+                    { key: "UPLOAD_END_HOUR", label: "Upload Window End Hour (0-23)", type: "number", min: 0, max: 23 },
+                    { key: "COOLDOWN_MINUTES", label: "Cooldown Minutes", type: "number", help: "Minutes to wait after upload before checking again." }
+                ]
+            },
+            {
+                section: "Cloud Uploads (SleepHQ)",
+                fields: [
+                    { key: "CLOUD_ENABLED", label: "Enable Cloud Uploads", type: "boolean" },
+                    { key: "SLEEPHQ_TEAM", label: "SleepHQ Team ID", type: "text", condition: "CLOUD_ENABLED" },
+                    { key: "SLEEPHQ_CLIENT_ID", label: "SleepHQ Client ID", type: "text", condition: "CLOUD_ENABLED" },
+                    { key: "SLEEPHQ_CLIENT_SECRET", label: "SleepHQ Client Secret", type: "password", condition: "CLOUD_ENABLED" }
+                ]
+            },
+            {
+                section: "SMB / Network Share",
+                fields: [
+                    { key: "SMB_ENABLED", label: "Enable SMB Uploads", type: "boolean" },
+                    { key: "SMB_HOST", label: "SMB Host IP/Name", type: "text", condition: "SMB_ENABLED" },
+                    { key: "SMB_SHARE", label: "SMB Share Name", type: "text", condition: "SMB_ENABLED" },
+                    { key: "SMB_USER", label: "SMB Username", type: "text", condition: "SMB_ENABLED" },
+                    { key: "SMB_PASS", label: "SMB Password", type: "password", condition: "SMB_ENABLED" },
+                    { key: "SMB_FOLDER", label: "Target Folder Path", type: "text", condition: "SMB_ENABLED", help: "e.g., /cpap_data/my_machine" }
+                ]
+            },
+            {
+                section: "System Settings",
+                fields: [
+                    { key: "STEALTH_RESTORE", label: "Enable Stealth Restore (AS10)", type: "boolean", help: "Prevents AS10 from rebooting the ESP after upload." },
+                    { key: "MINIMIZE_REBOOTS", label: "Minimize Reboots", type: "boolean", help: "Skip elective reboots after successful uploads." },
+                    { key: "INACTIVITY_SECONDS", label: "Inactivity Timeout", type: "number", help: "Seconds of SD bus silence required before starting upload." }
+                ]
+            }
+        ];
+
+        let rawLines = []; // Array of { type: 'kv'|'comment'|'blank', key: '', val: '', raw: '' }
+        let timezones = []; // Loaded from GitHub
+
+        async function init() {
+            try {
+                // Fetch config
+                const res = await fetch('/api/config-raw');
+                const text = res.ok ? await res.text() : "";
+                parseConfig(text);
+                
+                // Fetch Timezones asynchronously
+                fetchTimezones();
+
+                renderUI();
+                document.getElementById('loading').classList.add('hidden');
+                document.getElementById('app').classList.remove('hidden');
+            } catch (err) {
+                showStatus('Failed to load configuration. Make sure SD card is inserted.', 'error');
+            }
+        }
+
+        function parseConfig(text) {
+            rawLines = [];
+            const lines = text.split(/\r?\n/);
+            for (let line of lines) {
+                const trimmed = line.trim();
+                if (trimmed.length === 0) {
+                    rawLines.push({ type: 'blank', raw: line });
+                } else if (trimmed.startsWith('#')) {
+                    rawLines.push({ type: 'comment', raw: line });
+                } else {
+                    const eqIdx = line.indexOf('=');
+                    if (eqIdx > 0) {
+                        const key = line.substring(0, eqIdx).trim();
+                        const val = line.substring(eqIdx + 1).trim();
+                        rawLines.push({ type: 'kv', key: key, val: val, raw: line });
+                    } else {
+                        rawLines.push({ type: 'raw', raw: line });
+                    }
+                }
+            }
+        }
+
+        function getValue(key) {
+            const entry = rawLines.find(l => l.type === 'kv' && l.key === key);
+            return entry ? entry.val : "";
+        }
+
+        function updateValueInParsedData(key, value) {
+            // Find existing
+            const entry = rawLines.find(l => l.type === 'kv' && l.key === key);
+            if (entry) {
+                entry.val = value;
+                entry.raw = `${key}=${value}`;
+            } else {
+                // Append new key-value to the end
+                rawLines.push({ type: 'kv', key: key, val: value, raw: `${key}=${value}` });
+            }
+        }
+
+        async function fetchTimezones() {
+            try {
+                const res = await fetch('https://raw.githubusercontent.com/nayarsystems/posix_tz_db/master/zones.csv');
+                if (!res.ok) throw new Error("Failed");
+                const csv = await res.text();
+                const lines = csv.split('\n');
+                timezones = lines.map(line => {
+                    const parts = line.split(',');
+                    return parts.length >= 2 ? { name: parts[0], posix: parts[1] } : null;
+                }).filter(tz => tz && tz.name);
+                
+                populateTzSelect();
+            } catch (err) {
+                console.log("Could not load timezones from GitHub", err);
+            }
+        }
+
+        function populateTzSelect() {
+            const select = document.getElementById('field-TZ_STRING-select');
+            if (!select || timezones.length === 0) return;
+            
+            const currentTz = getValue('TZ_STRING');
+            let found = false;
+
+            select.innerHTML = '<option value="">-- Select Timezone --</option>';
+            timezones.forEach(tz => {
+                const opt = document.createElement('option');
+                opt.value = tz.posix;
+                opt.textContent = tz.name;
+                if (tz.posix === currentTz) {
+                    opt.selected = true;
+                    found = true;
+                }
+                select.appendChild(opt);
+            });
+
+            // If current TZ string isn't in the standard list, show it anyway
+            if (currentTz && !found) {
+                const opt = document.createElement('option');
+                opt.value = currentTz;
+                opt.textContent = `Custom (${currentTz})`;
+                opt.selected = true;
+                select.appendChild(opt);
+            }
+        }
+
+        async function scanWifi() {
+            const btn = document.getElementById('btn-scan');
+            const select = document.getElementById('wifi-networks');
+            const ssidInput = document.getElementById('field-WIFI_SSID');
+            
+            btn.textContent = 'Scanning...';
+            btn.disabled = true;
+            select.classList.add('hidden');
+            
+            try {
+                const res = await fetch('/api/wifi-scan');
+                if (!res.ok) throw new Error("Failed");
+                const networks = await res.json();
+                
+                select.innerHTML = '<option value="">-- Select Network --</option>';
+                networks.forEach(net => {
+                    const opt = document.createElement('option');
+                    opt.value = net.ssid;
+                    const auth = net.auth !== 0 ? '🔒' : '🔓';
+                    opt.textContent = `${auth} ${net.ssid} (${net.rssi}dBm)`;
+                    select.appendChild(opt);
+                });
+                
+                select.classList.remove('hidden');
+                
+                select.onchange = (e) => {
+                    if (e.target.value) {
+                        ssidInput.value = e.target.value;
+                    }
+                };
+            } catch (err) {
+                showStatus('WiFi scan failed. You can still type the SSID manually.', 'error');
+            } finally {
+                btn.textContent = 'Scan WiFi';
+                btn.disabled = false;
+            }
+        }
+
+        function renderUI() {
+            const form = document.getElementById('config-form');
+            form.innerHTML = '';
+
+            SCHEMA.forEach((section, sIdx) => {
+                const card = document.createElement('div');
+                card.className = 'card';
+                card.id = `section-${sIdx}`;
+                
+                const h2 = document.createElement('h2');
+                h2.textContent = section.section;
+                card.appendChild(h2);
+
+                section.fields.forEach(field => {
+                    const group = document.createElement('div');
+                    group.className = 'form-group';
+                    group.id = `group-${field.key}`;
+
+                    const val = getValue(field.key);
+
+                    if (field.type === 'boolean') {
+                        const label = document.createElement('label');
+                        label.className = 'checkbox-label';
+                        
+                        const input = document.createElement('input');
+                        input.type = 'checkbox';
+                        input.id = `field-${field.key}`;
+                        input.checked = (val.toLowerCase() === 'true');
+                        input.onchange = updateConditionals;
+                        
+                        label.appendChild(input);
+                        label.appendChild(document.createTextNode(field.label));
+                        group.appendChild(label);
+                        
+                        if (field.help) {
+                            const help = document.createElement('span');
+                            help.className = 'help-text';
+                            help.textContent = field.help;
+                            group.appendChild(help);
+                        }
+
+                    } else if (field.type === 'tz-select') {
+                        const label = document.createElement('label');
+                        label.htmlFor = `field-${field.key}`;
+                        label.textContent = field.label;
+                        group.appendChild(label);
+
+                        const inputGroup = document.createElement('div');
+                        inputGroup.className = 'input-group';
+                        
+                        const innerDiv = document.createElement('div');
+                        
+                        // Select element
+                        const select = document.createElement('select');
+                        select.id = `field-${field.key}-select`;
+                        select.innerHTML = '<option value="">Loading timezones...</option>';
+                        select.onchange = (e) => { document.getElementById(`field-${field.key}`).value = e.target.value; };
+                        innerDiv.appendChild(select);
+                        
+                        inputGroup.appendChild(innerDiv);
+
+                        // Hidden actual input to store raw posix
+                        const input = document.createElement('input');
+                        input.type = 'text';
+                        input.id = `field-${field.key}`;
+                        input.value = val;
+                        input.placeholder = 'POSIX TZ string';
+                        input.style.marginTop = '10px';
+                        input.oninput = (e) => {
+                            // If user types manually, reset select
+                            const sel = document.getElementById(`field-${field.key}-select`);
+                            sel.value = "";
+                        };
+                        inputGroup.appendChild(input);
+
+                        group.appendChild(inputGroup);
+
+                        if (field.help) {
+                            const help = document.createElement('span');
+                            help.className = 'help-text';
+                            help.textContent = field.help;
+                            group.appendChild(help);
+                        }
+
+                    } else {
+                        const label = document.createElement('label');
+                        label.htmlFor = `field-${field.key}`;
+                        label.textContent = field.label;
+                        group.appendChild(label);
+
+                        if (field.key === 'WIFI_SSID') {
+                            const inputGroup = document.createElement('div');
+                            inputGroup.className = 'input-group';
+                            const innerDiv = document.createElement('div');
+                            
+                            const input = document.createElement('input');
+                            input.type = 'text';
+                            input.id = `field-${field.key}`;
+                            input.value = val;
+                            innerDiv.appendChild(input);
+                            
+                            const btn = document.createElement('button');
+                            btn.type = 'button';
+                            btn.id = 'btn-scan';
+                            btn.className = 'scan-btn';
+                            btn.textContent = 'Scan WiFi';
+                            btn.onclick = scanWifi;
+                            innerDiv.appendChild(btn);
+                            
+                            inputGroup.appendChild(innerDiv);
+                            
+                            const select = document.createElement('select');
+                            select.id = 'wifi-networks';
+                            select.className = 'hidden';
+                            select.style.marginTop = '10px';
+                            inputGroup.appendChild(select);
+                            
+                            group.appendChild(inputGroup);
+                        } else {
+                            const input = document.createElement('input');
+                            input.type = field.type === 'number' ? 'number' : field.type;
+                            input.id = `field-${field.key}`;
+                            input.value = val;
+                            if (field.min !== undefined) input.min = field.min;
+                            if (field.max !== undefined) input.max = field.max;
+                            group.appendChild(input);
+                        }
+
+                        if (field.help) {
+                            const help = document.createElement('span');
+                            help.className = 'help-text';
+                            help.textContent = field.help;
+                            group.appendChild(help);
+                        }
+                    }
+
+                    // Store condition attribute on the DOM element for easy toggling
+                    if (field.condition) {
+                        group.dataset.condition = field.condition;
+                    }
+
+                    card.appendChild(group);
+                });
+                form.appendChild(card);
+            });
+
+            // If timezones already loaded, populate
+            if (timezones.length > 0) populateTzSelect();
+            
+            updateConditionals();
+            updateRawPreview();
+        }
+
+        function updateConditionals() {
+            const form = document.getElementById('config-form');
+            const groups = form.querySelectorAll('.form-group[data-condition]');
+            groups.forEach(group => {
+                const conditionKey = group.dataset.condition;
+                const conditionCb = document.getElementById(`field-${conditionKey}`);
+                if (conditionCb) {
+                    group.classList.toggle('hidden', !conditionCb.checked);
+                }
+            });
+        }
+
+        function buildConfigString() {
+            // First, update parsed rawLines array with current UI values
+            SCHEMA.forEach(section => {
+                section.fields.forEach(field => {
+                    const el = document.getElementById(`field-${field.key}`);
+                    if (!el) return;
+                    
+                    let val = field.type === 'boolean' ? (el.checked ? 'true' : 'false') : el.value.trim();
+                    
+                    // Handle password masking logic
+                    if (field.type === 'password') {
+                        const originalVal = getValue(field.key);
+                        if (val === "" || val === "******") {
+                            val = originalVal; // keep original
+                        }
+                    }
+
+                    // Only update if not empty, OR if it's boolean (booleans always write true/false)
+                    if (val !== "" || field.type === 'boolean') {
+                        updateValueInParsedData(field.key, val);
+                    }
+                });
+            });
+
+            // Reconstruct config string
+            let out = "";
+            for (let line of rawLines) {
+                out += line.raw + "\r\n";
+            }
+            return out;
+        }
+
+        function updateRawPreview() {
+            document.getElementById('advanced-raw').value = buildConfigString();
+        }
+
+        async function saveConfig() {
+            const btn = document.getElementById('btn-save');
+            btn.disabled = true;
+            btn.textContent = 'Saving...';
+            showStatus('', '');
+
+            const payload = buildConfigString();
+            updateRawPreview();
+
+            try {
+                const res = await fetch('/api/config-raw', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'text/plain' },
+                    body: payload
+                });
+
+                if (res.ok) {
+                    showStatus('Configuration saved successfully. Rebooting to apply changes...', 'success');
+                    // Add a reboot endpoint trigger if needed, or rely on device auto-rebooting
+                    fetch('/soft-reboot', { method: 'GET' }).catch(e => {});
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 5000);
+                } else {
+                    throw new Error("Server returned " + res.status);
+                }
+            } catch (err) {
+                showStatus('Failed to save configuration. Please try again.', 'error');
+                btn.disabled = false;
+                btn.textContent = 'Save & Restart';
+            }
+        }
+
+        function showStatus(msg, type) {
+            const el = document.getElementById('status-msg');
+            if (!msg) {
+                el.className = 'status hidden';
+                return;
+            }
+            el.textContent = msg;
+            el.className = `status ${type}`;
+        }
+
+        // Initialize App
+        window.addEventListener('DOMContentLoaded', init);
+        
+        // Auto-update raw preview on changes
+        document.addEventListener('input', updateRawPreview);
+        document.addEventListener('change', updateRawPreview);
+    </script>
+</body>
+</html>
