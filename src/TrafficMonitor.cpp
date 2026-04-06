@@ -83,6 +83,24 @@ void TrafficMonitor::begin(int pin) {
     LOGF("TrafficMonitor initialized on GPIO %d", _pin);
 }
 
+void TrafficMonitor::adoptUnit(PcntHandles h, int pin) {
+    _pin = pin;
+    _pcntUnit = h.unit;
+    _pcntChannel = h.channel;
+    
+    if (!_pcntUnit || !_pcntChannel) {
+        LOG_ERROR("TrafficMonitor::adoptUnit — null handles, falling back to begin()");
+        begin(pin);
+        return;
+    }
+    
+    _lastSampleTime = millis();
+    _lastSecondTime = millis();
+    _initialized = true;
+    
+    LOGF("TrafficMonitor adopted pre-existing PCNT unit on GPIO %d", _pin);
+}
+
 void TrafficMonitor::update() {
     if (!_initialized || _suspended) return;
     

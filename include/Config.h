@@ -71,6 +71,7 @@ private:
     int exclusiveAccessMinutes;    // X: max minutes of exclusive SD access
     int cooldownMinutes;           // Y: minutes to release SD between upload cycles
     bool enable1BitSdMode;         // Whether to use 1-bit SDIO mode instead of 4-bit
+    bool stealthRestore;            // Restore card state via stealth after upload (AS10 only)
     bool minimizeReboots;           // Skip elective reboots between upload sessions
     bool flushLogsDuringUpload;      // Continue periodic log flushes during uploads (default: false)
     
@@ -166,6 +167,7 @@ public:
     int getExclusiveAccessMinutes() const;
     int getCooldownMinutes() const;
     bool getEnable1BitSdMode() const;
+    bool getStealthRestore() const;
     bool getMinimizeReboots() const;
     bool getFlushLogsDuringUpload() const;
     bool isSmartMode() const;

@@ -97,6 +97,7 @@ Power defaults are optimised for AirSense 11 compatibility (low peak current). M
 | Key | Default | Description |
 |---|---|---|
 | `ENABLE_1BIT_SD_MODE` | `false` | If `true`, the ESP32 will mount the SD card in 1-bit mode instead of 4-bit mode. This reduces bus toggling current during ESP-side uploads, but forces a brief 4-bit compatibility remount before handing the card back to the CPAP machine (which expects a 4-bit negotiated state). Leave `false` (default) for the most reliable, lowest-spike CPAP handoff. Enable only if you want to experiment with ESP-side power reduction and your CPAP does not throw SD errors during handoff. |
+| `STEALTH_RESTORE` | `true` | When `true` (default), the firmware restores the SD card to Standby state via a stealth sequence (no CMD0) after each upload, before handing the card back to the CPAP. This prevents AirSense 10 machines from power-cycling the ESP32 after upload. The restore re-initializes the SDMMC host without sending CMD0, verifies the card at the known RCA, forces 1-bit mode, and deselects. **Only active on AS10** (no effect on AS11). Set to `false` to disable if it causes issues on your hardware. |
 
 ---
 

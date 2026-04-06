@@ -24,6 +24,13 @@ namespace StealthConfigReader {
     // Returns raw file content as a String, or empty string on failure.
     // Caller must NOT hold the MUX — this function manages MUX internally.
     String readConfigTxt();
+
+    // Restores the SD card to Standby state after SD_MMC.end().
+    // Re-inits SDMMC in stealth mode (no CMD0), verifies card at RCA 0x1388,
+    // forces 1-bit mode, then deselects (CMD7(0)) → card in Standby.
+    // Caller MUST still hold the MUX on ESP side (before releaseControl handoff).
+    // Returns true if the card was successfully restored to Standby.
+    bool restoreCardState();
 }
 
 #endif // STEALTH_CONFIG_READER_H
