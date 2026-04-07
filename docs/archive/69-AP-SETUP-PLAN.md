@@ -500,3 +500,79 @@ Currently, "Save & Restart" triggers `/api/config-raw POST` then `/soft-reboot G
 3. **Device test — AP mode:** Flash device, remove config.txt, boot. Connect phone to CPAP-AutoSync AP. Confirm captive portal redirects to setup page. Verify all sections render on mobile. Fill in WiFi + SleepHQ credentials. Save. Confirm device reboots and connects.
 4. **Device test — STA mode:** Navigate to `http://cpap.local/setup` or `http://<ip>/setup` while in normal operation. Confirm existing config loads, edits work, save triggers soft reboot.
 5. **Masking regression:** Confirm `WIFI_PASSWORD`, `ENDPOINT_PASSWORD`, and `CLOUD_CLIENT_SECRET` are correctly masked in GET response and correctly restored on POST.
+
+---
+
+## 9. v3.6i-beta1 Implementation Status
+
+> **Status:** ✅ Fully implemented — build verified.
+> **Date:** 2026-04-07
+
+### 9.1 Timezone Migration — CSV → JSON ✅
+
+**Implemented.** `scripts/generate_html_gz.py` now fetches `zones.json` (native JSON dict) instead of `zones.csv` (brittle regex). The build-time placeholder changed from `/*__TIMEZONE_DATA__*/[]` (array) to `/*__TIMEZONE_DATA__*/{}` (object). The JS `loadTimezones()` function was rewritten to:
+- Fetch `zones.json` online at load time
+- Fall back to `BUILTIN_TZ` (embedded at build time)
+- Fall back to text input if both fail (AP/offline mode)
+- Sort entries alphabetically for easier searching
+
+### 9.2 TZ_NAME Reverse-Lookup Fix ✅
+
+**Implemented.** The Australia/Melbourne vs. Australia/Sydney ambiguity (sharing the same POSIX string) is resolved by storing the IANA name in a new `TZ_NAME` config key.
+
+- `Config.h` / `Config.cpp`: added `tzName` member, parses `TZ_NAME=` key, exposes `getTzName()` getter.
+- `CpapWebServer::initConfigSnapshot()`: includes `tz_name` in the `/api/config` JSON response.
+- `setup.html`: reads `TZ_NAME` from config snapshot and stores it in a hidden `#f-tz-name` input. `populateTzSelect()` prefers name-based matching over POSIX-based matching. `onTzSelectChange()` and `collectFormValues()` write both `TZ_STRING` (POSIX) and `TZ_NAME` (IANA) on save.
+- The firmware ignores `TZ_NAME` — only `TZ_STRING` is used at runtime.
+
+### 9.3 Dashboard Timezone Display ✅
+
+**Implemented.** `CpapWebServer::updateStatusSnapshot()` now computes `tz_offset_minutes` server-side using `localtime_r` vs `gmtime_r`. This gives the live UTC offset including active DST automatically (no lookup table needed — the ESP's clock already has `TZ_STRING` applied via `tzset()`). Falls back to `gmt_offset_hours * 60` if no POSIX TZ string is set.
+
+`web_ui.h` dashboard JavaScript was updated to render the offset as `UTC+10:00` or `UTC+10:30 (DST active)` instead of the raw POSIX string.
+
+### 9.4 UX Polish — SleepHQ Help Text ✅
+
+**Implemented.** The SleepHQ credentials instructions were repositioned from below the credential fields to **above** them (at the top of the `#cloud-fields` block), displayed as an `info-note` banner with the ℹ️ emoji. This makes the instructions visible before the user fills in the form.
+
+### 9.5 AP Mode Hardening ✅
+
+#### Cold-Boot Guard (`g_apModeAllowed`)
+
+**Implemented.** A new `bool g_apModeAllowed` global is set from `esp_reset_reason()` in `setup()`. It is `true` only for:
+- `ESP_RST_POWERON` — power-on
+- `ESP_RST_EXT` — external hard reset button
+- `ESP_RST_UNKNOWN` — unknown (conservative: treated as cold)
+
+AP mode is **blocked** (`g_apModeAllowed = false`) for:
+- `ESP_RST_SW` — soft-reboot (user clicked Reboot in web UI)
+- `ESP_RST_BROWNOUT` — brownout recovery
+- `ESP_RST_PANIC` — firmware crash
+- `ESP_RST_WDT` / `ESP_RST_TASK_WDT` / `ESP_RST_INT_WDT` — watchdog
+
+Both `startAP()` call sites in `setup()` are guarded by `g_apModeAllowed`.
+
+#### WiFi Retry (2 Attempts)
+
+**Implemented.** The single-try `connectStation()` call is replaced with:
+1. Attempt 1
+2. If failed → wait 3s → Attempt 2
+3. If still failed → AP mode (if `g_apModeAllowed`), else log + continue
+
+#### Wrong Credentials Warning
+
+**Implemented.** The "Save & Restart" success status message now includes a persistent ⚠️ warning: *"If the device cannot connect (e.g. wrong password), power-cycle it to re-enter setup mode."* This is rendered in the same `#status-msg` area using the `.success` style to avoid alarm, matching the tone of the existing Config Edit lock popup in the main dashboard.
+
+### 9.6 Files Changed
+
+| File | Change |
+|---|---|
+| `include/Config.h` | Added `tzName` field, `getTzName()` getter |
+| `src/Config.cpp` | Parses `TZ_NAME` key, implements `getTzName()` |
+| `src/CpapWebServer.cpp` | `initConfigSnapshot()` adds `tz_name`; `updateStatusSnapshot()` computes `tz_offset_minutes` |
+| `include/web_ui.h` | Dashboard TZ display: renders `UTC+HH:MM (DST active)` from `tz_offset_minutes` |
+| `src/web/setup.html` | `TZ_NAME` key support; zones.json; ℹ️ help text moved; `f-tz-name` hidden input; save warning |
+| `scripts/generate_html_gz.py` | Switched to `zones.json` fetch; placeholder changed to `{}` |
+| `src/main.cpp` | `g_apModeAllowed` global; cold-boot guard on both AP start sites; 2-attempt WiFi retry |
+| `docs/CONFIG_REFERENCE.md` | `TZ_NAME` key documented |
+| `docs/specs/web-interface-pwa.md` | API fields `tz_offset_minutes`, `tz_name` documented; Setup Wizard section added |

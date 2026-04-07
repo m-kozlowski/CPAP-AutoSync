@@ -51,6 +51,7 @@ Only required when `ENDPOINT_TYPE` includes `CLOUD`.
 | `UPLOAD_START_HOUR` | `9` | Start of upload window (0–23, local time). Ignored in smart mode for fresh data. |
 | `UPLOAD_END_HOUR` | `21` | End of upload window (0–23, local time). Set equal to `UPLOAD_START_HOUR` for a 24/7 always-open window. |
 | `TZ_STRING` | *(empty)* | POSIX TZ string for automatic DST handling. When set, this takes precedence over `GMT_OFFSET_HOURS`. Examples: `EST5EDT,M3.2.0,M11.1.0` (US Eastern), `CET-1CEST,M3.5.0,M10.5.0/3` (EU Central), `AEST-10AEDT,M10.1.0,M4.1.0/3` (Australia Eastern), `JST-9` (Japan, no DST). See [POSIX TZ format](https://www.gnu.org/software/libc/manual/html_node/TZ-Variable.html) for full syntax. |
+| `TZ_NAME` | *(empty)* | IANA timezone name written by the Setup Wizard (e.g. `Australia/Melbourne`). Used only by the web UI to pre-select the correct timezone in the dropdown — the firmware ignores this key and always uses `TZ_STRING`. You do not need to set this manually; it is managed automatically when saving through the Setup Wizard. |
 | `GMT_OFFSET_HOURS` | `0` | Timezone offset from UTC in whole hours (e.g. `11` for AEDT, `-5` for EST). Used for NTP time and upload window calculation. |
 | `NTP_SERVER` | `pool.ntp.org` | NTP server hostname for time synchronisation. Change if your network blocks the default NTP pool or you prefer a local/regional server (e.g. `time.google.com`, `time.cloudflare.com`). |
 

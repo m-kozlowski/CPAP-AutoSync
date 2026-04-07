@@ -49,6 +49,7 @@ private:
     String endpointPassword;
     int gmtOffsetHours;
     String tzString;    // POSIX TZ string, e.g. "CET-1CEST,M3.5.0,M10.5.0/3"
+    String tzName;      // IANA timezone name, e.g. "Australia/Melbourne" (UI only, not used by firmware)
     bool saveLogs;
     bool debugMode;
     bool isValid;
@@ -140,6 +141,7 @@ public:
     const String& getEndpointPassword() const;
     int getGmtOffsetHours() const;
     const String& getTzString() const;
+    const String& getTzName() const;
     bool getSaveLogs() const;
     bool getDebugMode() const;
     bool valid() const;

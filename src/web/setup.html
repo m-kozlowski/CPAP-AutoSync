@@ -273,6 +273,7 @@
                 <span class="help-text">Enter a <a href="https://www.gnu.org/software/libc/manual/html_node/TZ-Variable.html" target="_blank">POSIX TZ string</a> manually.</span>
             </div>
             <input type="hidden" id="f-tz-value">
+            <input type="hidden" id="f-tz-name">
         </div>
 
         <!-- ════════ Upload Schedule ════════ -->
@@ -321,6 +322,11 @@
                 Upload to SleepHQ
             </label>
             <div id="cloud-fields" class="hidden">
+                <div class="info-note" style="margin-bottom:10px">
+                    &#8505;&#65039; To get your API credentials: go to <strong>sleephq.com/account</strong>,
+                    click <strong>Account Settings</strong> in the lower-left side,
+                    navigate to <strong>API Keys</strong>, then click <strong>Add API Key</strong>.
+                </div>
                 <div class="fg">
                     <label for="f-cloud-id">Client ID</label>
                     <input type="text" id="f-cloud-id" placeholder="Your SleepHQ API Client ID">
@@ -332,11 +338,6 @@
                         <button type="button" class="eye-btn" onclick="togglePwd(this)" title="Show/hide">&#128065;</button>
                     </div>
                 </div>
-                <span class="help-text">
-                    To get your API credentials: go to <strong>sleephq.com/account</strong>,
-                    click <strong>Account Settings</strong> in the lower-left side,
-                    navigate to <strong>API Keys</strong>, then click <strong>Add API Key</strong>.
-                </span>
             </div>
         </div>
 
@@ -412,7 +413,7 @@
 // Keys managed by the visual form (everything else is preserved as-is)
 var KNOWN_KEYS = [
     'WIFI_SSID', 'WIFI_PASSWORD',
-    'TZ_STRING',
+    'TZ_STRING', 'TZ_NAME',
     'UPLOAD_MODE', 'UPLOAD_START_HOUR', 'UPLOAD_END_HOUR', 'COOLDOWN_MINUTES',
     'ENDPOINT_TYPE', 'ENDPOINT', 'ENDPOINT_USER', 'ENDPOINT_PASSWORD',
     'CLOUD_CLIENT_ID', 'CLOUD_CLIENT_SECRET'
@@ -425,8 +426,9 @@ var rawLines = [];   // Array of { type:'kv'|'comment'|'blank'|'raw', key:'', va
 var timezones = [];  // Array of { name:'', posix:'' }
 
 // Timezone data embedded at build time (fallback for AP/offline mode)
-// The build script replaces this placeholder with the latest zones.csv data
-var BUILTIN_TZ = /*__TIMEZONE_DATA__*/[];
+// The build script replaces this placeholder with the latest zones.json data
+// Format: { "Region/City": "POSIX_STRING", ... }
+var BUILTIN_TZ = /*__TIMEZONE_DATA__*/{};
 
 // ══════════════════════════════════════════════════════════════
 // Initialization
@@ -492,8 +494,9 @@ function populateFormFromConfig() {
     document.getElementById('f-ssid').value = getValue('WIFI_SSID');
     // Password fields are left empty — '******' from server is intentionally not shown
 
-    // Timezone (stored in hidden input, select populated later)
+    // Timezone — prefer TZ_NAME (IANA name) over POSIX reverse-lookup
     document.getElementById('f-tz-value').value = getValue('TZ_STRING');
+    document.getElementById('f-tz-name').value = getValue('TZ_NAME');
 
     // Upload mode
     var mode = (getValue('UPLOAD_MODE') || 'smart').toLowerCase();
@@ -548,57 +551,52 @@ function populateFormFromConfig() {
 // ══════════════════════════════════════════════════════════════
 
 async function loadTimezones() {
-    // Try online fetch first (latest data)
+    var tzData = null;
+
+    // Try online fetch first (latest data from zones.json)
     try {
-        var res = await fetch('https://raw.githubusercontent.com/nayarsystems/posix_tz_db/master/zones.csv');
+        var res = await fetch('https://raw.githubusercontent.com/nayarsystems/posix_tz_db/master/zones.json');
         if (res.ok) {
-            var csv = await res.text();
-            timezones = parseZonesCsv(csv);
-            if (timezones.length > 0) { populateTzSelect(); return; }
+            tzData = await res.json();
+            if (typeof tzData !== 'object' || Array.isArray(tzData) || Object.keys(tzData).length === 0) tzData = null;
         }
-    } catch (e) { /* expected in AP mode */ }
+    } catch (e) { /* expected in AP/offline mode */ }
 
     // Fall back to build-time embedded data
-    if (BUILTIN_TZ.length > 0) {
+    if (!tzData && typeof BUILTIN_TZ === 'object' && !Array.isArray(BUILTIN_TZ) && Object.keys(BUILTIN_TZ).length > 0) {
+        tzData = BUILTIN_TZ;
+    }
+
+    if (tzData) {
         timezones = [];
-        for (var i = 0; i < BUILTIN_TZ.length; i++) {
-            timezones.push({ name: BUILTIN_TZ[i][0], posix: BUILTIN_TZ[i][1] });
+        var keys = Object.keys(tzData).sort();
+        for (var i = 0; i < keys.length; i++) {
+            timezones.push({ name: keys[i], posix: tzData[keys[i]] });
         }
         populateTzSelect();
-        return;
+    } else {
+        // No timezone data at all — show text fallback
+        showTzFallback();
     }
-
-    // No timezone data at all — show text fallback
-    showTzFallback();
-}
-
-function parseZonesCsv(csv) {
-    var result = [];
-    var lines = csv.split('\n');
-    for (var i = 0; i < lines.length; i++) {
-        var line = lines[i].trim();
-        if (!line) continue;
-        // Each line is: "Region/City","POSIX_STRING"
-        var m = line.match(/^"([^"]+)","([^"]+)"$/);
-        if (m) {
-            result.push({ name: m[1], posix: m[2] });
-        }
-    }
-    return result;
 }
 
 function populateTzSelect() {
     var select = document.getElementById('f-tz-select');
-    var currentTz = document.getElementById('f-tz-value').value;
+    var currentPosix = document.getElementById('f-tz-value').value;
+    var currentName  = document.getElementById('f-tz-name').value;  // preferred: IANA name
     var found = false;
 
     select.innerHTML = '<option value="">-- Select Timezone --</option>';
     for (var i = 0; i < timezones.length; i++) {
         var tz = timezones[i];
         var opt = document.createElement('option');
-        opt.value = tz.posix;
+        opt.value = tz.name;  // store IANA name as value
         opt.textContent = tz.name;
-        if (tz.posix === currentTz) {
+        // Prefer matching by IANA name (avoids Melbourne/Sydney ambiguity)
+        // Fall back to POSIX match only if TZ_NAME is absent
+        var matchByName  = currentName  && tz.name  === currentName;
+        var matchByPosix = !currentName && tz.posix === currentPosix;
+        if (matchByName || matchByPosix) {
             opt.selected = true;
             found = true;
         }
@@ -606,10 +604,10 @@ function populateTzSelect() {
     }
 
     // If current value isn't in the list (custom/unknown), add it
-    if (currentTz && !found) {
+    if (currentPosix && !found) {
         var opt = document.createElement('option');
-        opt.value = currentTz;
-        opt.textContent = 'Custom (' + currentTz + ')';
+        opt.value = currentName || currentPosix;
+        opt.textContent = currentName ? currentName + ' (custom POSIX)' : 'Custom (' + currentPosix + ')';
         opt.selected = true;
         select.appendChild(opt);
     }
@@ -628,14 +626,21 @@ function showTzFallback() {
 
 function onTzSelectChange() {
     var select = document.getElementById('f-tz-select');
-    document.getElementById('f-tz-value').value = select.value;
+    var ianaName = select.value;  // option value is now the IANA name
+    // Look up the POSIX string for the selected name
+    var posix = '';
+    for (var i = 0; i < timezones.length; i++) {
+        if (timezones[i].name === ianaName) { posix = timezones[i].posix; break; }
+    }
+    document.getElementById('f-tz-value').value = posix;
+    document.getElementById('f-tz-name').value = ianaName;
     updateRawPreview();
 }
 
 function getTzValue() {
     // If select is visible, use it; otherwise use manual input
     if (!document.getElementById('tz-select-wrap').classList.contains('hidden')) {
-        return document.getElementById('f-tz-select').value;
+        return document.getElementById('f-tz-select').value;  // returns IANA name — resolved to POSIX in collectFormValues
     }
     return document.getElementById('f-tz-manual').value.trim();
 }
@@ -794,9 +799,19 @@ function collectFormValues() {
     }
     // else: key not in vals → rawLines keeps original '******'
 
-    // Timezone
-    var tz = getTzValue();
-    if (tz) vals['TZ_STRING'] = tz;
+    // Timezone — write both TZ_STRING (POSIX) and TZ_NAME (IANA) to config
+    if (!document.getElementById('tz-select-wrap').classList.contains('hidden')) {
+        var ianaName = document.getElementById('f-tz-select').value;
+        var posix = '';
+        for (var k = 0; k < timezones.length; k++) {
+            if (timezones[k].name === ianaName) { posix = timezones[k].posix; break; }
+        }
+        if (posix)  vals['TZ_STRING'] = posix;
+        if (ianaName) vals['TZ_NAME'] = ianaName;
+    } else {
+        var manual = document.getElementById('f-tz-manual').value.trim();
+        if (manual) vals['TZ_STRING'] = manual;
+    }
 
     // Upload mode
     var radios = document.querySelectorAll('input[name="upload-mode"]');
@@ -920,7 +935,13 @@ async function saveConfig() {
         });
 
         if (res.ok) {
-            showStatus('Configuration saved! Rebooting to apply changes... If WiFi credentials are correct, the device will connect to your network.', 'success');
+            // Show persistent warning banner about wrong credentials
+            showStatus(
+                '✅ Configuration saved! Rebooting now…\n' +
+                'If WiFi credentials are correct, the device will connect to your network and this page will become available at its IP address.\n' +
+                '⚠️ If the device cannot connect (e.g. wrong password), power-cycle it to re-enter setup mode.',
+                'success'
+            );
             // Trigger soft reboot
             fetch('/soft-reboot', { method: 'GET' }).catch(function() {});
         } else {

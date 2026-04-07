@@ -199,6 +199,8 @@ void Config::setConfigValue(String key, String value) {
         gmtOffsetHours = value.toInt();
     } else if (key == "TZ_STRING") {
         tzString = value;
+    } else if (key == "TZ_NAME") {
+        tzName = value;
     } else if (key == "NTP_SERVER") {
         ntpServer = value;
     } else if (key == "PERSISTENT_LOGS") {
@@ -662,6 +664,7 @@ const String& Config::getEndpointUser() const { return endpointUser; }
 const String& Config::getEndpointPassword() const { return endpointPassword; }
 int Config::getGmtOffsetHours() const { return gmtOffsetHours; }
 const String& Config::getTzString() const { return tzString; }
+const String& Config::getTzName() const { return tzName; }
 bool Config::getSaveLogs() const { return saveLogs; }
 bool Config::getDebugMode() const { return debugMode; }
 bool Config::valid() const { return isValid; }

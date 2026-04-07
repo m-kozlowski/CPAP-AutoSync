@@ -7,45 +7,39 @@ import gzip
 import os
 import json
 
+
 def fetch_timezone_data():
-    """Download zones.csv from GitHub and convert to a JS array literal.
-    Returns the JS array string, or '[]' if the download fails."""
+    """Download zones.json from GitHub and convert to a JS object literal.
+    Returns the JS object string, or '{}' if the download fails.
+    zones.json format: { "Region/City": "POSIX_STRING", ... }
+    This is simpler and more robust than CSV (no regex, no quoting edge-cases).
+    """
     try:
         import urllib.request
-        url = "https://raw.githubusercontent.com/nayarsystems/posix_tz_db/master/zones.csv"
+        url = "https://raw.githubusercontent.com/nayarsystems/posix_tz_db/master/zones.json"
         print(f"  Fetching timezone data from {url}...")
         req = urllib.request.Request(url, headers={"User-Agent": "CPAP-AutoSync-Build/1.0"})
         with urllib.request.urlopen(req, timeout=15) as resp:
-            csv_text = resp.read().decode("utf-8")
+            data = json.loads(resp.read().decode("utf-8"))
 
-        import re
-        entries = []
-        for line in csv_text.strip().split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-            m = re.match(r'^"([^"]+)","([^"]+)"$', line)
-            if m:
-                name = m.group(1).replace("\\", "\\\\").replace('"', '\\"')
-                posix = m.group(2).replace("\\", "\\\\").replace('"', '\\"')
-                entries.append(f'["{name}","{posix}"]')
+        if not isinstance(data, dict) or len(data) == 0:
+            print("  Warning: zones.json returned an empty or invalid object.")
+            return "{}"
 
-        if entries:
-            print(f"  Loaded {len(entries)} timezone entries.")
-            return "[" + ",".join(entries) + "]"
-        else:
-            print("  Warning: Parsed 0 timezone entries from CSV.")
-            return "[]"
+        # Re-serialize as compact JSON object (no extra whitespace)
+        result = json.dumps(data, ensure_ascii=False, separators=(',', ':'))
+        print(f"  Loaded {len(data)} timezone entries from zones.json.")
+        return result
     except Exception as e:
         print(f"  Warning: Could not fetch timezone data ({e}). Embedded TZ will be empty.")
-        return "[]"
+        return "{}"
 
 
 def generate_header(*args, **kwargs):
     print("Generating compressed HTML payload...")
     input_file = "src/web/setup.html"
     output_file = "include/setup_html_gz.h"
-    
+
     if not os.path.exists(input_file):
         print(f"Warning: {input_file} not found. Creating empty file to prevent build errors.")
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
@@ -57,7 +51,7 @@ def generate_header(*args, **kwargs):
         html_content = f.read()
 
     # Embed timezone data at build time (replaces the placeholder in setup.html)
-    tz_placeholder = "/*__TIMEZONE_DATA__*/[]"
+    tz_placeholder = "/*__TIMEZONE_DATA__*/{}"
     if tz_placeholder in html_content:
         tz_data = fetch_timezone_data()
         html_content = html_content.replace(tz_placeholder, tz_data)
@@ -67,7 +61,7 @@ def generate_header(*args, **kwargs):
 
     html_bytes = html_content.encode('utf-8')
     compressed_content = gzip.compress(html_bytes)
-    
+
     print(f"  HTML: {len(html_bytes)} bytes -> gzip: {len(compressed_content)} bytes ({100*len(compressed_content)//len(html_bytes)}%)")
 
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
@@ -75,11 +69,11 @@ def generate_header(*args, **kwargs):
         f.write("#pragma once\n\n")
         f.write(f"// Generated from {input_file}\n")
         f.write("const uint8_t setup_html_gz[] = {\n")
-        
+
         hex_array = [f"0x{b:02x}" for b in compressed_content]
         for i in range(0, len(hex_array), 16):
             f.write("    " + ", ".join(hex_array[i:i+16]) + ",\n")
-            
+
         f.write("};\n\n")
         f.write(f"const size_t setup_html_gz_len = {len(compressed_content)};\n")
 

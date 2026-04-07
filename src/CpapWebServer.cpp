@@ -981,6 +981,25 @@ void CpapWebServer::updateStatusSnapshot() {
     char recentTabs[128];
     buildRecentTabsField(recentTabs, sizeof(recentTabs), nowMs);
 
+    // ── Compute live UTC offset including DST ──
+    // localtime_r uses the TZ env var (set from TZ_STRING via tzset()) so this
+    // automatically accounts for DST without any lookup table.
+    int tzOffsetMinutes = 0;
+    if (config) {
+        if (!config->getTzString().isEmpty()) {
+            time_t t = now;
+            struct tm local_tm, utc_tm;
+            localtime_r(&t, &local_tm);
+            gmtime_r(&t, &utc_tm);
+            // Convert both to epoch-seconds to find the offset in whole minutes
+            time_t local_t = mktime(&local_tm);
+            time_t utc_t = mktime(&utc_tm);
+            tzOffsetMinutes = (int)((local_t - utc_t) / 60);
+        } else {
+            tzOffsetMinutes = config->getGmtOffsetHours() * 60;
+        }
+    }
+
     char buf[WEB_STATUS_BUF_SIZE];
     int n = snprintf(buf, sizeof(buf),
         "{\"state\":\"%s\",\"in_state_sec\":%lu,\"uptime\":%lu"
@@ -994,6 +1013,7 @@ void CpapWebServer::updateStatusSnapshot() {
         ",\"live_active\":%s,\"live_folder\":\"%s\",\"live_up\":%d,\"live_total\":%d"
         ",\"cpu0\":%u,\"cpu1\":%u"
         ",\"pcnt_capable\":%s"
+        ",\"tz_offset_minutes\":%d"
         ",\"recent_tabs\":\"%s\""
         ",\"hostname\":\"%s\""
         ",\"firmware\":\"%s\"}",
@@ -1010,6 +1030,7 @@ void CpapWebServer::updateStatusSnapshot() {
         liveActive ? "true" : "false", liveFolder, liveUp, liveTotal,
         (unsigned)g_cpuLoad0, (unsigned)g_cpuLoad1,
         g_pcntCapable ? "true" : "false",
+        tzOffsetMinutes,
         recentTabs,
         config ? config->getHostname().c_str() : "cpap",
         FIRMWARE_VERSION);
@@ -1032,7 +1053,7 @@ void CpapWebServer::initConfigSnapshot() {
         ",\"upload_start_hour\":%d,\"upload_end_hour\":%d"
         ",\"inactivity_seconds\":%d"
         ",\"exclusive_access_minutes\":%d,\"cooldown_minutes\":%d"
-        ",\"gmt_offset_hours\":%d,\"tz_string\":\"%s\",\"ntp_server\":\"%s\""
+        ",\"gmt_offset_hours\":%d,\"tz_string\":\"%s\",\"tz_name\":\"%s\",\"ntp_server\":\"%s\""
         ",\"max_days\":%d,\"recent_folder_days\":%d"
         ",\"cloud_configured\":%s"
         ",\"brownout_detect_mode\":\"%s\""
@@ -1046,7 +1067,7 @@ void CpapWebServer::initConfigSnapshot() {
         config->getInactivitySeconds(),
         config->getExclusiveAccessMinutes(), config->getCooldownMinutes(),
         config->getGmtOffsetHours(),
-        config->getTzString().c_str(), config->getNtpServer().c_str(),
+        config->getTzString().c_str(), config->getTzName().c_str(), config->getNtpServer().c_str(),
         config->getMaxDays(), config->getRecentFolderDays(),
         hasCloud ? "true" : "false",
         config->getBrownoutDetectMode() == BrownoutDetectMode::OFF ? "OFF" : 

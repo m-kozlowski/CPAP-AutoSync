@@ -593,8 +593,19 @@ function renderStatus(d){
   set('d-time',d.time||'—');
   set('d-fh',d.free_heap?Math.round(d.free_heap/1024)+' KB':'—');
   set('d-ma',d.max_alloc?Math.round(d.max_alloc/1024)+' KB':'—');
-  var tz=cfg.tz_string,gmtOff=cfg.gmt_offset_hours;
-  set('d-tz',tz?tz:(gmtOff!=null?(gmtOff>=0?'GMT+':'GMT')+gmtOff:'—'));
+  var tzOff=d.tz_offset_minutes;
+  if(tzOff!=null){
+    var sign=tzOff>=0?'+':'-';
+    var abs=Math.abs(tzOff);
+    var h=Math.floor(abs/60),m=abs%60;
+    var label='UTC'+sign+h+(m?':'+('0'+m).slice(-2):'');
+    // Show DST hint if live offset differs from the config's base offset by 60 min
+    var baseOff=(cfg.gmt_offset_hours||0)*60;
+    if(tzOff!==baseOff&&cfg.tz_string)label+=' (DST active)';
+    set('d-tz',label);
+  } else {
+    set('d-tz','—');
+  }
   if(d.wifi){
     var rc=sigClass(d.rssi),rl=sigLabel(d.rssi);
     document.getElementById('d-wifi').innerHTML='<span class='+rc+'>'+rl+' ('+d.rssi+' dBm)</span>';

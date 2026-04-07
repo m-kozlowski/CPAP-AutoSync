@@ -96,6 +96,10 @@ bool g_noWorkSuppressed = false;
 // When false, "smart" upload mode is not available (forced to "scheduled").
 bool g_pcntCapable = false;
 bool g_apSetupMode = false;
+// AP mode is only permitted on cold-boot (power-on / external hard reset).
+// Soft reboots (ESP_RST_SW), watchdog resets, and panics must never start AP.
+// Set once in setup() from esp_reset_reason() — never changes after boot.
+bool g_apModeAllowed = false;
 
 // Monitoring mode flags
 bool monitoringRequested = false;
@@ -489,6 +493,15 @@ void setup() {
     g_heapRecoveryBoot = (esp_reset_reason() == ESP_RST_SW);
     bool fastBoot = g_heapRecoveryBoot;
 
+    // AP mode is only permitted on genuine cold-boots (SD just inserted / CPAP just powered on).
+    // Soft-reboots (user clicked Reboot in web UI) and crash-reboots must NOT start AP:
+    // the user's phone may be on a different network and an unexpected AP would be confusing.
+    {
+        esp_reset_reason_t rr = esp_reset_reason();
+        g_apModeAllowed = (rr == ESP_RST_POWERON || rr == ESP_RST_EXT || rr == ESP_RST_UNKNOWN);
+        LOG_INFOF("[AP] Reset reason %d \u2192 AP mode %s", (int)rr, g_apModeAllowed ? "ALLOWED" : "BLOCKED");
+    }
+
     // ── NVS flags check (always runs — uses Preferences + LittleFS, not SD) ──
     {
         Preferences resetPrefs;
@@ -736,25 +749,46 @@ void setup() {
 
     // Initialize WiFi
     if (g_apSetupMode) {
-        wifiManager.startAP();
+        // Config failed to load — enter AP mode if cold-boot, otherwise continue without WiFi
+        if (g_apModeAllowed) {
+            wifiManager.startAP();
+        } else {
+            LOG_WARN("[AP] Config load failed but reset was not a cold-boot — skipping AP mode");
+            g_apSetupMode = false;  // Don't mislead the rest of setup into AP-mode paths
+        }
     } else {
-        if (!wifiManager.connectStation(config.getWifiSSID(), config.getWifiPassword(), config.getHostname())) {
-            LOG_ERROR("Failed to connect to WiFi - starting AP Setup Mode...");
-            
+        // Attempt 1
+        bool connected = wifiManager.connectStation(config.getWifiSSID(), config.getWifiPassword(), config.getHostname());
+        if (!connected) {
+            LOG_WARN("WiFi connect attempt 1 failed — waiting 3s before retry...");
+            delay(3000);
+            // Attempt 2
+            connected = wifiManager.connectStation(config.getWifiSSID(), config.getWifiPassword(), config.getHostname());
+        }
+
+        if (!connected) {
+            LOG_ERROR("Failed to connect to WiFi after 2 attempts.");
+
             // ── EMERGENCY BOOT ERROR DUMP ──
             if (sdManager.takeControl()) {
                 Logger::getInstance().dumpToSD(sdManager.getFS(), "/uploader_error.txt", "WiFi connection failure");
                 sdManager.releaseControl();
             }
-            
+
             // Re-enable brownout detection if it was only relaxed for boot
             if (config.getBrownoutDetectMode() == BrownoutDetectMode::RELAXED) {
                 LOG_INFO("[POWER] WiFi connection phase complete — re-enabling brownout detection");
                 SET_PERI_REG_MASK(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_ENA);
             }
 
-            g_apSetupMode = true;
-            wifiManager.startAP();
+            if (g_apModeAllowed) {
+                LOG("[AP] Cold-boot with failed WiFi — starting AP Setup Mode");
+                g_apSetupMode = true;
+                wifiManager.startAP();
+            } else {
+                LOG_WARN("[AP] WiFi failed but reset was not a cold-boot — skipping AP mode");
+                LOG_WARN("[AP] ⚠️ If you entered wrong WiFi credentials, power-cycle the device to re-enter setup mode.");
+            }
         }
     }
     
