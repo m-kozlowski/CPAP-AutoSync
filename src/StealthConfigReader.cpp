@@ -734,49 +734,68 @@ bool StealthConfigReader::captureCardState(SavedCardState* out) {
             return true;
         }
         delay(2);  // Allow card to settle into Transfer state
+        // Verify card is now in Transfer
+        uint32_t chk = 0;
+        if (scrSendCmd13(foundRca, &chk)) {
+            uint8_t st = (chk >> 9) & 0x0F;
+            LOG_INFOF("[Capture] After CMD7 select: state=%d(%s)", st, SCR_SD_STATE_NAME(st));
+        }
     }
 
     // Clear stale interrupt status before read attempts
     SDMMC.rintsts.val = 0xFFFFFFFF;
 
-    // Try reading sector 0 at 4-bit
+    // Try reading sector 0 at multiple bus width / speed combinations.
+    // 4-bit probes first (if any succeeds → card was in 4-bit), then 1-bit.
     uint8_t sec[512] __attribute__((aligned(4)));
-    scrSetHostBusWidth(4);
-    scrSetHostClock(400);
+    struct { int bits; int khz; } probes[] = {
+        { 4,   400 },
+        { 4, 25000 },
+        { 1,   400 },
+        { 1, 25000 },
+    };
 
-    bool read4bit = scrReadSector(0, sec);
-    bool valid4bit = read4bit && (sec[510] == 0x55 && sec[511] == 0xAA);
+    int detectedWidth = 0;
+    for (auto& p : probes) {
+        // Use sdmmc_host_set_bus_width() instead of scrSetHostBusWidth()
+        // because it also reconnects D3 to the SDMMC peripheral via GPIO matrix.
+        // Without this, D3 stays as GPIO output HIGH (forced during init_slot)
+        // and 4-bit data reads get Start Bit Errors.
+        sdmmc_host_set_bus_width(SDMMC_HOST_SLOT_1, p.bits);
+        scrSetHostClock(p.khz);
 
-    if (valid4bit) {
-        out->busWidth = 4;
-        LOG_INFO("[Capture] Bus width detected: 4-bit (sector read OK)");
-    } else {
-        // Clean up after failed 4-bit read
-        if (!read4bit) {
-            scrSendCmd12();
-            delay(2);
-            SDMMC.rintsts.val = 0xFFFFFFFF;
-            SDMMC.ctrl.fifo_reset = 1;
-            while (SDMMC.ctrl.fifo_reset) {}
-        }
-
-        // Verify 1-bit works
-        scrSetHostBusWidth(1);
-        bool read1bit = scrReadSector(0, sec);
-        bool valid1bit = read1bit && (sec[510] == 0x55 && sec[511] == 0xAA);
-
-        if (valid1bit) {
-            out->busWidth = 1;
-            LOG_INFO("[Capture] Bus width detected: 1-bit (4-bit failed, 1-bit OK)");
-        } else {
-            // Both failed — default to 1-bit as safer fallback
-            if (!read1bit) {
-                scrSendCmd12();
-                SDMMC.rintsts.val = 0xFFFFFFFF;
+        if (scrReadSector(0, sec)) {
+            if (sec[510] == 0x55 && sec[511] == 0xAA) {
+                detectedWidth = p.bits;
+                LOG_INFOF("[Capture] Bus width detected: %d-bit (%d-bit@%dkHz read OK)",
+                          p.bits, p.bits, p.khz);
+                break;
             }
-            out->busWidth = 1;
-            LOG_WARN("[Capture] Bus width detection inconclusive — defaulting to 1-bit");
+            LOG_WARNF("[Capture] %d-bit@%dkHz: read OK but no boot sig (0x%02X 0x%02X)",
+                      p.bits, p.khz, sec[510], sec[511]);
+        } else {
+            uint32_t errSts = SDMMC.rintsts.val;
+            LOG_WARNF("[Capture] %d-bit@%dkHz: read failed, RINTSTS=0x%08X",
+                      p.bits, p.khz, errSts);
         }
+        // Clean up for next attempt — full controller reset to clear HLE
+        scrSendCmd12();
+        delay(2);
+        SDMMC.ctrl.controller_reset = 1;
+        SDMMC.ctrl.fifo_reset = 1;
+        SDMMC.ctrl.dma_reset = 1;
+        uint32_t t0 = (uint32_t)esp_timer_get_time();
+        while (SDMMC.ctrl.controller_reset || SDMMC.ctrl.fifo_reset || SDMMC.ctrl.dma_reset) {
+            if (((uint32_t)esp_timer_get_time() - t0) > 10000) break;
+        }
+        SDMMC.rintsts.val = 0xFFFFFFFF;
+    }
+
+    if (detectedWidth == 0) {
+        out->busWidth = 1;
+        LOG_WARN("[Capture] Bus width detection inconclusive — defaulting to 1-bit");
+    } else {
+        out->busWidth = detectedWidth;
     }
 
     // Restore host to 1-bit
