@@ -510,29 +510,75 @@ void CpapWebServer::handleApiWifiScan() {
     addCorsHeaders(server);
     server->sendHeader("Cache-Control", "no-store");
     
-    int n = WiFi.scanNetworks(false, true); // sync scan, show hidden
+    int n = WiFi.scanNetworks(false, false); // sync scan, skip hidden
     if (n == WIFI_SCAN_FAILED) {
         server->send(500, "application/json", "{\"error\":\"Scan failed\"}");
         return;
     }
     
+    // Deduplicate by SSID, keeping strongest RSSI per unique network name.
+    // Uses fixed stack-allocated table — no heap fragmentation.
+    static constexpr int kMaxDedup = 32;
+    struct ScanEntry { char ssid[33]; int rssi; int auth; };
+    ScanEntry dedup[kMaxDedup];
+    int dedupCount = 0;
+    
+    for (int i = 0; i < n; ++i) {
+        String ssidStr = WiFi.SSID(i);
+        if (ssidStr.isEmpty()) continue; // skip hidden networks
+        
+        int rssi = WiFi.RSSI(i);
+        int auth = WiFi.encryptionType(i);
+        
+        // Check if SSID already seen — update if stronger signal
+        bool found = false;
+        for (int j = 0; j < dedupCount; ++j) {
+            if (ssidStr == dedup[j].ssid) {
+                if (rssi > dedup[j].rssi) {
+                    dedup[j].rssi = rssi;
+                    dedup[j].auth = auth;
+                }
+                found = true;
+                break;
+            }
+        }
+        if (!found && dedupCount < kMaxDedup) {
+            strncpy(dedup[dedupCount].ssid, ssidStr.c_str(), sizeof(dedup[0].ssid) - 1);
+            dedup[dedupCount].ssid[sizeof(dedup[0].ssid) - 1] = '\0';
+            dedup[dedupCount].rssi = rssi;
+            dedup[dedupCount].auth = auth;
+            dedupCount++;
+        }
+    }
+    
+    // Sort by RSSI descending (simple insertion sort for tiny array)
+    for (int i = 1; i < dedupCount; i++) {
+        ScanEntry key = dedup[i];
+        int j = i - 1;
+        while (j >= 0 && dedup[j].rssi < key.rssi) {
+            dedup[j + 1] = dedup[j];
+            j--;
+        }
+        dedup[j + 1] = key;
+    }
+    
+    // Stream deduplicated JSON response
     server->setContentLength(CONTENT_LENGTH_UNKNOWN);
     server->send(200, "application/json", "");
     server->sendContent("[");
     
-    for (int i = 0; i < n; ++i) {
-        String ssid = WiFi.SSID(i);
-        // Escape quotes and backslashes
+    for (int i = 0; i < dedupCount; ++i) {
+        String ssid = String(dedup[i].ssid);
         ssid.replace("\\", "\\\\");
         ssid.replace("\"", "\\\"");
         
         String json = "{";
         json += "\"ssid\":\"" + ssid + "\",";
-        json += "\"rssi\":" + String(WiFi.RSSI(i)) + ",";
-        json += "\"auth\":" + String(WiFi.encryptionType(i));
+        json += "\"rssi\":" + String(dedup[i].rssi) + ",";
+        json += "\"auth\":" + String(dedup[i].auth);
         json += "}";
         
-        if (i < n - 1) json += ",";
+        if (i < dedupCount - 1) json += ",";
         server->sendContent(json);
     }
     
@@ -1027,9 +1073,9 @@ void CpapWebServer::handleApiConfigRawGet() {
         trimmed.trim();
         
         String prefix = "";
-        if (trimmed.startsWith("WIFI_PASS=") && trimmed.length() > 10) prefix = "WIFI_PASS=";
-        else if (trimmed.startsWith("SMB_PASS=") && trimmed.length() > 9) prefix = "SMB_PASS=";
-        else if (trimmed.startsWith("SLEEPHQ_CLIENT_SECRET=") && trimmed.length() > 22) prefix = "SLEEPHQ_CLIENT_SECRET=";
+        if (trimmed.startsWith("WIFI_PASSWORD=") && trimmed.length() > 14) prefix = "WIFI_PASSWORD=";
+        else if (trimmed.startsWith("ENDPOINT_PASSWORD=") && trimmed.length() > 18) prefix = "ENDPOINT_PASSWORD=";
+        else if (trimmed.startsWith("CLOUD_CLIENT_SECRET=") && trimmed.length() > 20) prefix = "CLOUD_CLIENT_SECRET=";
         
         if (prefix.length() > 0) {
             if (line.endsWith("\r")) {
@@ -1098,14 +1144,14 @@ void CpapWebServer::handleApiConfigRawPost() {
         String prefix = "";
         String origVal = "";
         
-        if (trimmed == "WIFI_PASS=******") {
-            prefix = "WIFI_PASS=";
+        if (trimmed == "WIFI_PASSWORD=******") {
+            prefix = "WIFI_PASSWORD=";
             origVal = config ? config->getWifiPassword() : "";
-        } else if (trimmed == "SMB_PASS=******") {
-            prefix = "SMB_PASS=";
+        } else if (trimmed == "ENDPOINT_PASSWORD=******") {
+            prefix = "ENDPOINT_PASSWORD=";
             origVal = config ? config->getEndpointPassword() : "";
-        } else if (trimmed == "SLEEPHQ_CLIENT_SECRET=******") {
-            prefix = "SLEEPHQ_CLIENT_SECRET=";
+        } else if (trimmed == "CLOUD_CLIENT_SECRET=******") {
+            prefix = "CLOUD_CLIENT_SECRET=";
             origVal = config ? config->getCloudClientSecret() : "";
         }
         

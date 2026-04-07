@@ -5,6 +5,41 @@ except NameError:
 
 import gzip
 import os
+import json
+
+def fetch_timezone_data():
+    """Download zones.csv from GitHub and convert to a JS array literal.
+    Returns the JS array string, or '[]' if the download fails."""
+    try:
+        import urllib.request
+        url = "https://raw.githubusercontent.com/nayarsystems/posix_tz_db/master/zones.csv"
+        print(f"  Fetching timezone data from {url}...")
+        req = urllib.request.Request(url, headers={"User-Agent": "CPAP-AutoSync-Build/1.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            csv_text = resp.read().decode("utf-8")
+
+        import re
+        entries = []
+        for line in csv_text.strip().split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            m = re.match(r'^"([^"]+)","([^"]+)"$', line)
+            if m:
+                name = m.group(1).replace("\\", "\\\\").replace('"', '\\"')
+                posix = m.group(2).replace("\\", "\\\\").replace('"', '\\"')
+                entries.append(f'["{name}","{posix}"]')
+
+        if entries:
+            print(f"  Loaded {len(entries)} timezone entries.")
+            return "[" + ",".join(entries) + "]"
+        else:
+            print("  Warning: Parsed 0 timezone entries from CSV.")
+            return "[]"
+    except Exception as e:
+        print(f"  Warning: Could not fetch timezone data ({e}). Embedded TZ will be empty.")
+        return "[]"
+
 
 def generate_header(*args, **kwargs):
     print("Generating compressed HTML payload...")
@@ -17,12 +52,24 @@ def generate_header(*args, **kwargs):
         with open(output_file, 'w') as f:
             f.write("#pragma once\nconst uint8_t setup_html_gz[] = {0};\nconst size_t setup_html_gz_len = 0;\n")
         return
-        
-    with open(input_file, 'rb') as f:
+
+    with open(input_file, 'r', encoding='utf-8') as f:
         html_content = f.read()
-        
-    compressed_content = gzip.compress(html_content)
+
+    # Embed timezone data at build time (replaces the placeholder in setup.html)
+    tz_placeholder = "/*__TIMEZONE_DATA__*/[]"
+    if tz_placeholder in html_content:
+        tz_data = fetch_timezone_data()
+        html_content = html_content.replace(tz_placeholder, tz_data)
+        print(f"  Timezone data injected ({len(tz_data)} chars).")
+    else:
+        print("  Note: No timezone placeholder found in HTML; skipping TZ embedding.")
+
+    html_bytes = html_content.encode('utf-8')
+    compressed_content = gzip.compress(html_bytes)
     
+    print(f"  HTML: {len(html_bytes)} bytes -> gzip: {len(compressed_content)} bytes ({100*len(compressed_content)//len(html_bytes)}%)")
+
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     with open(output_file, 'w') as f:
         f.write("#pragma once\n\n")
