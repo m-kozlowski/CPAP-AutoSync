@@ -3,6 +3,14 @@
 
 #include <Arduino.h>
 
+// Captured SD card state — saved before SD_MMC.begin() destroys it
+struct SavedCardState {
+    bool     valid;       // true if capture succeeded
+    uint16_t rca;         // card's RCA (typically 0x1388)
+    uint8_t  cardState;   // R1 bits [12:9]: 3=Standby, 4=Transfer, etc.
+    uint8_t  busWidth;    // 1 or 4
+};
+
 // ============================================================================
 // StealthConfigReader — reads config.txt from SD card WITHOUT sending CMD0.
 //
@@ -31,6 +39,18 @@ namespace StealthConfigReader {
     // Caller MUST still hold the MUX on ESP side (before releaseControl handoff).
     // Returns true if the card was successfully restored to Standby.
     bool restoreCardState();
+
+    // Captures the card's current state (RCA, card state, bus width) via
+    // stealth probe.  Called AFTER MUX switch to ESP but BEFORE SD_MMC.begin()
+    // which would destroy the state with CMD0.
+    // Bus width is detected empirically via a 4-bit sector read test.
+    // Caller MUST hold the MUX on ESP side.
+    bool captureCardState(SavedCardState* out);
+
+    // Restores card to a previously captured state after SD_MMC.end().
+    // Sets bus width via ACMD6 and selects/deselects to match saved state.
+    // Caller MUST hold the MUX on ESP side.
+    bool restoreToSavedState(const SavedCardState& saved);
 }
 
 #endif // STEALTH_CONFIG_READER_H
