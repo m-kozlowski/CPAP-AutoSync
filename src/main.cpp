@@ -1515,6 +1515,9 @@ void loop() {
 #ifdef ENABLE_WEBSERVER
     // Handle web server requests
     if (webServer) {
+        // Service captive portal DNS in AP mode — without this, phones never get
+        // DNS responses and the auto-redirect to the setup page doesn't work.
+        wifiManager.processDNS();
         webServer->handleClient();
         // Push SSE log events to connected client (if any).
         // Upload-time throttling is handled inside pushSseLogs() so logs remain

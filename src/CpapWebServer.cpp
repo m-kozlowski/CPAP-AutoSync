@@ -344,6 +344,46 @@ bool CpapWebServer::begin() {
         server->sendHeader("Connection", "close");
         server->send(404, "text/plain", "Not found");
     });
+
+    // ── Captive portal detection endpoints ──
+    // Android, Apple, and Windows probe these URLs to detect captive portals.
+    // In AP mode: redirect to /setup so the "Sign in to network" popup works.
+    // In STA mode: return expected responses so devices don't think we're captive.
+    auto captiveHandler = [this]() {
+        if (g_apSetupMode) {
+            String url = "http://" + WiFi.softAPIP().toString() + "/setup";
+            server->sendHeader("Location", url, true);
+            server->send(302, "text/plain", "");
+            server->client().stop();
+        } else {
+            // Return expected "connected" response so device doesn't nag
+            server->send(204, "", "");
+        }
+    };
+    server->on("/generate_204", captiveHandler);         // Android
+    server->on("/gen_204", captiveHandler);               // Android alt
+    server->on("/hotspot-detect.html", [this]() {         // Apple
+        if (g_apSetupMode) {
+            String url = "http://" + WiFi.softAPIP().toString() + "/setup";
+            server->sendHeader("Location", url, true);
+            server->send(302, "text/plain", "");
+            server->client().stop();
+        } else {
+            server->send(200, "text/html", "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>");
+        }
+    });
+    server->on("/connecttest.txt", captiveHandler);       // Windows
+    server->on("/redirect", captiveHandler);              // Windows alt
+    server->on("/ncsi.txt", [this]() {                    // Windows NCSI
+        if (g_apSetupMode) {
+            String url = "http://" + WiFi.softAPIP().toString() + "/setup";
+            server->sendHeader("Location", url, true);
+            server->send(302, "text/plain", "");
+            server->client().stop();
+        } else {
+            server->send(200, "text/plain", "Microsoft NCSI");
+        }
+    });
     
     server->onNotFound([this]() { this->handleNotFound(); });
     

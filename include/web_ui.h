@@ -276,6 +276,11 @@ Editing and saving config requires <strong>reading from and writing to the CPAP&
 <div id=cfg-pcnt-banner style="display:none;background:#1a2a3a;border:1px solid #2a5070;border-radius:6px;padding:10px 14px;margin-bottom:10px;font-size:.84em;color:#8faab8;line-height:1.5">
 &#9432; <strong style="color:#66c0f4">Smart mode unavailable:</strong> This CPAP uses 1-bit SD communication (no DAT3 activity). If <code>UPLOAD_MODE=smart</code> is set, it will be automatically overridden to <code>scheduled</code> mode at boot.
 </div>
+<div class=card style="margin-bottom:12px">
+<h2>Setup Wizard</h2>
+<p style="font-size:.82em;color:#8f98a0;margin-bottom:10px;line-height:1.5">Use the visual setup wizard to configure WiFi, timezone, upload schedule, SleepHQ, and network share settings &mdash; no manual editing required.</p>
+<a href="/setup" class="btn bp" style="text-decoration:none">&#9881; Open Setup Wizard</a>
+</div>
 <div id=cfg-lock-banner style="display:none;background:#2a2a00;border:1px solid #aa9900;border-radius:6px;padding:10px 14px;margin-bottom:10px;font-size:.85em;color:#ddcc88">
 &#128274; <strong>Upload running</strong> &mdash; Config editor is active. Press <em>Cancel</em> to close without saving, or <em>Save &amp; Reboot</em> to apply changes. After reboot, <strong>always</strong> physically eject and reinsert the CPAP&rsquo;s SD card before powering it on.
 </div>
