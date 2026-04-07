@@ -1632,7 +1632,9 @@ void loop() {
     // GUARD: Do NOT attempt reconnection while upload task is running on Core 0.
     // The upload task manages its own WiFi recovery via tryCoordinatedWifiCycle().
     // Concurrent reconnection from both cores corrupts the lwIP state machine.
-    if (!wifiManager.isConnected() && !uploadTaskRunning) {
+    // GUARD: Do NOT reconnect in AP setup mode — the radio is intentionally in
+    // WIFI_AP and calling connectStation() would tear down the AP broadcast.
+    if (!g_apSetupMode && !wifiManager.isConnected() && !uploadTaskRunning) {
         unsigned long currentTime = millis();
         if (currentTime - lastWifiReconnectAttempt >= 30000) {
             LOG_WARN("WiFi disconnected, attempting to reconnect...");
