@@ -276,6 +276,11 @@ Editing and saving config requires <strong>reading from and writing to the CPAP&
 <div id=cfg-pcnt-banner style="display:none;background:#1a2a3a;border:1px solid #2a5070;border-radius:6px;padding:10px 14px;margin-bottom:10px;font-size:.84em;color:#8faab8;line-height:1.5">
 &#9432; <strong style="color:#66c0f4">Smart mode unavailable:</strong> This CPAP uses 1-bit SD communication (no DAT3 activity). If <code>UPLOAD_MODE=smart</code> is set, it will be automatically overridden to <code>scheduled</code> mode at boot.
 </div>
+<div class=card style="margin-bottom:12px">
+<h2>Setup Wizard</h2>
+<p style="font-size:.82em;color:#8f98a0;margin-bottom:10px;line-height:1.5">Use the visual setup wizard to configure WiFi, timezone, upload schedule, SleepHQ, and network share settings &mdash; no manual editing required.</p>
+<a href="/setup" class="btn bp" style="text-decoration:none">&#9881; Open Setup Wizard</a>
+</div>
 <div id=cfg-lock-banner style="display:none;background:#2a2a00;border:1px solid #aa9900;border-radius:6px;padding:10px 14px;margin-bottom:10px;font-size:.85em;color:#ddcc88">
 &#128274; <strong>Upload running</strong> &mdash; Config editor is active. Press <em>Cancel</em> to close without saving, or <em>Save &amp; Reboot</em> to apply changes. After reboot, <strong>always</strong> physically eject and reinsert the CPAP&rsquo;s SD card before powering it on.
 </div>
@@ -588,8 +593,19 @@ function renderStatus(d){
   set('d-time',d.time||'—');
   set('d-fh',d.free_heap?Math.round(d.free_heap/1024)+' KB':'—');
   set('d-ma',d.max_alloc?Math.round(d.max_alloc/1024)+' KB':'—');
-  var tz=cfg.tz_string,gmtOff=cfg.gmt_offset_hours;
-  set('d-tz',tz?tz:(gmtOff!=null?(gmtOff>=0?'GMT+':'GMT')+gmtOff:'—'));
+  var tzOff=d.tz_offset_minutes;
+  if(tzOff!=null){
+    var sign=tzOff>=0?'+':'-';
+    var abs=Math.abs(tzOff);
+    var h=Math.floor(abs/60),m=abs%60;
+    var label='UTC'+sign+h+(m?':'+('0'+m).slice(-2):'');
+    // Show DST hint if live offset differs from the config's base offset by 60 min
+    var baseOff=(cfg.gmt_offset_hours||0)*60;
+    if(tzOff!==baseOff&&cfg.tz_string)label+=' (DST active)';
+    set('d-tz',label);
+  } else {
+    set('d-tz','—');
+  }
   if(d.wifi){
     var rc=sigClass(d.rssi),rl=sigLabel(d.rssi);
     document.getElementById('d-wifi').innerHTML='<span class='+rc+'>'+rl+' ('+d.rssi+' dBm)</span>';

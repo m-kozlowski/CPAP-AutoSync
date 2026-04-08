@@ -9,7 +9,33 @@
 
 volatile uint8_t WiFiManager::_lastDisconnectReason = 0;
 
-WiFiManager::WiFiManager() : connected(false), mdnsStarted(false), _pendingTxPower(0), _hasPendingTxPower(false) {}
+WiFiManager::WiFiManager() : connected(false), mdnsStarted(false), apMode(false), _pendingTxPower(0), _hasPendingTxPower(false) {}
+
+void WiFiManager::startAP() {
+    LOG("Starting AP Mode (CPAP-AutoSync) for configuration");
+    // Cleanly tear down any lingering STA connection before switching to AP.
+    // Without this, the radio may still be in STA mode after a failed connect,
+    // causing softAP to silently fail or not broadcast.
+    WiFi.disconnect(true);  // disconnect + erase STA credentials from RAM
+    WiFi.mode(WIFI_OFF);
+    delay(100);  // let radio settle
+    WiFi.mode(WIFI_AP);
+    delay(100);
+    WiFi.softAP("CPAP-AutoSync");
+    
+    LOGF("AP IP address: %s", WiFi.softAPIP().toString().c_str());
+    
+    // Start Captive Portal DNS server
+    dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
+    dnsServer.start(53, "*", WiFi.softAPIP());
+    apMode = true;
+}
+
+void WiFiManager::processDNS() {
+    if (apMode) {
+        dnsServer.processNextRequest();
+    }
+}
 
 void WiFiManager::setupEventHandlers() {
     WiFi.onEvent(onWiFiEvent);

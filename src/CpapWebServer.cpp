@@ -4,6 +4,7 @@
 #include "version.h"
 #include "web_ui.h"
 #include "WebStatus.h"
+#include "setup_html_gz.h"
 #include <time.h>
 #include <SD_MMC.h>
 #include <LittleFS.h>
@@ -26,6 +27,7 @@ extern UploadState currentState;
 extern unsigned long stateEnteredAt;
 extern unsigned long cooldownStartedAt;
 extern volatile bool uploadTaskRunning;
+extern bool g_apSetupMode;
 
 // CPU load globals (defined in main.cpp, updated by idle hooks)
 extern volatile uint32_t g_idleCount0, g_idleCount1;
@@ -217,7 +219,15 @@ bool CpapWebServer::begin() {
     // Register request handlers
     server->on("/", [this]() {
         if (this->redirectToIpIfMdnsRequest()) return;
-        this->handleRoot();
+        if (g_apSetupMode) {
+            this->handleSetupPage();
+        } else {
+            this->handleRoot();
+        }
+    });
+    server->on("/setup", [this]() {
+        if (this->redirectToIpIfMdnsRequest()) return;
+        this->handleSetupPage();
     });
     server->on("/trigger-upload", [this]() {
         if (this->redirectToIpIfMdnsRequest()) return;
@@ -246,6 +256,10 @@ bool CpapWebServer::begin() {
     server->on("/api/status", [this]() {
         if (this->redirectToIpIfMdnsRequest()) return;
         this->handleApiStatus();
+    });
+    server->on("/api/wifi-scan", [this]() {
+        if (this->redirectToIpIfMdnsRequest()) return;
+        this->handleApiWifiScan();
     });
     server->on("/api/config", [this]() {
         if (this->redirectToIpIfMdnsRequest()) return;
@@ -329,6 +343,46 @@ bool CpapWebServer::begin() {
         // Avoid empty-content WebServer warnings and keep this path cheap.
         server->sendHeader("Connection", "close");
         server->send(404, "text/plain", "Not found");
+    });
+
+    // ── Captive portal detection endpoints ──
+    // Android, Apple, and Windows probe these URLs to detect captive portals.
+    // In AP mode: redirect to /setup so the "Sign in to network" popup works.
+    // In STA mode: return expected responses so devices don't think we're captive.
+    auto captiveHandler = [this]() {
+        if (g_apSetupMode) {
+            String url = "http://" + WiFi.softAPIP().toString() + "/setup";
+            server->sendHeader("Location", url, true);
+            server->send(302, "text/plain", "");
+            server->client().stop();
+        } else {
+            // Return expected "connected" response so device doesn't nag
+            server->send(204, "", "");
+        }
+    };
+    server->on("/generate_204", captiveHandler);         // Android
+    server->on("/gen_204", captiveHandler);               // Android alt
+    server->on("/hotspot-detect.html", [this]() {         // Apple
+        if (g_apSetupMode) {
+            String url = "http://" + WiFi.softAPIP().toString() + "/setup";
+            server->sendHeader("Location", url, true);
+            server->send(302, "text/plain", "");
+            server->client().stop();
+        } else {
+            server->send(200, "text/html", "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>");
+        }
+    });
+    server->on("/connecttest.txt", captiveHandler);       // Windows
+    server->on("/redirect", captiveHandler);              // Windows alt
+    server->on("/ncsi.txt", [this]() {                    // Windows NCSI
+        if (g_apSetupMode) {
+            String url = "http://" + WiFi.softAPIP().toString() + "/setup";
+            server->sendHeader("Location", url, true);
+            server->send(302, "text/plain", "");
+            server->client().stop();
+        } else {
+            server->send(200, "text/plain", "Microsoft NCSI");
+        }
     });
     
     server->onNotFound([this]() { this->handleNotFound(); });
@@ -485,6 +539,93 @@ void CpapWebServer::handleApiConfig() {
     server->send(200, "application/json", g_webConfigBuf);
 }
 
+void CpapWebServer::handleSetupPage() {
+    server->sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+    server->sendHeader("Connection", "close");
+    server->sendHeader("Content-Encoding", "gzip");
+    server->send_P(200, "text/html", (const char*)setup_html_gz, setup_html_gz_len);
+}
+
+void CpapWebServer::handleApiWifiScan() {
+    addCorsHeaders(server);
+    server->sendHeader("Cache-Control", "no-store");
+    
+    int n = WiFi.scanNetworks(false, false); // sync scan, skip hidden
+    if (n == WIFI_SCAN_FAILED) {
+        server->send(500, "application/json", "{\"error\":\"Scan failed\"}");
+        return;
+    }
+    
+    // Deduplicate by SSID, keeping strongest RSSI per unique network name.
+    // Uses fixed stack-allocated table — no heap fragmentation.
+    static constexpr int kMaxDedup = 32;
+    struct ScanEntry { char ssid[33]; int rssi; int auth; };
+    ScanEntry dedup[kMaxDedup];
+    int dedupCount = 0;
+    
+    for (int i = 0; i < n; ++i) {
+        String ssidStr = WiFi.SSID(i);
+        if (ssidStr.isEmpty()) continue; // skip hidden networks
+        
+        int rssi = WiFi.RSSI(i);
+        int auth = WiFi.encryptionType(i);
+        
+        // Check if SSID already seen — update if stronger signal
+        bool found = false;
+        for (int j = 0; j < dedupCount; ++j) {
+            if (ssidStr == dedup[j].ssid) {
+                if (rssi > dedup[j].rssi) {
+                    dedup[j].rssi = rssi;
+                    dedup[j].auth = auth;
+                }
+                found = true;
+                break;
+            }
+        }
+        if (!found && dedupCount < kMaxDedup) {
+            strncpy(dedup[dedupCount].ssid, ssidStr.c_str(), sizeof(dedup[0].ssid) - 1);
+            dedup[dedupCount].ssid[sizeof(dedup[0].ssid) - 1] = '\0';
+            dedup[dedupCount].rssi = rssi;
+            dedup[dedupCount].auth = auth;
+            dedupCount++;
+        }
+    }
+    
+    // Sort by RSSI descending (simple insertion sort for tiny array)
+    for (int i = 1; i < dedupCount; i++) {
+        ScanEntry key = dedup[i];
+        int j = i - 1;
+        while (j >= 0 && dedup[j].rssi < key.rssi) {
+            dedup[j + 1] = dedup[j];
+            j--;
+        }
+        dedup[j + 1] = key;
+    }
+    
+    // Stream deduplicated JSON response
+    server->setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server->send(200, "application/json", "");
+    server->sendContent("[");
+    
+    for (int i = 0; i < dedupCount; ++i) {
+        String ssid = String(dedup[i].ssid);
+        ssid.replace("\\", "\\\\");
+        ssid.replace("\"", "\\\"");
+        
+        String json = "{";
+        json += "\"ssid\":\"" + ssid + "\",";
+        json += "\"rssi\":" + String(dedup[i].rssi) + ",";
+        json += "\"auth\":" + String(dedup[i].auth);
+        json += "}";
+        
+        if (i < dedupCount - 1) json += ",";
+        server->sendContent(json);
+    }
+    
+    server->sendContent("]");
+    WiFi.scanDelete();
+}
+
 // Handle 404 errors
 void CpapWebServer::handleNotFound() {
     String uri = server->uri();
@@ -492,6 +633,14 @@ void CpapWebServer::handleNotFound() {
     server->sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
     server->sendHeader("Pragma", "no-cache");
     server->sendHeader("Connection", "close");
+    
+    if (g_apSetupMode) {
+        String url = "http://" + wifiManager->getIPAddress() + "/setup";
+        server->sendHeader("Location", url, true);
+        server->send(302, "text/plain", "");
+        server->client().stop();
+        return;
+    }
     
     // Silently handle common browser requests that we don't care about
     if (uri == "/favicon.ico" || uri == "/apple-touch-icon.png" || 
@@ -832,6 +981,25 @@ void CpapWebServer::updateStatusSnapshot() {
     char recentTabs[128];
     buildRecentTabsField(recentTabs, sizeof(recentTabs), nowMs);
 
+    // ── Compute live UTC offset including DST ──
+    // localtime_r uses the TZ env var (set from TZ_STRING via tzset()) so this
+    // automatically accounts for DST without any lookup table.
+    int tzOffsetMinutes = 0;
+    if (config) {
+        if (!config->getTzString().isEmpty()) {
+            time_t t = now;
+            struct tm local_tm, utc_tm;
+            localtime_r(&t, &local_tm);
+            gmtime_r(&t, &utc_tm);
+            // Convert both to epoch-seconds to find the offset in whole minutes
+            time_t local_t = mktime(&local_tm);
+            time_t utc_t = mktime(&utc_tm);
+            tzOffsetMinutes = (int)((local_t - utc_t) / 60);
+        } else {
+            tzOffsetMinutes = config->getGmtOffsetHours() * 60;
+        }
+    }
+
     char buf[WEB_STATUS_BUF_SIZE];
     int n = snprintf(buf, sizeof(buf),
         "{\"state\":\"%s\",\"in_state_sec\":%lu,\"uptime\":%lu"
@@ -845,6 +1013,7 @@ void CpapWebServer::updateStatusSnapshot() {
         ",\"live_active\":%s,\"live_folder\":\"%s\",\"live_up\":%d,\"live_total\":%d"
         ",\"cpu0\":%u,\"cpu1\":%u"
         ",\"pcnt_capable\":%s"
+        ",\"tz_offset_minutes\":%d"
         ",\"recent_tabs\":\"%s\""
         ",\"hostname\":\"%s\""
         ",\"firmware\":\"%s\"}",
@@ -861,6 +1030,7 @@ void CpapWebServer::updateStatusSnapshot() {
         liveActive ? "true" : "false", liveFolder, liveUp, liveTotal,
         (unsigned)g_cpuLoad0, (unsigned)g_cpuLoad1,
         g_pcntCapable ? "true" : "false",
+        tzOffsetMinutes,
         recentTabs,
         config ? config->getHostname().c_str() : "cpap",
         FIRMWARE_VERSION);
@@ -883,7 +1053,7 @@ void CpapWebServer::initConfigSnapshot() {
         ",\"upload_start_hour\":%d,\"upload_end_hour\":%d"
         ",\"inactivity_seconds\":%d"
         ",\"exclusive_access_minutes\":%d,\"cooldown_minutes\":%d"
-        ",\"gmt_offset_hours\":%d,\"tz_string\":\"%s\",\"ntp_server\":\"%s\""
+        ",\"gmt_offset_hours\":%d,\"tz_string\":\"%s\",\"tz_name\":\"%s\",\"ntp_server\":\"%s\""
         ",\"max_days\":%d,\"recent_folder_days\":%d"
         ",\"cloud_configured\":%s"
         ",\"brownout_detect_mode\":\"%s\""
@@ -897,7 +1067,7 @@ void CpapWebServer::initConfigSnapshot() {
         config->getInactivitySeconds(),
         config->getExclusiveAccessMinutes(), config->getCooldownMinutes(),
         config->getGmtOffsetHours(),
-        config->getTzString().c_str(), config->getNtpServer().c_str(),
+        config->getTzString().c_str(), config->getTzName().c_str(), config->getNtpServer().c_str(),
         config->getMaxDays(), config->getRecentFolderDays(),
         hasCloud ? "true" : "false",
         config->getBrownoutDetectMode() == BrownoutDetectMode::OFF ? "OFF" : 
@@ -948,17 +1118,41 @@ void CpapWebServer::handleApiConfigRawGet() {
         server->send(404, "application/json", "{\"error\":\"config.txt not found\"}");
         return;
     }
-    size_t sz = f.size();
-    server->setContentLength(sz);
-    server->send(200, "text/plain", "");
-    // Stream in small chunks — no large heap allocation
-    static char chunk[256];
-    while (f.available()) {
-        int n = f.readBytes(chunk, sizeof(chunk));
-        if (n > 0) server->sendContent(chunk, n);
-    }
+    
+    String raw = f.readString();
     f.close();
     if (tookControl) sdManager->releaseControl();
+
+    String masked = "";
+    int start = 0;
+    while (start < raw.length()) {
+        int end = raw.indexOf('\n', start);
+        if (end == -1) end = raw.length();
+        
+        String line = raw.substring(start, end);
+        String trimmed = line;
+        trimmed.trim();
+        
+        String prefix = "";
+        if (trimmed.startsWith("WIFI_PASSWORD=") && trimmed.length() > 14) prefix = "WIFI_PASSWORD=";
+        else if (trimmed.startsWith("ENDPOINT_PASSWORD=") && trimmed.length() > 18) prefix = "ENDPOINT_PASSWORD=";
+        else if (trimmed.startsWith("CLOUD_CLIENT_SECRET=") && trimmed.length() > 20) prefix = "CLOUD_CLIENT_SECRET=";
+        
+        if (prefix.length() > 0) {
+            if (line.endsWith("\r")) {
+                masked += prefix + "******\r";
+            } else {
+                masked += prefix + "******";
+            }
+        } else {
+            masked += line;
+        }
+        
+        if (end < raw.length()) masked += "\n";
+        start = end + 1;
+    }
+
+    server->send(200, "text/plain", masked);
 }
 
 // ---------------------------------------------------------------------------
@@ -997,6 +1191,46 @@ void CpapWebServer::handleApiConfigRawPost() {
     }
 
     const String& body = server->arg("plain");
+
+    String unmasked = "";
+    int start = 0;
+    while (start < body.length()) {
+        int end = body.indexOf('\n', start);
+        if (end == -1) end = body.length();
+        
+        String line = body.substring(start, end);
+        String trimmed = line;
+        trimmed.trim();
+        
+        String prefix = "";
+        String origVal = "";
+        
+        if (trimmed == "WIFI_PASSWORD=******") {
+            prefix = "WIFI_PASSWORD=";
+            origVal = config ? config->getWifiPassword() : "";
+        } else if (trimmed == "ENDPOINT_PASSWORD=******") {
+            prefix = "ENDPOINT_PASSWORD=";
+            origVal = config ? config->getEndpointPassword() : "";
+        } else if (trimmed == "CLOUD_CLIENT_SECRET=******") {
+            prefix = "CLOUD_CLIENT_SECRET=";
+            origVal = config ? config->getCloudClientSecret() : "";
+        }
+        
+        if (prefix.length() > 0) {
+            if (line.endsWith("\r")) {
+                unmasked += prefix + origVal + "\r";
+            } else {
+                unmasked += prefix + origVal;
+            }
+        } else {
+            unmasked += line;
+        }
+        
+        if (end < body.length()) unmasked += "\n";
+        start = end + 1;
+    }
+
+    size_t unmaskedLen = unmasked.length();
     fs::FS& sd = sdManager->getFS();
 
     // Write atomically: write to temp file, then rename
@@ -1009,15 +1243,15 @@ void CpapWebServer::handleApiConfigRawPost() {
     }
 
     size_t written = 0;
-    while (written < bodyLen) {
-        size_t toWrite = bodyLen - written;
+    while (written < unmaskedLen) {
+        size_t toWrite = unmaskedLen - written;
         if (toWrite > 512) toWrite = 512;
-        size_t n = f.write((const uint8_t*)body.c_str() + written, toWrite);
+        size_t n = f.write((const uint8_t*)unmasked.c_str() + written, toWrite);
         if (n == 0) break;
         written += n;
     }
 
-    if (written != bodyLen) {
+    if (written != unmaskedLen) {
         sd.remove("/config.txt.tmp");
         f.close();
         if (tookControl) sdManager->releaseControl();

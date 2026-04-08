@@ -24,15 +24,19 @@ The Web Interface (`WebServer.cpp/.h` + `web_ui.h`) provides a Progressive Web A
 void updateStatusSnapshot() {
     // Pre-allocated JSON buffer
     char buf[1024];
+    // tz_offset_minutes: computed via localtime_r vs gmtime_r — live UTC offset including DST
+    int tzOffsetMinutes = /* localtime_r(&t) - gmtime_r(&t) in minutes */;
     int n = snprintf(buf, sizeof(buf),
         "{\"state\":\"%s\",\"uptime\":%lu,\"time\":\"%s\","
         "\"free_heap\":%u,\"max_alloc\":%u,"
         "\"smb_comp\":%d,\"smb_inc\":%d,"
-        "\"cloud_comp\":%d,\"cloud_inc\":%d}",
+        "\"cloud_comp\":%d,\"cloud_inc\":%d,"
+        "\"tz_offset_minutes\":%d}",
         stateString, uptime, timeStr,
         ESP.getFreeHeap(), ESP.getMaxAllocHeap(),
         smbCompleted, smbIncomplete,
-        cloudCompleted, cloudIncomplete);
+        cloudCompleted, cloudIncomplete,
+        tzOffsetMinutes);
 }
 ```
 
@@ -172,8 +176,41 @@ Flow:
 
 ### Monitoring Endpoints
 - `GET /monitor` - SD activity status JSON
-- `GET /api/status` - Detailed system status
+- `GET /api/status` - Detailed system status (includes `tz_offset_minutes` — live UTC offset with DST)
+- `GET /api/config` - Config snapshot (includes `tz_name` for Setup Wizard pre-selection)
 - `GET /ota` - OTA update interface
+- `GET /setup` - AP Setup Wizard (gzip-compressed, served from PROGMEM)
+- `GET /api/wifi-scan` - Deduplicated WiFi scan results (strongest RSSI per SSID)
+
+## Setup Wizard (AP Mode)
+
+The Setup Wizard (`/setup`) is a self-contained single-page form served from a gzip-compressed buffer in PROGMEM. It is accessible:
+- **In AP mode**: after a cold-boot with no valid config or failed WiFi — captive portal redirects here automatically
+- **In STA mode**: at `http://cpap.local/setup` or the Config tab link in the main dashboard
+
+### AP Mode Trigger Rules
+
+AP mode is only started on **genuine cold-boots** (power-on / external hard reset). It is intentionally blocked on:
+- Software reboot (`ESP_RST_SW`) — user clicked Reboot in web UI
+- Crash / panic (`ESP_RST_PANIC`)
+- Watchdog resets (`ESP_RST_WDT`, `ESP_RST_TASK_WDT`, `ESP_RST_INT_WDT`)
+- Brownout recovery (`ESP_RST_BROWNOUT`)
+
+This prevents an unexpected AP from appearing after a web UI reboot with wrong WiFi credentials. The log message `[AP] Reset reason N → AP mode BLOCKED/ALLOWED` is emitted at boot.
+
+When WiFi fails, the device makes **2 connection attempts** (3 s gap) before starting AP mode.
+
+### Wrong Credentials UX
+
+After saving via the Setup Wizard, the success message includes: *"⚠️ If the device cannot connect (e.g. wrong password), power-cycle it to re-enter setup mode."* This prevents confusion if a user enters wrong credentials, since a soft-reboot will not re-enter AP mode.
+
+### Timezone Handling
+
+- `zones.json` is fetched at page load (not `zones.csv`) — native JSON parse, no regex
+- Falls back to build-time embedded `BUILTIN_TZ` (injected by `generate_html_gz.py` at build)
+- Falls back to plain text POSIX input if both fail (AP/offline firstboot)
+- Saves both `TZ_STRING` (POSIX) and `TZ_NAME` (IANA name, e.g. `Australia/Melbourne`) to `config.txt`
+- `TZ_NAME` is used by the Setup Wizard to pre-select the correct dropdown entry on reload — eliminates Melbourne/Sydney reverse-lookup ambiguity
 
 ## Performance Optimizations
 
@@ -199,7 +236,7 @@ Flow:
 
 ### Display Settings
 - **Hostname**: mDNS name for access
-- **Time display**: Local time with timezone
+- **Time display**: Local time with timezone offset (`UTC+HH:MM` or `UTC+HH:MM (DST active)`) computed server-side from `tz_offset_minutes`
 - **Progress bars**: Visual upload indication
 - **Error messages**: User-friendly error display
 

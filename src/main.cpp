@@ -95,6 +95,11 @@ bool g_noWorkSuppressed = false;
 // Persisted to NVS on power-on boot; read from NVS on soft/watchdog reboots.
 // When false, "smart" upload mode is not available (forced to "scheduled").
 bool g_pcntCapable = false;
+bool g_apSetupMode = false;
+// AP mode is only permitted on cold-boot (power-on / external hard reset).
+// Soft reboots (ESP_RST_SW), watchdog resets, and panics must never start AP.
+// Set once in setup() from esp_reset_reason() — never changes after boot.
+bool g_apModeAllowed = false;
 
 // Monitoring mode flags
 bool monitoringRequested = false;
@@ -488,6 +493,15 @@ void setup() {
     g_heapRecoveryBoot = (esp_reset_reason() == ESP_RST_SW);
     bool fastBoot = g_heapRecoveryBoot;
 
+    // AP mode is only permitted on genuine cold-boots (SD just inserted / CPAP just powered on).
+    // Soft-reboots (user clicked Reboot in web UI) and crash-reboots must NOT start AP:
+    // the user's phone may be on a different network and an unexpected AP would be confusing.
+    {
+        esp_reset_reason_t rr = esp_reset_reason();
+        g_apModeAllowed = (rr == ESP_RST_POWERON || rr == ESP_RST_EXT || rr == ESP_RST_UNKNOWN);
+        LOG_INFOF("[AP] Reset reason %d \u2192 AP mode %s", (int)rr, g_apModeAllowed ? "ALLOWED" : "BLOCKED");
+    }
+
     // ── NVS flags check (always runs — uses Preferences + LittleFS, not SD) ──
     {
         Preferences resetPrefs;
@@ -663,10 +677,8 @@ void setup() {
             }
 
             if (!config.loadFromSD(sdManager.getFS())) {
-                LOG_ERROR("Failed to load configuration - cannot continue");
-                LOG_ERROR("Please check config.txt file on SD card");
+                LOG_ERROR("Failed to load configuration - starting AP Setup Mode...");
                 
-                LOG_ERROR("FATAL ERROR: System halted due to config failure. Please check config.txt.");
                 Logger::getInstance().dumpToSD(sdManager.getFS(), "/uploader_error.txt", "Config load failure");
                 
                 sdManager.releaseControl();
@@ -678,12 +690,12 @@ void setup() {
 
                 digitalWrite(SD_SWITCH_PIN, SD_SWITCH_CPAP_VALUE);
                 
-                return;
+                g_apSetupMode = true;
+            } else {
+                Logger::getInstance().checkPreviousBootError(sdManager.getFS());
+                sdManager.releaseControl();
+                configLoaded = true;
             }
-
-            Logger::getInstance().checkPreviousBootError(sdManager.getFS());
-
-            sdManager.releaseControl();
         }
     }
 
@@ -735,45 +747,69 @@ void setup() {
     // to avoid "Neither AP or STA has been started" warning.
     wifiManager.applyTxPowerEarly(config.getWifiTxPower());
 
-    // Initialize WiFi in station mode
-    if (!wifiManager.connectStation(config.getWifiSSID(), config.getWifiPassword(), config.getHostname())) {
-        LOG("Failed to connect to WiFi");
-        // Note: WiFiManager already persists logs on connection failures
-        
-        // ── EMERGENCY BOOT ERROR DUMP ──
-        // If we can't connect to WiFi on boot, the user can't access the Web UI to see why.
-        // We re-take the SD card just to dump the log buffer.
-        if (sdManager.takeControl()) {
-            LOG_ERROR("FATAL ERROR: System halted due to WiFi connection failure.");
-            Logger::getInstance().dumpToSD(sdManager.getFS(), "/uploader_error.txt", "WiFi connection failure");
-            sdManager.releaseControl();
+    // Initialize WiFi
+    if (g_apSetupMode) {
+        // Config failed to load — enter AP mode if cold-boot, otherwise continue without WiFi
+        if (g_apModeAllowed) {
+            wifiManager.startAP();
+        } else {
+            LOG_WARN("[AP] Config load failed but reset was not a cold-boot — skipping AP mode");
+            g_apSetupMode = false;  // Don't mislead the rest of setup into AP-mode paths
         }
-        
-        // Re-enable brownout detection if it was only relaxed for boot
-        if (config.getBrownoutDetectMode() == BrownoutDetectMode::RELAXED) {
-            LOG_INFO("[POWER] WiFi connection phase complete — re-enabling brownout detection");
-            SET_PERI_REG_MASK(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_ENA);
+    } else {
+        // Attempt 1
+        bool connected = wifiManager.connectStation(config.getWifiSSID(), config.getWifiPassword(), config.getHostname());
+        if (!connected) {
+            LOG_WARN("WiFi connect attempt 1 failed — waiting 3s before retry...");
+            delay(3000);
+            // Attempt 2
+            connected = wifiManager.connectStation(config.getWifiSSID(), config.getWifiPassword(), config.getHostname());
         }
 
-        return;
+        if (!connected) {
+            LOG_ERROR("Failed to connect to WiFi after 2 attempts.");
+
+            // ── EMERGENCY BOOT ERROR DUMP ──
+            if (sdManager.takeControl()) {
+                Logger::getInstance().dumpToSD(sdManager.getFS(), "/uploader_error.txt", "WiFi connection failure");
+                sdManager.releaseControl();
+            }
+
+            // Re-enable brownout detection if it was only relaxed for boot
+            if (config.getBrownoutDetectMode() == BrownoutDetectMode::RELAXED) {
+                LOG_INFO("[POWER] WiFi connection phase complete — re-enabling brownout detection");
+                SET_PERI_REG_MASK(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_ENA);
+            }
+
+            if (g_apModeAllowed) {
+                LOG("[AP] Cold-boot with failed WiFi — starting AP Setup Mode");
+                g_apSetupMode = true;
+                wifiManager.startAP();
+            } else {
+                LOG_WARN("[AP] WiFi failed but reset was not a cold-boot — skipping AP mode");
+                LOG_WARN("[AP] ⚠️ If you entered wrong WiFi credentials, power-cycle the device to re-enter setup mode.");
+            }
+        }
     }
     
-    // ── POWER: mDNS and WiFi power settings (brownout-aware) ──
-    if (g_brownoutRecoveryBoot) {
-        // Brownout-recovery: skip mDNS entirely, force lowest TX power + MAX power save
-        LOG_WARN("[POWER] Brownout-recovery: skipping mDNS, forcing lowest TX power + MAX power save");
-        wifiManager.applyPowerSettings(WifiTxPower::POWER_LOWEST, WifiPowerSaving::SAVE_MAX);
-    } else {
-        // Normal boot: small delay lets the 3.3V rail recover from the WiFi
-        // association + DHCP burst before mDNS fires its multicast announcement.
-        delay(200);
-        wifiManager.startMDNS(config.getHostname());
-        g_mdnsStartTime = millis();
-        g_mdnsTimedOut = false;
-        wifiManager.applyPowerSettings(config.getWifiTxPower(), config.getWifiPowerSaving());
+    if (!g_apSetupMode) {
+        // ── POWER: mDNS and WiFi power settings (brownout-aware) ──
+        if (g_brownoutRecoveryBoot) {
+            // Brownout-recovery: skip mDNS entirely, force lowest TX power + MAX power save
+            LOG_WARN("[POWER] Brownout-recovery: skipping mDNS, forcing lowest TX power + MAX power save");
+            wifiManager.applyPowerSettings(WifiTxPower::POWER_LOWEST, WifiPowerSaving::SAVE_MAX);
+        } else {
+            // Normal boot: small delay lets the 3.3V rail recover from the WiFi
+            // association + DHCP burst before mDNS fires its multicast announcement.
+            delay(200);
+            wifiManager.startMDNS(config.getHostname());
+            g_mdnsStartTime = millis();
+            g_mdnsTimedOut = false;
+            wifiManager.applyPowerSettings(config.getWifiTxPower(), config.getWifiPowerSaving());
+        }
+        LOG("WiFi power management settings applied");
     }
-    LOG("WiFi power management settings applied");
-    
+
     // Re-enable brownout detection if it was only relaxed for boot
     if (config.getBrownoutDetectMode() == BrownoutDetectMode::RELAXED) {
         LOG_INFO("[POWER] WiFi connection phase complete — re-enabling brownout detection");
@@ -836,94 +872,111 @@ void setup() {
         g_pmLock = nullptr;
     }
 
-    // Initialize uploader (no SD card needed — state is on LittleFS)
-    uploader = new FileUploader(&config, &wifiManager);
-    LOG("Initializing uploader...");
-    if (!uploader->begin()) {
-        LOG_ERROR("Failed to initialize uploader");
-        return;
-    }
-    g_heapRecoveryBoot = false;  // consumed — only skip delays on this one boot
-    LOG("Uploader initialized successfully");
-    
+    if (!g_apSetupMode) {
+        // Initialize uploader (no SD card needed — state is on LittleFS)
+        uploader = new FileUploader(&config, &wifiManager);
+        LOG("Initializing uploader...");
+        if (!uploader->begin()) {
+            LOG_ERROR("Failed to initialize uploader");
+            return;
+        }
+        g_heapRecoveryBoot = false;  // consumed — only skip delays on this one boot
+        LOG("Uploader initialized successfully");
+        
 #ifdef ENABLE_OTA_UPDATES
-    // Initialize OTA manager
-    LOG("Initializing OTA manager...");
-    if (!otaManager.begin()) {
-        LOG_ERROR("Failed to initialize OTA manager");
-        return;
-    }
-    otaManager.setCurrentVersion(VERSION_STRING);
-    LOG("OTA manager initialized successfully");
-    LOGF("OTA Version: %s", VERSION_STRING);
+        // Initialize OTA manager
+        LOG("Initializing OTA manager...");
+        if (!otaManager.begin()) {
+            LOG_ERROR("Failed to initialize OTA manager");
+            return;
+        }
+        otaManager.setCurrentVersion(VERSION_STRING);
+        LOG("OTA manager initialized successfully");
+        LOGF("OTA Version: %s", VERSION_STRING);
 #endif
-    
-    // Synchronize time with NTP server
-    LOG("Synchronizing time with NTP server...");
-    ScheduleManager* sm = uploader->getScheduleManager();
-    if (sm && sm->isTimeSynced()) {
-        LOG("Time synchronized successfully");
-        LOGF("System time: %s", sm->getCurrentLocalTime().c_str());
-    } else {
-        LOG_DEBUG("Time sync not yet available, will retry every 5 minutes");
-        lastNtpSyncAttempt = millis();
+        
+        // Synchronize time with NTP server
+        LOG("Synchronizing time with NTP server...");
+        ScheduleManager* sm = uploader->getScheduleManager();
+        if (sm && sm->isTimeSynced()) {
+            LOG("Time synchronized successfully");
+            LOGF("System time: %s", sm->getCurrentLocalTime().c_str());
+        } else {
+            LOG_DEBUG("Time sync not yet available, will retry every 5 minutes");
+            lastNtpSyncAttempt = millis();
+        }
     }
 
 #ifdef ENABLE_WEBSERVER
     // Initialize web server
     LOG("Initializing web server...");
     
-    // Create web server with references to uploader's internal components
-    webServer = new CpapWebServer(&config, 
-                                      uploader->getStateManager(),
-                                      uploader->getScheduleManager(),
-                                      &wifiManager);
-    
-    if (webServer->begin()) {
-        LOG("Web server started successfully");
-        LOGF("Access web interface at: http://%s", wifiManager.getIPAddress().c_str());
-        
-#ifdef ENABLE_OTA_UPDATES
-        // Set OTA manager reference in web server
-        webServer->setOTAManager(&otaManager);
-        LOG_DEBUG("OTA manager linked to web server");
-#endif
-        
-        // Set TrafficMonitor reference in web server for SD Activity Monitor
-        webServer->setTrafficMonitor(&trafficMonitor);
-        LOG_DEBUG("TrafficMonitor linked to web server");
-
+    if (g_apSetupMode) {
+        webServer = new CpapWebServer(&config, nullptr, nullptr, &wifiManager);
         webServer->setSdManager(&sdManager);
-        LOG_DEBUG("SDCardManager linked to web server for config editor");
-
-        // Give web server access to the SMB state manager so updateStatusSnapshot()
-        // can show folder counts from the active backend (SMB pass vs cloud pass).
-        webServer->setSmbStateManager(uploader->getSmbStateManager());
+        if (webServer->begin()) {
+            LOG("Web server started successfully in AP Setup Mode");
+        } else {
+            LOG_ERROR("Failed to start web server");
+        }
+    } else {
+        // Create web server with references to uploader's internal components
+        webServer = new CpapWebServer(&config, 
+                                          uploader->getStateManager(),
+                                          uploader->getScheduleManager(),
+                                          &wifiManager);
         
-        // Set web server reference in uploader for responsive handling during uploads
-        if (uploader) {
-            uploader->setWebServer(webServer);
-            LOG_DEBUG("Web server linked to uploader for responsive handling");
+        if (webServer->begin()) {
+            LOG("Web server started successfully");
+            LOGF("Access web interface at: http://%s", wifiManager.getIPAddress().c_str());
+            
+#ifdef ENABLE_OTA_UPDATES
+            // Set OTA manager reference in web server
+            webServer->setOTAManager(&otaManager);
+            LOG_DEBUG("OTA manager linked to web server");
+#endif
+            
+            // Set TrafficMonitor reference in web server for SD Activity Monitor
+            webServer->setTrafficMonitor(&trafficMonitor);
+            LOG_DEBUG("TrafficMonitor linked to web server");
+
+            webServer->setSdManager(&sdManager);
+            LOG_DEBUG("SDCardManager linked to web server for config editor");
+
+            // Give web server access to the SMB state manager so updateStatusSnapshot()
+            // can show folder counts from the active backend (SMB pass vs cloud pass).
+            webServer->setSmbStateManager(uploader->getSmbStateManager());
+            
+            // Set web server reference in uploader for responsive handling during uploads
+            if (uploader) {
+                uploader->setWebServer(webServer);
+                LOG_DEBUG("Web server linked to uploader for responsive handling");
+            }
+
+            // Build static config snapshot once — served from g_webConfigBuf with zero heap alloc.
+            webServer->initConfigSnapshot();
+            LOG_DEBUG("[WebStatus] Config snapshot built");
+        } else {
+            LOG_ERROR("Failed to start web server");
+        }
+    }
+#endif
+
+    if (!g_apSetupMode) {
+        // Set initial FSM state based on upload mode
+        if (uploader && uploader->getScheduleManager() && uploader->getScheduleManager()->isSmartMode()) {
+            LOG("[FSM] Smart mode — starting in LISTENING (continuous loop)");
+            transitionTo(UploadState::LISTENING);
+        } else {
+            LOG("[FSM] Scheduled mode — starting in IDLE");
+            // IDLE is the correct initial state for scheduled mode
+            transitionTo(UploadState::IDLE);
         }
 
-        // Build static config snapshot once — served from g_webConfigBuf with zero heap alloc.
-        webServer->initConfigSnapshot();
-        LOG_DEBUG("[WebStatus] Config snapshot built");
+        LOG("Setup complete!");
     } else {
-        LOG_ERROR("Failed to start web server");
+        LOG("Setup complete (AP Setup Mode)!");
     }
-#endif
-
-    // Set initial FSM state based on upload mode
-    if (uploader && uploader->getScheduleManager() && uploader->getScheduleManager()->isSmartMode()) {
-        LOG("[FSM] Smart mode — starting in LISTENING (continuous loop)");
-        transitionTo(UploadState::LISTENING);
-    } else {
-        LOG("[FSM] Scheduled mode — starting in IDLE");
-        // IDLE is the correct initial state for scheduled mode
-    }
-
-    LOG("Setup complete!");
 }
 
 // ============================================================================
@@ -1496,6 +1549,9 @@ void loop() {
 #ifdef ENABLE_WEBSERVER
     // Handle web server requests
     if (webServer) {
+        // Service captive portal DNS in AP mode — without this, phones never get
+        // DNS responses and the auto-redirect to the setup page doesn't work.
+        wifiManager.processDNS();
         webServer->handleClient();
         // Push SSE log events to connected client (if any).
         // Upload-time throttling is handled inside pushSseLogs() so logs remain
@@ -1610,7 +1666,9 @@ void loop() {
     // GUARD: Do NOT attempt reconnection while upload task is running on Core 0.
     // The upload task manages its own WiFi recovery via tryCoordinatedWifiCycle().
     // Concurrent reconnection from both cores corrupts the lwIP state machine.
-    if (!wifiManager.isConnected() && !uploadTaskRunning) {
+    // GUARD: Do NOT reconnect in AP setup mode — the radio is intentionally in
+    // WIFI_AP and calling connectStation() would tear down the AP broadcast.
+    if (!g_apSetupMode && !wifiManager.isConnected() && !uploadTaskRunning) {
         unsigned long currentTime = millis();
         if (currentTime - lastWifiReconnectAttempt >= 30000) {
             LOG_WARN("WiFi disconnected, attempting to reconnect...");

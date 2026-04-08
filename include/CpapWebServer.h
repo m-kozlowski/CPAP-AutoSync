@@ -50,6 +50,8 @@ private:
     void handleSoftReboot();
     void handleResetState();
     void handleConfigPage();      // HTML Config Page
+    void handleSetupPage();       // HTML Setup Page (AP Mode)
+    void handleApiWifiScan();     // JSON WiFi Scan API
     void handleApiConfig();       // JSON Config API
     void handleLogs();            // HTML Logs Viewer (AJAX)
     void handleApiLogs();         // Legacy alias for circular-buffer logs

@@ -4,6 +4,8 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
+#include <DNSServer.h>
+#include "Config.h"
 
 // Forward declarations for power management enums
 enum class WifiTxPower;
@@ -13,6 +15,8 @@ class WiFiManager {
 private:
     bool connected;
     bool mdnsStarted;
+    bool apMode;
+    DNSServer dnsServer;
     int8_t _pendingTxPower;   // Deferred TX power (dBm×4), applied in connectStation()
     bool _hasPendingTxPower;
     static volatile uint8_t _lastDisconnectReason;  // Captured in event handler for retry logic
@@ -23,6 +27,10 @@ public:
     
     void setupEventHandlers();
     bool connectStation(const String& ssid, const String& password, const String& hostname);
+    void startAP();
+    void processDNS();
+    bool isAPMode() const { return apMode; }
+    
     bool isConnected() const;
     void disconnect();
     String getIPAddress() const;
