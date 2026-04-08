@@ -177,6 +177,16 @@ static void scrSetHostClock(int freqKHz) {
     delayMicroseconds(100);
 }
 
+// Send ACMD6 to set card bus width: 1 or 4
+static bool scrSetCardBusWidth(uint16_t rca, int bits) {
+    uint32_t resp55 = 0, resp6 = 0;
+    uint32_t acmdFlags = (1u << 6) | (1u << 8) | (1u << 13) | (1u << 29);
+    if (!scrSendCmd(55, (uint32_t)rca << 16, acmdFlags, &resp55, 50000))
+        return false;
+    uint32_t arg = (bits == 4) ? 2 : 0;
+    return scrSendCmd(6, arg, acmdFlags, &resp6, 50000);
+}
+
 // ============================================================================
 // Hardware init/deinit
 // ============================================================================
@@ -332,12 +342,7 @@ String StealthConfigReader::readConfigTxt() {
     }
 
     // ── Step 6: Force card to 1-bit via ACMD6(0) ──
-    {
-        uint32_t resp55 = 0, resp6 = 0;
-        uint32_t acmdFlags = (1u << 6) | (1u << 8) | (1u << 13) | (1u << 29);
-        scrSendCmd(55, (uint32_t)KNOWN_RCA << 16, acmdFlags, &resp55, 50000);
-        scrSendCmd(6, 0, acmdFlags, &resp6, 50000);
-    }
+    scrSetCardBusWidth(KNOWN_RCA, 1);
     scrSetHostBusWidth(1);
     scrSetHostClock(400);
 
@@ -584,10 +589,7 @@ bool StealthConfigReader::restoreCardState() {
 
     // Step 4: Force 1-bit mode via ACMD6(0) — AS10 native bus width
     if (cardState == 4) {  // Transfer state — card is selected
-        uint32_t resp55 = 0, resp6 = 0;
-        uint32_t acmdFlags = (1u << 6) | (1u << 8) | (1u << 13) | (1u << 29);
-        scrSendCmd(55, (uint32_t)KNOWN_RCA << 16, acmdFlags, &resp55, 50000);
-        scrSendCmd(6, 0, acmdFlags, &resp6, 50000);
+        scrSetCardBusWidth(KNOWN_RCA, 1);
         scrSetHostBusWidth(1);
     }
 
@@ -614,5 +616,287 @@ bool StealthConfigReader::restoreCardState() {
     scrDeinitHardware();
 
     LOG_INFO("[StealthRestore] Card state restoration complete");
+    return true;
+}
+
+// ============================================================================
+// captureCardState — probe card state before SD_MMC.begin() destroys it
+//
+// After MUX switches to ESP but before SD_MMC.begin() sends CMD0, this
+// function probes the card in stealth mode (no CMD0) to capture:
+//   - RCA (typically 0x1388)
+//   - Card state (Standby=3, Transfer=4, etc.)
+//   - Bus width (detected empirically via 4-bit read test)
+//
+// The function preserves the card's original state — if it was in Standby,
+// it is returned to Standby after the probe.  CMD13 works at 1-bit regardless
+// of the card's configured width, so the probe is always safe.
+// ============================================================================
+bool StealthConfigReader::captureCardState(SavedCardState* out) {
+    LOG_INFO("[Capture] Probing card state before mount...");
+    out->valid = false;
+
+    // Step 1: Stealth hardware init (no CMD0)
+    if (!scrInitHardware()) {
+        LOG_ERROR("[Capture] Hardware init failed");
+        return false;
+    }
+
+    // Step 2: Mask SDMMC ISR, disable DMA
+    uint32_t savedIntMask = SDMMC.intmask.val;
+    SDMMC.intmask.val = 0;
+    SDMMC.ctrl.use_internal_dma = 0;
+    SDMMC.bmod.enable = 0;
+
+    // Step 3: CMD13(0x1388) — check card alive and read state
+    const uint16_t KNOWN_RCA = 0x1388;
+    uint32_t r1 = 0;
+    bool ok = scrSendCmd13(KNOWN_RCA, &r1);
+    uint16_t foundRca = KNOWN_RCA;
+    uint8_t cardState = (r1 >> 9) & 0x0F;
+
+    if (!ok || cardState < 3 || r1 == 0) {
+        // Scan nearby RCAs
+        LOG_WARNF("[Capture] CMD13(0x%04X) failed (ok=%d state=%d) — scanning...",
+                  KNOWN_RCA, ok, cardState);
+        bool found = false;
+        uint16_t scanRanges[][2] = { {0x0001, 0x0020}, {0x1380, 0x1398} };
+        for (auto& range : scanRanges) {
+            for (uint16_t rca = range[0]; rca <= range[1] && !found; rca++) {
+                uint32_t r = 0;
+                if (scrSendCmd13(rca, &r)) {
+                    uint8_t s = (r >> 9) & 0x0F;
+                    if (s >= 3 && r != 0) {
+                        uint32_t r2 = 0;
+                        if (scrSendCmd13(rca, &r2) && ((r2 >> 9) & 0x0F) >= 3 && r2 != 0) {
+                            LOG_INFOF("[Capture] Found RCA 0x%04X, state=%d", rca, (r2 >> 9) & 0x0F);
+                            r1 = r2;
+                            cardState = (r2 >> 9) & 0x0F;
+                            foundRca = rca;
+                            found = true;
+                        }
+                    }
+                }
+            }
+        }
+        if (!found) {
+            LOG_ERROR("[Capture] Card not responding — capture failed");
+            SDMMC.intmask.val = savedIntMask;
+            scrDeinitHardware();
+            return false;
+        }
+    } else {
+        LOG_INFOF("[Capture] CMD13(0x%04X): state=%d(%s)",
+                  KNOWN_RCA, cardState, SCR_SD_STATE_NAME(cardState));
+    }
+
+    // Card in Idle (0) or Ready (1) means it was already reset — nothing to capture
+    if (cardState < 3) {
+        LOG_WARN("[Capture] Card in Idle/Ready — already reset, nothing to capture");
+        SDMMC.intmask.val = savedIntMask;
+        scrDeinitHardware();
+        return false;
+    }
+
+    // If card in Programming (7), wait for it to finish
+    if (cardState == 7) {
+        LOG_INFO("[Capture] Card in Programming state — waiting...");
+        for (int i = 0; i < 50; i++) {
+            delay(10);
+            if (scrSendCmd13(foundRca, &r1)) {
+                cardState = (r1 >> 9) & 0x0F;
+                if (cardState != 7) break;
+            }
+        }
+        if (cardState == 7) {
+            LOG_WARN("[Capture] Card stuck in Programming — capture failed");
+            SDMMC.intmask.val = savedIntMask;
+            scrDeinitHardware();
+            return false;
+        }
+        LOG_INFOF("[Capture] Card exited Programming → state=%d(%s)",
+                  cardState, SCR_SD_STATE_NAME(cardState));
+    }
+
+    out->rca = foundRca;
+    out->cardState = cardState;
+
+    // Step 4: Bus width detection via 4-bit read test
+    // Need card in Transfer (state 4) for data reads
+    bool wasStandby = (cardState == 3);
+    if (wasStandby) {
+        if (!scrSendCmd7(foundRca)) {
+            LOG_WARN("[Capture] CMD7 select failed — assuming 1-bit");
+            out->busWidth = 1;
+            out->valid = true;
+            SDMMC.intmask.val = savedIntMask;
+            scrDeinitHardware();
+            return true;
+        }
+        delay(2);  // Allow card to settle into Transfer state
+        // Verify card is now in Transfer
+        uint32_t chk = 0;
+        if (scrSendCmd13(foundRca, &chk)) {
+            uint8_t st = (chk >> 9) & 0x0F;
+            LOG_INFOF("[Capture] After CMD7 select: state=%d(%s)", st, SCR_SD_STATE_NAME(st));
+        }
+    }
+
+    // Clear stale interrupt status before read attempts
+    SDMMC.rintsts.val = 0xFFFFFFFF;
+
+    // Try reading sector 0 at multiple bus width / speed combinations.
+    // 4-bit probes first (if any succeeds → card was in 4-bit), then 1-bit.
+    uint8_t sec[512] __attribute__((aligned(4)));
+    struct { int bits; int khz; } probes[] = {
+        { 4,   400 },
+        { 4, 25000 },
+        { 1,   400 },
+        { 1, 25000 },
+    };
+
+    int detectedWidth = 0;
+    for (auto& p : probes) {
+        // Use sdmmc_host_set_bus_width() instead of scrSetHostBusWidth()
+        // because it also reconnects D3 to the SDMMC peripheral via GPIO matrix.
+        // Without this, D3 stays as GPIO output HIGH (forced during init_slot)
+        // and 4-bit data reads get Start Bit Errors.
+        sdmmc_host_set_bus_width(SDMMC_HOST_SLOT_1, p.bits);
+        scrSetHostClock(p.khz);
+
+        if (scrReadSector(0, sec)) {
+            if (sec[510] == 0x55 && sec[511] == 0xAA) {
+                detectedWidth = p.bits;
+                LOG_INFOF("[Capture] Bus width detected: %d-bit (%d-bit@%dkHz read OK)",
+                          p.bits, p.bits, p.khz);
+                break;
+            }
+            LOG_WARNF("[Capture] %d-bit@%dkHz: read OK but no boot sig (0x%02X 0x%02X)",
+                      p.bits, p.khz, sec[510], sec[511]);
+        } else {
+            uint32_t errSts = SDMMC.rintsts.val;
+            LOG_WARNF("[Capture] %d-bit@%dkHz: read failed, RINTSTS=0x%08X",
+                      p.bits, p.khz, errSts);
+        }
+        // Clean up for next attempt — full controller reset to clear HLE
+        scrSendCmd12();
+        delay(2);
+        SDMMC.ctrl.controller_reset = 1;
+        SDMMC.ctrl.fifo_reset = 1;
+        SDMMC.ctrl.dma_reset = 1;
+        uint32_t t0 = (uint32_t)esp_timer_get_time();
+        while (SDMMC.ctrl.controller_reset || SDMMC.ctrl.fifo_reset || SDMMC.ctrl.dma_reset) {
+            if (((uint32_t)esp_timer_get_time() - t0) > 10000) break;
+        }
+        SDMMC.rintsts.val = 0xFFFFFFFF;
+    }
+
+    if (detectedWidth == 0) {
+        out->busWidth = 1;
+        LOG_WARN("[Capture] Bus width detection inconclusive — defaulting to 1-bit");
+    } else {
+        out->busWidth = detectedWidth;
+    }
+
+    // Restore host to 1-bit
+    scrSetHostBusWidth(1);
+
+    // If we selected the card for the read test, deselect to restore original state
+    if (wasStandby) {
+        scrSendCmd7(0);
+    }
+
+    out->valid = true;
+    SDMMC.intmask.val = savedIntMask;
+    scrDeinitHardware();
+
+    LOG_INFOF("[Capture] Captured: RCA=0x%04X state=%d(%s) busWidth=%d",
+              out->rca, out->cardState, SCR_SD_STATE_NAME(out->cardState), out->busWidth);
+    return true;
+}
+
+// ============================================================================
+// restoreToSavedState — restore card to a previously captured state
+//
+// After SD_MMC.end(), the card retains its state at the RCA assigned by
+// SD_MMC.begin().  This function re-inits SDMMC in stealth mode (no CMD0),
+// sets the bus width to match the saved state via ACMD6, and selects or
+// deselects the card to match the original card state.
+//
+// Caller MUST still hold the MUX on ESP side.
+// ============================================================================
+bool StealthConfigReader::restoreToSavedState(const SavedCardState& saved) {
+    LOG_INFOF("[Restore] Restoring to: RCA=0x%04X state=%d(%s) busWidth=%d",
+              saved.rca, saved.cardState, SCR_SD_STATE_NAME(saved.cardState), saved.busWidth);
+
+    // Step 1: Stealth hardware init
+    if (!scrInitHardware()) {
+        LOG_ERROR("[Restore] Hardware re-init failed");
+        return false;
+    }
+
+    // Step 2: Mask SDMMC ISR
+    uint32_t savedIntMask = SDMMC.intmask.val;
+    SDMMC.intmask.val = 0;
+
+    // Step 3: Verify card alive
+    uint32_t r1 = 0;
+    bool ok = scrSendCmd13(saved.rca, &r1);
+    uint8_t currentState = (r1 >> 9) & 0x0F;
+
+    if (!ok || currentState < 3 || r1 == 0) {
+        LOG_WARNF("[Restore] CMD13(0x%04X) failed (ok=%d state=%d) — cannot restore",
+                  saved.rca, ok, currentState);
+        SDMMC.intmask.val = savedIntMask;
+        scrDeinitHardware();
+        return false;
+    }
+
+    LOG_INFOF("[Restore] Card alive: current state=%d(%s)", currentState, SCR_SD_STATE_NAME(currentState));
+
+    // Step 4: Ensure card is in Transfer (state 4) for ACMD6
+    if (currentState == 3) {
+        if (!scrSendCmd7(saved.rca)) {
+            LOG_WARN("[Restore] CMD7 select failed");
+            SDMMC.intmask.val = savedIntMask;
+            scrDeinitHardware();
+            return false;
+        }
+        currentState = 4;
+    }
+
+    // Step 5: Set bus width via ACMD6
+    scrSetCardBusWidth(saved.rca, saved.busWidth);
+    scrSetHostBusWidth(saved.busWidth);
+    LOG_INFOF("[Restore] Bus width set to %d-bit", saved.busWidth);
+
+    // Step 6: Restore card state (selected vs deselected)
+    if (saved.cardState == 3) {
+        // Original was Standby — deselect
+        if (!scrSendCmd7(0)) {
+            LOG_WARN("[Restore] CMD7(0) deselect failed");
+        } else {
+            LOG_INFO("[Restore] Card deselected → Standby");
+        }
+    } else if (saved.cardState == 4) {
+        // Original was Transfer — leave selected
+        LOG_INFO("[Restore] Card left in Transfer (selected)");
+    } else {
+        // Transient state (>=5) — leave in Transfer as closest stable state
+        LOG_INFOF("[Restore] Original state %d is transient — leaving in Transfer", saved.cardState);
+    }
+
+    // Step 7: Verify final state
+    r1 = 0;
+    if (scrSendCmd13(saved.rca, &r1)) {
+        uint8_t finalState = (r1 >> 9) & 0x0F;
+        LOG_INFOF("[Restore] Final card state: %d(%s)", finalState, SCR_SD_STATE_NAME(finalState));
+    }
+
+    // Step 8: Restore ISR mask and deinit
+    SDMMC.intmask.val = savedIntMask;
+    scrDeinitHardware();
+
+    LOG_INFO("[Restore] Card state restoration complete");
     return true;
 }

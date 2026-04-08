@@ -12,10 +12,11 @@ extern Config config;
 #include "StealthConfigReader.h"
 extern bool g_pcntCapable;
 
-SDCardManager::SDCardManager() : 
-    initialized(false), 
+SDCardManager::SDCardManager() :
+    initialized(false),
     espHasControl(false),
-    controlAcquiredAt(0) {
+    controlAcquiredAt(0),
+    savedState{} {
 }
 
 void SDCardManager::setControlPin(bool espControl) {
@@ -66,6 +67,12 @@ bool SDCardManager::takeControl() {
     gpio_set_drive_capability((gpio_num_t)SD_D2_PIN, GPIO_DRIVE_CAP_0);
     gpio_set_drive_capability((gpio_num_t)SD_D3_PIN, GPIO_DRIVE_CAP_0);
 
+    // Capture card state before SD_MMC.begin() destroys it with CMD0
+    savedState.valid = false;
+    if (!StealthConfigReader::captureCardState(&savedState)) {
+        LOG_WARN("Card state capture failed — will use fallback restore on release");
+    }
+
     // Mount SD in 1-bit or 4-bit mode based on config.
     // 4-bit is default and safer for CPAP handoff.
     // 1-bit uses less ESP-side bus current but requires a compatibility remount on release.
@@ -100,16 +107,25 @@ void SDCardManager::releaseControl() {
     SD_MMC.end();
     initialized = false;
 
-    // ── Stealth card-state restoration (AS10 only) ──
+    // ── Card-state restoration ──
     // After SD_MMC.end(), the SDMMC host is deinitialized but the card retains
-    // its state at RCA 0x1388 (no CMD0 was sent).  Re-init the host in stealth
-    // mode, force 1-bit, and deselect (CMD7(0)) → Standby.  This is the state
-    // the AS10 CPAP expects — prevents it from power-cycling the ESP.
-    if (!g_pcntCapable && config.getStealthRestore()) {
-        if (StealthConfigReader::restoreCardState()) {
-            LOG_INFO("[SDCard] Card state restored to Standby via stealth (AS10 mode)");
+    // its state (no CMD0 was sent).  Restore it to the state captured before
+    // SD_MMC.begin(), or fall back to hardcoded Standby/1-bit if capture failed.
+    if (config.getStealthRestore()) {
+        if (savedState.valid) {
+            if (StealthConfigReader::restoreToSavedState(savedState)) {
+                LOG_INFOF("[SDCard] Card restored to saved state: %d-bit, state=%d",
+                          savedState.busWidth, savedState.cardState);
+            } else {
+                LOG_WARN("[SDCard] Saved state restore failed — trying fallback");
+                StealthConfigReader::restoreCardState();
+            }
         } else {
-            LOG_WARN("[SDCard] Stealth card-state restoration failed — AS10 may power-cycle");
+            if (StealthConfigReader::restoreCardState()) {
+                LOG_INFO("[SDCard] Card state restored to Standby via stealth (fallback)");
+            } else {
+                LOG_WARN("[SDCard] Stealth card-state restoration failed");
+            }
         }
     }
 
