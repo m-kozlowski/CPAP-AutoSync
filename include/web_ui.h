@@ -521,6 +521,14 @@ function renderStatus(d){
   var _prevSt=currentFsmState;
   var _newSt=d.state||'';
   currentFsmState=_newSt;
+  // Restore monitoring state from server FSM (fix for page refresh/navigation)
+  if(_newSt==='MONITORING' && !monActive){
+    monActive=true;
+    if(!monPoll)monPoll=setInterval(fetchMon,2000);
+    fetchMon();
+    syncMonBtn();
+    _updateMonBanner();
+  }
   // Auto-trigger deferred backfill when upload finishes
   var _wasBusy=(_prevSt==='UPLOADING'||_prevSt==='ACQUIRING');
   var _nowBusy=(_newSt==='UPLOADING'||_newSt==='ACQUIRING');
@@ -530,7 +538,10 @@ function renderStatus(d){
     _tryBackfill();
   }
   seti('d-st',badgeHtml(currentFsmState||'?'));
-  var ins=d.in_state_sec||0;set('d-ins',ins<60?ins+'s':Math.floor(ins/60)+'m '+ins%60+'s');
+  var ins=d.in_state_sec||0;
+  if(ins<60){set('d-ins',ins+'s');}
+  else if(ins<3600){set('d-ins',Math.floor(ins/60)+'m '+ins%60+'s');}
+  else{var h=Math.floor(ins/3600),m=Math.floor((ins%3600)/60),s=ins%60;set('d-ins',h+'h '+m+'m '+s+'s');}
   var mode=(cfg.upload_mode||'—').toUpperCase();
   var pcntOk=d.pcnt_capable!==false;
   cfg._pcntCapable=pcntOk;
@@ -747,17 +758,21 @@ function updateCpuChart(){
 function syncMonBtn(){
   var busy=currentFsmState==='UPLOADING'||currentFsmState==='ACQUIRING';
   var btnSt=document.getElementById('btn-mst');
-  if(!btnSt)return;
+  var btnSp=document.getElementById('btn-msp');
+  if(!btnSt||!btnSp)return;
   if(monActive){
     btnSt.style.display='none';
+    btnSp.style.display='inline-flex';
   }else if(busy){
     btnSt.style.display='inline-flex';
+    btnSp.style.display='none';
     btnSt.disabled=true;
     btnSt.style.opacity='.4';
     btnSt.style.cursor='not-allowed';
     btnSt.textContent='Start Monitoring';
   }else{
     btnSt.style.display='inline-flex';
+    btnSp.style.display='none';
     btnSt.disabled=false;
     btnSt.style.opacity='1';
     btnSt.style.cursor='pointer';

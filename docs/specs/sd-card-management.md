@@ -275,3 +275,15 @@ INACTIVITY_SECONDS = 60
 - **Hardware reset**: Power cycle to clear hardware issues
 - **Configuration reset**: Return to default timing values
 - **Firmware update**: Address compatibility issues
+
+---
+
+## Note: Dual Stealth Mode Approaches
+
+The firmware implements two distinct stealth mode approaches for different use cases:
+
+1. **Boot Config Reading (AS10 only)**: `StealthConfigReader::readConfigTxt()` reads `config.txt` without any SD card initialization (no CMD0). Uses custom FAT32 parser. Returns card to original state found. Used only on AS10 at boot when PCNT detection indicates AS10 hardware.
+
+2. **Upload State Preservation (AS10 and AS11)**: `captureCardState()`/`restoreToSavedState()` captures card state before `SD_MMC.begin()` (which sends CMD0) and restores it after `SD_MMC.end()`. No FAT32 parsing needed. Used on both AS10 and AS11 during upload cycles to preserve exact card state.
+
+These approaches are orthogonal and serve different purposes - one avoids SD_MMC entirely (boot), the other works around SD_MMC (uploads).

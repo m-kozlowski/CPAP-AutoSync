@@ -932,6 +932,18 @@ python -m esptool --chip esp32 --port /dev/ttyUSB0 --baud 460800 write_flash 0x0
 
 ---
 
+## Technical Note: Dual Stealth Mode Approaches
+
+The firmware implements two distinct stealth mode approaches for SD card access:
+
+1. **Boot Config Reading (AS10 only)**: `StealthConfigReader::readConfigTxt()` reads `config.txt` without any SD card initialization (no CMD0). Uses custom FAT32 parser. Returns card to original state found. Used only on AS10 at boot when PCNT detection indicates AS10 hardware.
+
+2. **Upload State Preservation (AS10 and AS11)**: `captureCardState()`/`restoreToSavedState()` captures card state before `SD_MMC.begin()` (which sends CMD0) and restores it after `SD_MMC.end()`. No FAT32 parsing needed. Used on both AS10 and AS11 during upload cycles to preserve exact card state.
+
+These approaches are orthogonal - config reading avoids SD_MMC entirely, upload preservation works around SD_MMC.
+
+---
+
 ## Legal & Trademarks
 
 - **SleepHQ** is a trademark of its respective owner. This project is an unofficial client and is not affiliated with, endorsed by, or associated with SleepHQ.
