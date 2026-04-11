@@ -1194,13 +1194,35 @@ void CpapWebServer::handleApiConfigRawPost() {
 
     const String& body = server->arg("plain");
 
+    // Strip trailing blank lines to prevent newline accumulation across saves
+    String trimmedBody = body;
+    while (trimmedBody.length() > 0 &&
+           (trimmedBody.charAt(trimmedBody.length() - 1) == '\n' ||
+            trimmedBody.charAt(trimmedBody.length() - 1) == '\r')) {
+        // Find the start of the last line
+        int lastNl = trimmedBody.lastIndexOf('\n', trimmedBody.length() - 2);
+        if (lastNl < 0) lastNl = -1;
+        // Check if the last line is blank
+        String lastLine = trimmedBody.substring(lastNl + 1);
+        lastLine.trim();
+        if (lastLine.length() == 0) {
+            trimmedBody = trimmedBody.substring(0, lastNl + 1);
+        } else {
+            break;
+        }
+    }
+    // Ensure exactly one trailing newline
+    if (trimmedBody.length() > 0 && trimmedBody.charAt(trimmedBody.length() - 1) != '\n') {
+        trimmedBody += '\n';
+    }
+
     String unmasked = "";
     int start = 0;
-    while (start < body.length()) {
-        int end = body.indexOf('\n', start);
-        if (end == -1) end = body.length();
-        
-        String line = body.substring(start, end);
+    while (start < trimmedBody.length()) {
+        int end = trimmedBody.indexOf('\n', start);
+        if (end == -1) end = trimmedBody.length();
+
+        String line = trimmedBody.substring(start, end);
         String trimmed = line;
         trimmed.trim();
         

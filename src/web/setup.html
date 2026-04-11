@@ -438,7 +438,7 @@
     <div class="modal-card">
         <h2>&#9888; Save &amp; Restart</h2>
         <p>This will save your configuration and reboot the device. All active uploads will be interrupted.</p>
-        <p>After reboot, always eject and reinsert the SD card before powering on the CPAP.</p>
+        <p style="color:#ff6b6b;font-weight:600">&#9888;&#65039; After reboot, you MUST physically eject the SD card from the CPAP and reinsert it before powering the CPAP on. Failure to do so may cause data loss or corruption.</p>
         <div class="modal-actions">
             <button class="btn bs" onclick="document.getElementById('save-modal').style.display='none'">Cancel</button>
             <button class="btn bd" onclick="document.getElementById('save-modal').style.display='none';saveConfig()">Save &amp; Restart</button>
@@ -975,7 +975,12 @@ function buildConfigString() {
         }
     }
 
-    // Join with \r\n (FAT filesystem convention)
+    // Strip trailing blank/empty entries to prevent newline accumulation
+    while (output.length > 0 && output[output.length - 1].trim() === '') {
+        output.pop();
+    }
+
+    // Join with \r\n (FAT filesystem convention) — exactly one trailing newline
     return output.join('\r\n') + '\r\n';
 }
 

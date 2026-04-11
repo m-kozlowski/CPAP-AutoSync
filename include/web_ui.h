@@ -260,11 +260,6 @@ nav button:hover:not(.act){background:#3a5a7e}
 <p style="font-size:.82em;color:#8f98a0;margin-bottom:10px;line-height:1.5">Use the visual setup wizard to configure WiFi, timezone, upload schedule, SleepHQ, and network share settings &mdash; no manual editing required.</p>
 <a href="/setup" class="btn bp" style="text-decoration:none">&#9881; Open Setup Wizard</a>
 </div>
-<div class=card>
-<h2>Advanced: Raw config.txt</h2>
-<p style="font-size:.82em;color:#8f98a0;margin-bottom:8px">For direct editing of config.txt, use the <strong>Advanced / Raw Config</strong> section inside the Setup Wizard. It provides the same raw editor with lock/unlock safety.</p>
-<a href="/setup" class="btn bp" style="text-decoration:none">&#9998; Open Setup Wizard</a>
-</div>
 </div>
 
 <!-- MONITOR -->
