@@ -250,27 +250,6 @@ nav button:hover:not(.act){background:#3a5a7e}
 </div>
 </div>
 
-<!-- CONFIG SD-ACCESS WARNING MODAL -->
-<div id="cfg-warn-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.85);z-index:9999;align-items:center;justify-content:center;overflow:auto;padding:16px">
-<div style="background:#1b2838;border:1px solid #aa9900;border-radius:12px;padding:20px;max-width:480px;width:100%;box-sizing:border-box;box-shadow:0 10px 40px rgba(170,153,0,0.2);margin:auto">
-<h2 style="color:#ffcc44;margin-bottom:10px;font-size:1.2em">&#9888; SD Card Access Warning</h2>
-<p style="font-size:.88em;color:#c7d5e0;line-height:1.6;margin-bottom:16px">
-Editing and saving config requires <strong>reading from and writing to the CPAP&rsquo;s SD card</strong>. This carries a small risk of an SD card error if the CPAP machine is actively writing at the same time.
-</p>
-<div style="background:#0f1923;padding:14px;border-radius:8px;margin-bottom:18px;border:1px solid #2a475e">
-<ul style="font-size:.84em;color:#8f98a0;padding-left:18px;line-height:1.7;margin:0">
-<li><strong style="color:#44ff44">Safest:</strong> Edit config when the CPAP machine is <strong>off</strong> or between therapy sessions.</li>
-<li><strong style="color:#ddcc44">Acceptable:</strong> Quick edits during the day while CPAP is idle (not in therapy).</li>
-<li><strong style="color:#ff6b6b">Risky:</strong> Editing while the CPAP is actively recording therapy data.</li>
-</ul>
-</div>
-<div style="display:flex;gap:10px;justify-content:flex-end">
-<button class="btn bs" onclick="document.getElementById('cfg-warn-modal').style.display='none'">Cancel</button>
-<button class="btn bp" onclick="document.getElementById('cfg-warn-modal').style.display='none';_doCfgLock();" style="background:#aa8800;color:#fff">I Understand, Edit Config</button>
-</div>
-</div>
-</div>
-
 <!-- CONFIG -->
 <div id=cfg class=page>
 <div id=cfg-pcnt-banner style="display:none;background:#1a2a3a;border:1px solid #2a5070;border-radius:6px;padding:10px 14px;margin-bottom:10px;font-size:.84em;color:#8faab8;line-height:1.5">
@@ -281,26 +260,10 @@ Editing and saving config requires <strong>reading from and writing to the CPAP&
 <p style="font-size:.82em;color:#8f98a0;margin-bottom:10px;line-height:1.5">Use the visual setup wizard to configure WiFi, timezone, upload schedule, SleepHQ, and network share settings &mdash; no manual editing required.</p>
 <a href="/setup" class="btn bp" style="text-decoration:none">&#9881; Open Setup Wizard</a>
 </div>
-<div id=cfg-lock-banner style="display:none;background:#2a2a00;border:1px solid #aa9900;border-radius:6px;padding:10px 14px;margin-bottom:10px;font-size:.85em;color:#ddcc88">
-&#128274; <strong>Upload running</strong> &mdash; Config editor is active. Press <em>Cancel</em> to close without saving, or <em>Save &amp; Reboot</em> to apply changes. After reboot, <strong>always</strong> physically eject and reinsert the CPAP&rsquo;s SD card before powering it on.
-</div>
 <div class=card>
-<h2>Edit config.txt
-<span id=cfg-lock-badge style="display:none;margin-left:8px;background:#4a8a4a;color:#fff;font-size:.65em;padding:2px 7px;border-radius:10px;font-weight:600;vertical-align:middle">LOCKED</span>
-</h2>
-<p style="font-size:.82em;color:#8f98a0;margin-bottom:8px">Direct editor for the SD card config file. Passwords stored securely in flash appear as <code>***STORED_IN_FLASH***</code> &mdash; leave them unchanged to keep existing credentials. Max 4096 bytes. <strong>Changes take effect after reboot.</strong></p>
-<p style="font-size:.82em;color:#ffcc44;margin-bottom:8px">&#9888; Click <strong>Edit</strong> to start editing. Uploads continue while the editor is open.</p>
-<textarea id=cfg-raw style="width:100%;box-sizing:border-box;height:320px;background:#111820;color:#6a7a8a;border:1px solid #2d3440;border-radius:4px;padding:8px;font-family:monospace;font-size:.8em;resize:vertical" maxlength=4096 oninput=cfgRawCount() placeholder="Click Edit to begin..." readonly></textarea>
-<div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
-<span id=cfg-raw-cnt style="font-size:.8em;color:#8f98a0">0 / 4096 bytes</span>
-<div class=actions style=margin:0>
-<button id=btn-cfg-edit class="btn bp" onclick=acquireCfgLock()>&#9998; Edit</button>
-<button id=btn-cfg-reload class="btn bs" onclick=loadRawCfg() style="display:none">&#8635; Reload</button>
-<button id=btn-cfg-savereboot class="btn bd" onclick=saveAndReboot() style="display:none">Save &amp; Reboot</button>
-<button id=btn-cfg-cancel class="btn bs" onclick=releaseCfgLock() style="display:none">&#10005; Cancel</button>
-</div>
-</div>
-<div id=cfg-raw-msg style="margin-top:6px;font-size:.83em"></div>
+<h2>Advanced: Raw config.txt</h2>
+<p style="font-size:.82em;color:#8f98a0;margin-bottom:8px">For direct editing of config.txt, use the <strong>Advanced / Raw Config</strong> section inside the Setup Wizard. It provides the same raw editor with lock/unlock safety.</p>
+<a href="/setup" class="btn bp" style="text-decoration:none">&#9998; Open Setup Wizard</a>
 </div>
 </div>
 
@@ -786,83 +749,10 @@ function checkMonUploadState(){
   syncMonBtn();
 }
 
-var cfgLocked=false;
-function _setCfgLockUI(locked){
-  cfgLocked=locked;
-  document.getElementById('cfg-lock-banner').style.display=locked?'':'none';
-  document.getElementById('cfg-lock-badge').style.display=locked?'':'none';
-  var ta=document.getElementById('cfg-raw');
-  ta.readOnly=!locked;
-  ta.style.background=locked?'#1b2838':'#111820';
-  ta.style.color=locked?'#c7d5e0':'#6a7a8a';
-  ta.style.borderColor=locked?'#3d4450':'#2d3440';
-  document.getElementById('btn-cfg-edit').style.display=locked?'none':'';
-  document.getElementById('btn-cfg-reload').style.display=locked?'':'none';
-  document.getElementById('btn-cfg-savereboot').style.display=locked?'':'none';
-  document.getElementById('btn-cfg-cancel').style.display=locked?'':'none';
-}
-function acquireCfgLock(){
-  document.getElementById('cfg-warn-modal').style.display='flex';
-}
-function _doCfgLock(){
-  var active=currentFsmState==='UPLOADING'||currentFsmState==='ACQUIRING';
-  if(active&&!confirm('An upload is currently in progress.\n\nThe upload will continue running. You can edit config and Save & Reboot when ready.\n\nContinue?'))return;
-  _setCfgLockUI(true);
-  loadRawCfg();
-}
-function releaseCfgLock(){
-  _setCfgLockUI(false);
-  document.getElementById('cfg-raw-msg').textContent='';
-}
 function loadCfg(){
   fetch('/api/config',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
     cfg=d;
   }).catch(function(){});
-}
-function cfgRawCount(){
-  var t=document.getElementById('cfg-raw');
-  document.getElementById('cfg-raw-cnt').textContent=t.value.length+' / 4096 bytes';
-}
-function loadRawCfg(){
-  var msg=document.getElementById('cfg-raw-msg');
-  msg.textContent='Loading...';
-  fetch('/api/config-raw',{cache:'no-store'}).then(function(r){
-    if(!r.ok)return r.text().then(function(t){throw new Error(t);});
-    return r.text();
-  }).then(function(t){
-    document.getElementById('cfg-raw').value=t;
-    cfgRawCount();
-    msg.textContent='';
-  }).catch(function(e){msg.style.color='#ff6060';msg.textContent='Load failed: '+e.message;});
-}
-function saveRawCfg(){
-  var body=document.getElementById('cfg-raw').value;
-  var msg=document.getElementById('cfg-raw-msg');
-  msg.style.color='#8f98a0';msg.textContent='Saving...';
-  fetch('/api/config-raw',{method:'POST',headers:{'Content-Type':'text/plain'},body:body,cache:'no-store'})
-  .then(function(r){return r.json();})
-  .then(function(d){
-    if(d.ok){
-      msg.style.color='#57cbde';msg.innerHTML='\u2713 Saved \u2014 <strong>reboot required</strong> for changes to take effect.';
-      releaseCfgLock();
-    }else{msg.style.color='#ff6060';msg.textContent='Error: '+d.error;}
-  }).catch(function(e){msg.style.color='#ff6060';msg.textContent='Failed: '+e.message;});
-}
-function saveAndReboot(){
-  var body=document.getElementById('cfg-raw').value;
-  var msg=document.getElementById('cfg-raw-msg');
-  msg.style.color='#8f98a0';msg.textContent='Saving...';
-  fetch('/api/config-raw',{method:'POST',headers:{'Content-Type':'text/plain'},body:body,cache:'no-store'})
-  .then(function(r){return r.json();})
-  .then(function(d){
-    if(d.ok){
-      _setCfgLockUI(false);
-      document.getElementById('cfg-lock-banner').style.display='none';
-      msg.style.color='#57cbde';msg.textContent='Saved — rebooting… redirecting in 10s';rebootExpected=true;
-      setTimeout(function(){fetch('/soft-reboot',{cache:'no-store'});},800);
-      setTimeout(function(){window.location.href='/';},10000);
-    }else{msg.style.color='#ff6060';msg.textContent='Error: '+d.error;}
-  }).catch(function(e){msg.style.color='#ff6060';msg.textContent='Failed: '+e.message;});
 }
 
 // Client-side log buffer — persists across soft-reboots in browser memory

@@ -1016,6 +1016,7 @@ void CpapWebServer::updateStatusSnapshot() {
         ",\"tz_offset_minutes\":%d"
         ",\"recent_tabs\":\"%s\""
         ",\"hostname\":\"%s\""
+        ",\"ap_setup\":%s"
         ",\"firmware\":\"%s\"}",
         st, inStateSec, upSec,
         timeBuf, timeSynced ? "true" : "false",
@@ -1033,6 +1034,7 @@ void CpapWebServer::updateStatusSnapshot() {
         tzOffsetMinutes,
         recentTabs,
         config ? config->getHostname().c_str() : "cpap",
+        g_apSetupMode ? "true" : "false",
         FIRMWARE_VERSION);
     if (n > 0 && n < (int)sizeof(buf)) {
         memcpy(g_webStatusBuf, buf, n + 1);
