@@ -7,12 +7,13 @@
     <style>
         /* ── Design tokens matching web_ui.h dark theme ── */
         * { box-sizing: border-box; margin: 0; padding: 0; }
+        html { overflow-y: scroll; scroll-behavior: smooth; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: #0f1923; color: #c7d5e0;
             min-height: 100vh; padding: 16px; overflow-x: hidden;
         }
-        .wrap { max-width: 900px; margin: 0 auto; }
+        .wrap { max-width: 900px; margin: 0 auto; overflow-x: hidden; }
 
         /* ── Header ── */
         .hdr { margin-bottom: 2px; }
@@ -156,20 +157,20 @@
 
         .hidden { display: none !important; }
 
-        /* ── Modal overlay (matches main UI cfg-warn-modal style) ── */
+        /* ── Modal overlay ── */
         .modal-overlay {
             display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
             background: rgba(0,0,0,0.85); z-index: 9999;
-            align-items: center; justify-content: center; overflow: auto; padding: 16px;
+            align-items: center; justify-content: center; overflow-y: auto; padding: 16px;
         }
         .modal-card {
-            background: #1b2838; border-radius: 12px; padding: 20px;
-            max-width: 480px; width: 100%; box-sizing: border-box;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.4); margin: auto;
+            background: #1b2838; border: 1px solid #66c0f4; border-radius: 12px; padding: 24px;
+            max-width: 550px; width: 100%; box-sizing: border-box;
+            box-shadow: 0 10px 40px rgba(102,192,244,0.2); margin: auto;
         }
-        .modal-card h2 { color: #ffcc44; margin-bottom: 10px; font-size: 1.2em; border: none; padding: 0; text-transform: none; letter-spacing: 0; }
-        .modal-card p { font-size: .88em; color: #c7d5e0; line-height: 1.6; margin-bottom: 12px; }
-        .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
+        .modal-card h2 { color: #fff; margin-bottom: 12px; font-size: 1.4em; border: none; padding: 0; text-transform: none; letter-spacing: 0; }
+        .modal-card p { font-size: .9em; color: #c7d5e0; line-height: 1.6; margin-bottom: 16px; }
+        .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
 
         /* ── Reconnection assistant phases ── */
         .reconnect-phase { margin: 8px 0; font-size: .88em; color: #8f98a0; }
@@ -438,7 +439,7 @@
     <div class="modal-card">
         <h2>&#9888; Save &amp; Restart</h2>
         <p>This will save your configuration and reboot the device. All active uploads will be interrupted.</p>
-        <p style="color:#ff6b6b;font-weight:600">&#9888;&#65039; After reboot, you MUST physically eject the SD card from the CPAP and reinsert it before powering the CPAP on. Failure to do so may cause data loss or corruption.</p>
+        <div id="save-instruction"></div>
         <div class="modal-actions">
             <button class="btn bs" onclick="document.getElementById('save-modal').style.display='none'">Cancel</button>
             <button class="btn bd" onclick="document.getElementById('save-modal').style.display='none';saveConfig()">Save &amp; Restart</button>
@@ -446,25 +447,25 @@
     </div>
 </div>
 
-<!-- ════════ Reconnection Assistant Modal (SoftAP mode) ════════ -->
+<!-- ════════ Reconnection Assistant Modal (Saving & Rebooting) ════════ -->
 <div id="reconnect-modal" class="modal-overlay">
     <div class="modal-card">
         <h2>&#9881; Saving &amp; Rebooting</h2>
         <div id="reconnect-phases">
             <div class="reconnect-phase" id="rc-phase1">&#9744; Configuration saved</div>
             <div class="reconnect-phase" id="rc-phase2">&#9744; Device is rebooting</div>
-            <div class="reconnect-phase" id="rc-phase3">&#9744; Connecting to your WiFi</div>
+            <div class="reconnect-phase" id="rc-phase3">&#9744; Monitoring network for device</div>
         </div>
         <div class="reconnect-progress"><div class="reconnect-progress-bar" id="rc-bar"></div></div>
         <div class="reconnect-attempt" id="rc-attempt"></div>
         <div class="reconnect-fallback hidden" id="rc-fallback">
-            <p style="font-size:.84em;color:#8f98a0;margin-bottom:8px">Could not auto-reconnect. Enter the device IP (check your router's DHCP list):</p>
+            <p style="font-size:.84em;color:#8f98a0;margin-bottom:8px">Could not auto-reconnect. Enter the device IP manually if known:</p>
             <input type="text" id="rc-ip-input" placeholder="e.g. 192.168.1.42">
             <button class="btn bp" style="margin-top:8px" onclick="tryReconnectManual()">Connect</button>
         </div>
-        <div class="reconnect-fallback hidden" id="rc-failed">
-            <p style="font-size:.84em;color:#ff6b6b">&#9888; Could not reconnect after 60 seconds.</p>
-            <p style="font-size:.82em;color:#8f98a0">If the device cannot connect (e.g. wrong password), power-cycle it to re-enter setup mode.</p>
+        <div id="reconnect-error" class="hidden" style="margin-top:15px; border-top:1px solid #2a475e; padding-top:15px">
+            <p style="font-size:.84em;color:#ff6b6b;margin-bottom:8px">&#9888; Could not reconnect automatically.</p>
+            <div id="rc-error-msg" style="font-size:.82em;color:#8f98a0;line-height:1.5"></div>
         </div>
     </div>
 </div>
@@ -996,6 +997,21 @@ function updateRawPreview() {
 // ══════════════════════════════════════════════════════════════
 
 function confirmSave() {
+    var hostname = getReconnectHostname();
+    var inst = document.getElementById('save-instruction');
+    var msg = '';
+    if (isApMode) {
+        msg = '<p style="color:#ffcc44;font-weight:600;margin-top:10px">&#9888; Action Required After Reboot</p>' +
+              '<p style="font-size:0.88em">After reboot, an attempt will be made to redirect you to the main Web UI (if connection to your WiFi is successful). ' +
+              'If you are not redirected and you cannot connect to <strong>' + hostname + '.local</strong> within the first 2 minutes, ' +
+              'please eject the SD card and reinsert it back.</p>';
+    } else {
+        msg = '<p style="color:#ffcc44;font-weight:600;margin-top:10px">&#9888; Action Required After Reboot</p>' +
+              '<p style="font-size:0.88em">After reboot, you will be redirected to the main Web UI. ' +
+              'If you are not redirected and you cannot connect to <strong>' + hostname + '.local</strong> within the first 2 minutes, ' +
+              'please eject the SD card and reinsert it back.</p>';
+    }
+    inst.innerHTML = msg;
     document.getElementById('save-modal').style.display = 'flex';
 }
 
@@ -1021,18 +1037,8 @@ async function saveConfig() {
         });
 
         if (res.ok) {
-            if (isApMode) {
-                startReconnectionAssistant();
-            } else {
-                // Regular WebUI mode — simpler flow
-                showStatus(
-                    '✅ Configuration saved! Rebooting now…',
-                    'success'
-                );
-                fetch('/soft-reboot', { method: 'GET' }).catch(function() {});
-                // Poll /api/status and redirect to / when device comes back
-                startWebuiReconnectPoll();
-            }
+            // Unified saving UI for both AP and Regular modes
+            startReconnectionAssistant();
         } else {
             throw new Error('Server returned ' + res.status);
         }
@@ -1056,7 +1062,7 @@ function getReconnectHostname() {
 var rcTimer = null;
 var rcStartTime = 0;
 var rcAttemptCount = 0;
-var RC_MAX_ATTEMPTS = 20;   // 20 attempts × 3s = 60s
+var RC_MAX_ATTEMPTS = 40;    // 40 attempts × 3s = 120s (2 minutes)
 var RC_POLL_INTERVAL = 3000; // 3 seconds
 var RC_FALLBACK_AFTER = 10;  // Show IP fallback after 10 attempts (30s)
 
@@ -1124,8 +1130,13 @@ function scheduleNextPoll() {
         setPhase('rc-phase3', '');
         document.getElementById('rc-bar').style.width = '100%';
         document.getElementById('rc-bar').style.background = '#c0392b';
-        document.getElementById('rc-failed').classList.remove('hidden');
+        document.getElementById('reconnect-error').classList.remove('hidden');
         document.getElementById('rc-attempt').textContent = '';
+        
+        var hostname = getReconnectHostname();
+        document.getElementById('rc-error-msg').innerHTML = 
+            'The device could not be reached at <strong>' + hostname + '.local</strong> after 2 minutes.<br><br>' +
+            'Please <strong>eject the SD card and reinsert it</strong> back into the device to restore the connection (or re-enter setup mode).';
         return;
     }
     if (rcAttemptCount >= RC_FALLBACK_AFTER) {
@@ -1173,32 +1184,9 @@ function setPhase(id, state) {
 // Reconnection — Regular WebUI mode
 // ══════════════════════════════════════════════════════════════
 
-var webuiReconnectTimer = null;
-var webuiReconnectCount = 0;
-
+// Reconnection — Regular WebUI mode (Deprecated: unified into startReconnectionAssistant)
 function startWebuiReconnectPoll() {
-    webuiReconnectCount = 0;
-    webuiReconnectTimer = setInterval(function() {
-        webuiReconnectCount++;
-        fetch('/api/status', { cache: 'no-store' }).then(function(res) {
-            if (res.ok) {
-                clearInterval(webuiReconnectTimer);
-                // Device is back — redirect to dashboard
-                window.location.href = '/';
-            }
-        }).catch(function() {
-            // Expected while device is rebooting
-        });
-        // Give up after 30 attempts (90s) — show message
-        if (webuiReconnectCount >= 30) {
-            clearInterval(webuiReconnectTimer);
-            showStatus(
-                '⚠️ Device is taking longer than expected to reboot. ' +
-                'Try refreshing the page or navigating to the dashboard manually.',
-                'info'
-            );
-        }
-    }, 3000);
+    startReconnectionAssistant();
 }
 
 // ══════════════════════════════════════════════════════════════
