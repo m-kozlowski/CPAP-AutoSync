@@ -1125,36 +1125,7 @@ void CpapWebServer::handleApiConfigRawGet() {
     f.close();
     if (tookControl) sdManager->releaseControl();
 
-    String masked = "";
-    int start = 0;
-    while (start < raw.length()) {
-        int end = raw.indexOf('\n', start);
-        if (end == -1) end = raw.length();
-        
-        String line = raw.substring(start, end);
-        String trimmed = line;
-        trimmed.trim();
-        
-        String prefix = "";
-        if (trimmed.startsWith("WIFI_PASSWORD=") && trimmed.length() > 14) prefix = "WIFI_PASSWORD=";
-        else if (trimmed.startsWith("ENDPOINT_PASSWORD=") && trimmed.length() > 18) prefix = "ENDPOINT_PASSWORD=";
-        else if (trimmed.startsWith("CLOUD_CLIENT_SECRET=") && trimmed.length() > 20) prefix = "CLOUD_CLIENT_SECRET=";
-        
-        if (prefix.length() > 0) {
-            if (line.endsWith("\r")) {
-                masked += prefix + "******\r";
-            } else {
-                masked += prefix + "******";
-            }
-        } else {
-            masked += line;
-        }
-        
-        if (end < raw.length()) masked += "\n";
-        start = end + 1;
-    }
-
-    server->send(200, "text/plain", masked);
+    server->send(200, "text/plain", raw);
 }
 
 // ---------------------------------------------------------------------------
@@ -1216,45 +1187,8 @@ void CpapWebServer::handleApiConfigRawPost() {
         trimmedBody += '\n';
     }
 
-    String unmasked = "";
-    int start = 0;
-    while (start < trimmedBody.length()) {
-        int end = trimmedBody.indexOf('\n', start);
-        if (end == -1) end = trimmedBody.length();
-
-        String line = trimmedBody.substring(start, end);
-        String trimmed = line;
-        trimmed.trim();
-        
-        String prefix = "";
-        String origVal = "";
-        
-        if (trimmed == "WIFI_PASSWORD=******") {
-            prefix = "WIFI_PASSWORD=";
-            origVal = config ? config->getWifiPassword() : "";
-        } else if (trimmed == "ENDPOINT_PASSWORD=******") {
-            prefix = "ENDPOINT_PASSWORD=";
-            origVal = config ? config->getEndpointPassword() : "";
-        } else if (trimmed == "CLOUD_CLIENT_SECRET=******") {
-            prefix = "CLOUD_CLIENT_SECRET=";
-            origVal = config ? config->getCloudClientSecret() : "";
-        }
-        
-        if (prefix.length() > 0) {
-            if (line.endsWith("\r")) {
-                unmasked += prefix + origVal + "\r";
-            } else {
-                unmasked += prefix + origVal;
-            }
-        } else {
-            unmasked += line;
-        }
-        
-        if (end < body.length()) unmasked += "\n";
-        start = end + 1;
-    }
-
-    size_t unmaskedLen = unmasked.length();
+    size_t unmaskedLen = trimmedBody.length();
+    const String& unmasked = trimmedBody;
     fs::FS& sd = sdManager->getFS();
 
     // Write atomically: write to temp file, then rename
