@@ -1129,9 +1129,9 @@ function pollReconnect() {
     document.getElementById('rc-bar').style.width = (30 + (rcAttemptCount / RC_MAX_ATTEMPTS) * 60) + '%';
     rcLog('Polling: ' + url);
 
-    // Sane timeout: if the OS resolver or network takes > 4s, abort and retry
+    // Sane timeout: if the OS resolver or network takes > 8s, abort and retry
     var controller = new AbortController();
-    var timeout = setTimeout(function() { controller.abort(); }, 4000);
+    var timeout = setTimeout(function() { controller.abort(); }, 8000);
 
     fetch(url, { mode: 'no-cors', cache: 'no-store', signal: controller.signal }).then(function(res) {
         clearTimeout(timeout);
