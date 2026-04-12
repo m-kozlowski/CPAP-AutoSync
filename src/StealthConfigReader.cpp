@@ -746,17 +746,21 @@ bool StealthConfigReader::captureCardState(SavedCardState* out) {
     SDMMC.rintsts.val = 0xFFFFFFFF;
 
     // Try reading sector 0 at multiple bus width / speed combinations.
-    // 4-bit probes first (if any succeeds → card was in 4-bit), then 1-bit.
+    // Start from last detected width to skip unnecessary failed probes.
     uint8_t sec[512] __attribute__((aligned(4)));
-    struct { int bits; int khz; } probes[] = {
+    static uint8_t detectedWidth = 4;
+    struct { uint8_t bits; uint16_t khz; } probes[] = {
         { 4,   400 },
         { 4, 25000 },
         { 1,   400 },
         { 1, 25000 },
     };
+    constexpr uint8_t probeCount = sizeof(probes) / sizeof(probes[0]);
+    uint8_t start = (detectedWidth == 1) ? 2 : 0;
+    detectedWidth = 0;
 
-    int detectedWidth = 0;
-    for (auto& p : probes) {
+    for (uint8_t i = 0; i < probeCount; i++) {
+        auto& p = probes[(start + i) % probeCount];
         // Use sdmmc_host_set_bus_width() instead of scrSetHostBusWidth()
         // because it also reconnects D3 to the SDMMC peripheral via GPIO matrix.
         // Without this, D3 stays as GPIO output HIGH (forced during init_slot)
@@ -792,11 +796,10 @@ bool StealthConfigReader::captureCardState(SavedCardState* out) {
     }
 
     if (detectedWidth == 0) {
-        out->busWidth = 1;
+        detectedWidth = 1;
         LOG_WARN("[Capture] Bus width detection inconclusive — defaulting to 1-bit");
-    } else {
-        out->busWidth = detectedWidth;
     }
+    out->busWidth = detectedWidth;
 
     // Restore host to 1-bit
     scrSetHostBusWidth(1);
