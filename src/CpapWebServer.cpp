@@ -1016,6 +1016,7 @@ void CpapWebServer::updateStatusSnapshot() {
         ",\"tz_offset_minutes\":%d"
         ",\"recent_tabs\":\"%s\""
         ",\"hostname\":\"%s\""
+        ",\"ap_setup\":%s"
         ",\"firmware\":\"%s\"}",
         st, inStateSec, upSec,
         timeBuf, timeSynced ? "true" : "false",
@@ -1033,6 +1034,7 @@ void CpapWebServer::updateStatusSnapshot() {
         tzOffsetMinutes,
         recentTabs,
         config ? config->getHostname().c_str() : "cpap",
+        g_apSetupMode ? "true" : "false",
         FIRMWARE_VERSION);
     if (n > 0 && n < (int)sizeof(buf)) {
         memcpy(g_webStatusBuf, buf, n + 1);
@@ -1123,36 +1125,7 @@ void CpapWebServer::handleApiConfigRawGet() {
     f.close();
     if (tookControl) sdManager->releaseControl();
 
-    String masked = "";
-    int start = 0;
-    while (start < raw.length()) {
-        int end = raw.indexOf('\n', start);
-        if (end == -1) end = raw.length();
-        
-        String line = raw.substring(start, end);
-        String trimmed = line;
-        trimmed.trim();
-        
-        String prefix = "";
-        if (trimmed.startsWith("WIFI_PASSWORD=") && trimmed.length() > 14) prefix = "WIFI_PASSWORD=";
-        else if (trimmed.startsWith("ENDPOINT_PASSWORD=") && trimmed.length() > 18) prefix = "ENDPOINT_PASSWORD=";
-        else if (trimmed.startsWith("CLOUD_CLIENT_SECRET=") && trimmed.length() > 20) prefix = "CLOUD_CLIENT_SECRET=";
-        
-        if (prefix.length() > 0) {
-            if (line.endsWith("\r")) {
-                masked += prefix + "******\r";
-            } else {
-                masked += prefix + "******";
-            }
-        } else {
-            masked += line;
-        }
-        
-        if (end < raw.length()) masked += "\n";
-        start = end + 1;
-    }
-
-    server->send(200, "text/plain", masked);
+    server->send(200, "text/plain", raw);
 }
 
 // ---------------------------------------------------------------------------
@@ -1192,45 +1165,30 @@ void CpapWebServer::handleApiConfigRawPost() {
 
     const String& body = server->arg("plain");
 
-    String unmasked = "";
-    int start = 0;
-    while (start < body.length()) {
-        int end = body.indexOf('\n', start);
-        if (end == -1) end = body.length();
-        
-        String line = body.substring(start, end);
-        String trimmed = line;
-        trimmed.trim();
-        
-        String prefix = "";
-        String origVal = "";
-        
-        if (trimmed == "WIFI_PASSWORD=******") {
-            prefix = "WIFI_PASSWORD=";
-            origVal = config ? config->getWifiPassword() : "";
-        } else if (trimmed == "ENDPOINT_PASSWORD=******") {
-            prefix = "ENDPOINT_PASSWORD=";
-            origVal = config ? config->getEndpointPassword() : "";
-        } else if (trimmed == "CLOUD_CLIENT_SECRET=******") {
-            prefix = "CLOUD_CLIENT_SECRET=";
-            origVal = config ? config->getCloudClientSecret() : "";
-        }
-        
-        if (prefix.length() > 0) {
-            if (line.endsWith("\r")) {
-                unmasked += prefix + origVal + "\r";
-            } else {
-                unmasked += prefix + origVal;
-            }
+    // Strip trailing blank lines to prevent newline accumulation across saves
+    String trimmedBody = body;
+    while (trimmedBody.length() > 0 &&
+           (trimmedBody.charAt(trimmedBody.length() - 1) == '\n' ||
+            trimmedBody.charAt(trimmedBody.length() - 1) == '\r')) {
+        // Find the start of the last line
+        int lastNl = trimmedBody.lastIndexOf('\n', trimmedBody.length() - 2);
+        if (lastNl < 0) lastNl = -1;
+        // Check if the last line is blank
+        String lastLine = trimmedBody.substring(lastNl + 1);
+        lastLine.trim();
+        if (lastLine.length() == 0) {
+            trimmedBody = trimmedBody.substring(0, lastNl + 1);
         } else {
-            unmasked += line;
+            break;
         }
-        
-        if (end < body.length()) unmasked += "\n";
-        start = end + 1;
+    }
+    // Ensure exactly one trailing newline
+    if (trimmedBody.length() > 0 && trimmedBody.charAt(trimmedBody.length() - 1) != '\n') {
+        trimmedBody += '\n';
     }
 
-    size_t unmaskedLen = unmasked.length();
+    size_t unmaskedLen = trimmedBody.length();
+    const String& unmasked = trimmedBody;
     fs::FS& sd = sdManager->getFS();
 
     // Write atomically: write to temp file, then rename

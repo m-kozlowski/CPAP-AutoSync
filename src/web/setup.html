@@ -7,12 +7,13 @@
     <style>
         /* ── Design tokens matching web_ui.h dark theme ── */
         * { box-sizing: border-box; margin: 0; padding: 0; }
+        html { overflow-y: scroll; scroll-behavior: smooth; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: #0f1923; color: #c7d5e0;
             min-height: 100vh; padding: 16px; overflow-x: hidden;
         }
-        .wrap { max-width: 800px; margin: 0 auto; }
+        .wrap { max-width: 900px; margin: 0 auto; overflow-x: hidden; }
 
         /* ── Header ── */
         .hdr { margin-bottom: 2px; }
@@ -156,8 +157,50 @@
 
         .hidden { display: none !important; }
 
+        /* ── Modal overlay ── */
+        .modal-overlay {
+            display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.85); z-index: 9999;
+            align-items: center; justify-content: center; overflow-y: auto; padding: 16px;
+        }
+        .modal-card {
+            background: #1b2838; border: 1px solid #66c0f4; border-radius: 12px; padding: 24px;
+            max-width: 550px; width: 100%; box-sizing: border-box;
+            box-shadow: 0 10px 40px rgba(102,192,244,0.2); margin: auto;
+        }
+        .modal-card h2 { color: #fff; margin-bottom: 12px; font-size: 1.4em; border: none; padding: 0; text-transform: none; letter-spacing: 0; }
+        .modal-card p { font-size: .9em; color: #c7d5e0; line-height: 1.6; margin-bottom: 16px; }
+        .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+
+        /* ── Reconnection assistant phases ── */
+        .reconnect-phase { margin: 8px 0; font-size: .88em; color: #8f98a0; }
+        .reconnect-phase.done { color: #44ff44; }
+        .reconnect-phase.active { color: #66c0f4; }
+        .reconnect-progress { height: 6px; background: #2a475e; border-radius: 3px; margin: 10px 0; overflow: hidden; }
+        .reconnect-progress-bar { height: 100%; background: #66c0f4; border-radius: 3px; transition: width .5s; width: 0; }
+        .reconnect-attempt { font-size: .82em; color: #8f98a0; margin-top: 6px; }
+        .reconnect-fallback { margin-top: 12px; }
+        .reconnect-fallback input {
+            width: 100%; padding: 8px; background: #0f1923;
+            border: 1px solid #2a475e; color: #fff; border-radius: 6px; font-size: .86em;
+        }
+
+        /* ── Reconnection Debug Log ── */
+        .rc-debug-log {
+            margin-top: 15px; padding: 10px; background: #0a1118;
+            border: 1px solid #2a475e; border-radius: 6px;
+            font-family: monospace; font-size: 0.72em; color: #8faab8;
+            max-height: 120px; overflow-y: auto; line-height: 1.4;
+            white-space: pre-wrap; word-break: break-all;
+        }
+        .rc-debug-entry { margin-bottom: 4px; border-bottom: 1px solid #1a2a3a; padding-bottom: 2px; }
+        .rc-debug-entry:last-child { border-bottom: none; }
+        .rc-debug-ts { color: #5c7e8f; margin-right: 5px; }
+        .rc-debug-err { color: #ff6b6b; }
+        .rc-debug-ok { color: #44ff44; }
+
         @media (max-width: 600px) {
-            .hdr svg { height: 90px; }
+            .hdr svg { height: 108px; }
             .header-bar { gap: 6px; }
         }
     </style>
@@ -225,7 +268,7 @@
 
     <div class="header-bar">
         <h2>Configure your uploader settings below</h2>
-        <button class="btn bp" id="btn-save-top" onclick="saveConfig()" disabled>Save &amp; Restart</button>
+        <a href="/" class="btn bs" id="btn-back" style="display:none;text-decoration:none">&#8592; Back to Dashboard</a>
     </div>
 
     <div id="status-msg" class="status"></div>
@@ -397,12 +440,49 @@
 
         <!-- ════════ Save Button (bottom) ════════ -->
         <div style="text-align:center;margin:20px 0 30px">
-            <button class="btn bp" id="btn-save" onclick="saveConfig()" style="padding:10px 30px;font-size:1em">
+            <button class="btn bp" id="btn-save" onclick="confirmSave()" style="padding:10px 30px;font-size:1em">
                 Save &amp; Restart
             </button>
         </div>
 
     </div><!-- /app -->
+</div>
+
+<!-- ════════ Save Confirmation Modal ════════ -->
+<div id="save-modal" class="modal-overlay">
+    <div class="modal-card">
+        <h2>&#9888; Save &amp; Restart</h2>
+        <p>This will save your configuration and reboot the device. All active uploads will be interrupted.</p>
+        <div id="save-instruction"></div>
+        <div class="modal-actions">
+            <button class="btn bs" onclick="document.getElementById('save-modal').style.display='none'">Cancel</button>
+            <button class="btn bd" onclick="document.getElementById('save-modal').style.display='none';saveConfig()">Save &amp; Restart</button>
+        </div>
+    </div>
+</div>
+
+<!-- ════════ Reconnection Assistant Modal (Saving & Rebooting) ════════ -->
+<div id="reconnect-modal" class="modal-overlay">
+    <div class="modal-card">
+        <h2>&#9881; Saving &amp; Rebooting</h2>
+        <div id="reconnect-phases">
+            <div class="reconnect-phase" id="rc-phase1">&#9744; Configuration saved</div>
+            <div class="reconnect-phase" id="rc-phase2">&#9744; Device is rebooting</div>
+            <div class="reconnect-phase" id="rc-phase3">&#9744; Monitoring network for device</div>
+        </div>
+        <div class="reconnect-progress"><div class="reconnect-progress-bar" id="rc-bar"></div></div>
+        <div class="reconnect-attempt" id="rc-attempt"></div>
+        <div class="reconnect-fallback hidden" id="rc-fallback">
+            <p style="font-size:.84em;color:#8f98a0;margin-bottom:8px">Could not auto-reconnect. Enter the device IP manually if known:</p>
+            <input type="text" id="rc-ip-input" placeholder="e.g. 192.168.1.42">
+            <button class="btn bp" style="margin-top:8px" onclick="tryReconnectManual()">Connect</button>
+        </div>
+        <div id="reconnect-error" class="hidden" style="margin-top:15px; border-top:1px solid #2a475e; padding-top:15px">
+            <p style="font-size:.84em;color:#ff6b6b;margin-bottom:8px">&#9888; Could not reconnect automatically.</p>
+            <div id="rc-error-msg" style="font-size:.82em;color:#8f98a0;line-height:1.5"></div>
+        </div>
+        <div id="rc-debug" class="rc-debug-log"></div>
+    </div>
 </div>
 
 <script>
@@ -412,7 +492,7 @@
 
 // Keys managed by the visual form (everything else is preserved as-is)
 var KNOWN_KEYS = [
-    'WIFI_SSID', 'WIFI_PASSWORD',
+    'WIFI_SSID', 'WIFI_PASSWORD', 'HOSTNAME',
     'TZ_STRING', 'TZ_NAME',
     'UPLOAD_MODE', 'UPLOAD_START_HOUR', 'UPLOAD_END_HOUR', 'COOLDOWN_MINUTES',
     'ENDPOINT_TYPE', 'ENDPOINT', 'ENDPOINT_USER', 'ENDPOINT_PASSWORD',
@@ -424,6 +504,7 @@ var PASSWORD_KEYS = ['WIFI_PASSWORD', 'ENDPOINT_PASSWORD', 'CLOUD_CLIENT_SECRET'
 
 var rawLines = [];   // Array of { type:'kv'|'comment'|'blank'|'raw', key:'', val:'', raw:'' }
 var timezones = [];  // Array of { name:'', posix:'' }
+var isApMode = true;  // Assume SoftAP until /api/status says otherwise (safe default)
 
 // Timezone data embedded at build time (fallback for AP/offline mode)
 // The build script replaces this placeholder with the latest zones.json data
@@ -436,6 +517,20 @@ var BUILTIN_TZ = /*__TIMEZONE_DATA__*/{};
 
 async function init() {
     try {
+        // Detect AP mode from /api/status (authoritative server ground truth)
+        try {
+            var stRes = await fetch('/api/status');
+            if (stRes.ok) {
+                var stData = await stRes.json();
+                isApMode = !!stData.ap_setup;
+            }
+        } catch (e) { /* status fetch failed — keep default isApMode=true */ }
+
+        // Show back button only in regular WebUI mode (not SoftAP)
+        if (!isApMode) {
+            document.getElementById('btn-back').style.display = '';
+        }
+
         var res = await fetch('/api/config-raw');
         var text = res.ok ? await res.text() : '';
         parseConfig(text);
@@ -445,7 +540,6 @@ async function init() {
         updateRawPreview();
         document.getElementById('loading').classList.add('hidden');
         document.getElementById('app').classList.remove('hidden');
-        document.getElementById('btn-save-top').disabled = false;
     } catch (err) {
         showStatus('Failed to load configuration. Make sure the SD card is inserted.', 'error');
     }
@@ -479,8 +573,11 @@ function parseConfig(text) {
 }
 
 function getValue(key) {
+    if (!key) return '';
+    var searchKey = key.toUpperCase();
     for (var i = 0; i < rawLines.length; i++) {
-        if (rawLines[i].type === 'kv' && rawLines[i].key === key) return rawLines[i].val;
+        var line = rawLines[i];
+        if (line.type === 'kv' && line.key.toUpperCase() === searchKey) return line.val;
     }
     return '';
 }
@@ -874,15 +971,17 @@ function buildConfigString() {
     // Pass 1: iterate rawLines, preserving order
     for (var i = 0; i < rawLines.length; i++) {
         var line = rawLines[i];
-        if (line.type === 'kv' && knownSet[line.key]) {
+        var uppercaseKey = (line.type === 'kv') ? line.key.toUpperCase() : null;
+
+        if (uppercaseKey && knownSet[uppercaseKey]) {
             // Known key — replace with form value or keep original
-            if (vals.hasOwnProperty(line.key)) {
-                output.push(line.key + '=' + vals[line.key]);
-                written[line.key] = true;
+            if (vals.hasOwnProperty(uppercaseKey)) {
+                output.push(line.key + '=' + vals[uppercaseKey]);
+                written[uppercaseKey] = true;
             } else {
-                // Form didn't produce this key (e.g., password unchanged) — keep original
+                // Form didn't produce this key (e.g., password unchanged or read-only) — keep original
                 output.push(line.raw);
-                written[line.key] = true;
+                written[uppercaseKey] = true;
             }
         } else {
             // Comment, blank, unknown key — preserve as-is
@@ -890,14 +989,19 @@ function buildConfigString() {
         }
     }
 
-    // Pass 2: append new keys not already in rawLines
+    // Pass 2: append new keys from vals that didn't exist in original config.txt
     for (var key in vals) {
         if (vals.hasOwnProperty(key) && !written[key]) {
             output.push(key + '=' + vals[key]);
         }
     }
 
-    // Join with \r\n (FAT filesystem convention)
+    // Strip trailing blank/empty entries to prevent newline accumulation
+    while (output.length > 0 && output[output.length - 1].trim() === '') {
+        output.pop();
+    }
+
+    // Join with \r\n (FAT filesystem convention) — exactly one trailing newline
     return output.join('\r\n') + '\r\n';
 }
 
@@ -912,11 +1016,29 @@ function updateRawPreview() {
 // Save Config
 // ══════════════════════════════════════════════════════════════
 
+function confirmSave() {
+    var hostname = getReconnectHostname();
+    var inst = document.getElementById('save-instruction');
+    var msg = '';
+    if (isApMode) {
+        msg = '<p style="color:#ffcc44;font-weight:600;margin-top:10px">&#9888; Action Required After Reboot</p>' +
+              '<p style="font-size:0.88em">After reboot, an attempt will be made to redirect you to the main Web UI (if connection to your WiFi is successful). ' +
+              'If you are not redirected and you cannot connect to <strong>' + hostname + '.local</strong> within the first 2 minutes, ' +
+              'please eject the SD card and reinsert it back.</p>';
+    } else {
+        msg = '<p style="color:#ffcc44;font-weight:600;margin-top:10px">&#9888; Action Required After Reboot</p>' +
+              '<p style="font-size:0.88em">After reboot, you will be redirected to the main Web UI. ' +
+              'If you are not redirected and you cannot connect to <strong>' + hostname + '.local</strong> within the first 2 minutes, ' +
+              'please eject the SD card and reinsert it back.</p>';
+    }
+    inst.innerHTML = msg;
+    document.getElementById('save-modal').style.display = 'flex';
+}
+
 async function saveConfig() {
-    var btnTop = document.getElementById('btn-save-top');
-    var btnBot = document.getElementById('btn-save');
-    btnTop.disabled = true; btnBot.disabled = true;
-    btnTop.textContent = 'Saving...'; btnBot.textContent = 'Saving...';
+    var btn = document.getElementById('btn-save');
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
     showStatus('', '');
 
     // If raw editing is enabled, use the textarea content directly
@@ -935,23 +1057,177 @@ async function saveConfig() {
         });
 
         if (res.ok) {
-            // Show persistent warning banner about wrong credentials
-            showStatus(
-                '✅ Configuration saved! Rebooting now…\n' +
-                'If WiFi credentials are correct, the device will connect to your network and this page will become available at its IP address.\n' +
-                '⚠️ If the device cannot connect (e.g. wrong password), power-cycle it to re-enter setup mode.',
-                'success'
-            );
-            // Trigger soft reboot
-            fetch('/soft-reboot', { method: 'GET' }).catch(function() {});
+            // Unified saving UI for both AP and Regular modes
+            startReconnectionAssistant();
         } else {
             throw new Error('Server returned ' + res.status);
         }
     } catch (err) {
         showStatus('Failed to save. Please try again.', 'error');
-        btnTop.disabled = false; btnBot.disabled = false;
-        btnTop.textContent = 'Save & Restart'; btnBot.textContent = 'Save & Restart';
+        btn.disabled = false;
+        btn.textContent = 'Save & Restart';
     }
+}
+
+// ══════════════════════════════════════════════════════════════
+// Reconnection Assistant (SoftAP mode)
+// ══════════════════════════════════════════════════════════════
+
+function getReconnectHostname() {
+    // Use HOSTNAME from config if set, otherwise default 'cpap'
+    var h = getValue('HOSTNAME');
+    return (h && h.trim()) ? h.trim() : 'cpap';
+}
+
+var rcTimer = null;
+var rcStartTime = 0;
+var rcAttemptCount = 0;
+var RC_MAX_ATTEMPTS = 40;    // 40 attempts × 3s = 120s (2 minutes)
+var RC_POLL_INTERVAL = 3000; // 3 seconds
+var RC_FALLBACK_AFTER = 10;  // Show IP fallback after 10 attempts (30s)
+
+function startReconnectionAssistant() {
+    document.getElementById('reconnect-modal').style.display = 'flex';
+    rcStartTime = Date.now();
+    rcAttemptCount = 0;
+
+    // Phase 1: saved
+    setPhase('rc-phase1', 'done');
+    setPhase('rc-phase2', 'active');
+    setPhase('rc-phase3', '');
+    document.getElementById('rc-attempt').textContent = '';
+    document.getElementById('rc-bar').style.width = '10%';
+    document.getElementById('rc-debug').innerHTML = '';
+    rcLog('Assistant started inside ' + (isApMode ? 'AP' : 'Regular') + ' mode');
+    rcLog('Current origin: ' + window.location.origin);
+
+    // Trigger soft reboot after a short delay
+    setTimeout(function() {
+        rcLog('Sending /soft-reboot signal...');
+        fetch('/soft-reboot', { method: 'GET' }).catch(function(e) {
+            rcLog('Reboot trig error: ' + e.message);
+        });
+    }, 500);
+
+    // Phase 2: rebooting — wait 8s before starting to poll
+    setTimeout(function() {
+        rcLog('Wait period over, starting network polls...');
+        setPhase('rc-phase2', 'done');
+        setPhase('rc-phase3', 'active');
+        document.getElementById('rc-bar').style.width = '30%';
+        rcAttemptCount = 0;
+        rcTimer = setTimeout(pollReconnect, RC_POLL_INTERVAL);
+    }, 8000);
+}
+
+function pollReconnect() {
+    rcAttemptCount++;
+    var hostname = getReconnectHostname();
+    var url = 'http://' + hostname + '.local/api/status';
+
+    document.getElementById('rc-attempt').textContent = 'Attempting to reconnect... (' + rcAttemptCount + '/' + RC_MAX_ATTEMPTS + ')';
+    document.getElementById('rc-bar').style.width = (30 + (rcAttemptCount / RC_MAX_ATTEMPTS) * 60) + '%';
+    rcLog('Polling: ' + url);
+
+    // Sane timeout: if the OS resolver or network takes > 8s, abort and retry
+    var controller = new AbortController();
+    var timeout = setTimeout(function() { controller.abort(); }, 8000);
+
+    fetch(url, { mode: 'no-cors', cache: 'no-store', signal: controller.signal }).then(function(res) {
+        clearTimeout(timeout);
+        rcLog('<span class="rc-debug-ok">Success!</span> Received heartbeat from ' + url);
+        
+        // Option A: Trust the opaque response as a definitive signal the device is up
+        setPhase('rc-phase3', 'done');
+        document.getElementById('rc-bar').style.width = '100%';
+        document.getElementById('rc-attempt').textContent = 'Connected! Redirecting...';
+        
+        setTimeout(function() {
+            rcLog('Redirecting to ' + hostname + '.local...');
+            window.location.href = 'http://' + hostname + '.local/';
+        }, 1500);
+    }).catch(function(err) {
+        clearTimeout(timeout);
+        var msg = (err.name === 'AbortError') ? 'Timeout' : err.message;
+        rcLog('<span class="rc-debug-err">Fail:</span> ' + msg);
+        // Expected: fetch fails while phone still on SoftAP or device not yet up
+        scheduleNextPoll();
+    });
+}
+
+function rcLog(msg) {
+    var log = document.getElementById('rc-debug');
+    var div = document.createElement('div');
+    div.className = 'rc-debug-entry';
+    var ts = new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    div.innerHTML = '<span class="rc-debug-ts">[' + ts + ']</span> ' + msg;
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+}
+
+function scheduleNextPoll() {
+    if (rcAttemptCount >= RC_MAX_ATTEMPTS) {
+        // Timeout — show failure
+        setPhase('rc-phase3', '');
+        document.getElementById('rc-bar').style.width = '100%';
+        document.getElementById('rc-bar').style.background = '#c0392b';
+        document.getElementById('reconnect-error').classList.remove('hidden');
+        document.getElementById('rc-attempt').textContent = '';
+        
+        var hostname = getReconnectHostname();
+        document.getElementById('rc-error-msg').innerHTML = 
+            'The device could not be reached at <strong>' + hostname + '.local</strong> after 2 minutes.<br><br>' +
+            'Please <strong>eject the SD card and reinsert it</strong> back into the device to restore the connection (or re-enter setup mode).';
+        return;
+    }
+    if (rcAttemptCount >= RC_FALLBACK_AFTER) {
+        document.getElementById('rc-fallback').classList.remove('hidden');
+    }
+    rcTimer = setTimeout(pollReconnect, RC_POLL_INTERVAL);
+}
+
+function tryReconnectManual() {
+    var ip = document.getElementById('rc-ip-input').value.trim();
+    if (!ip) return;
+    var url = 'http://' + ip + '/api/status';
+    document.getElementById('rc-attempt').textContent = 'Trying ' + ip + '...';
+    fetch(url, { cache: 'no-store' }).then(function(res) {
+        if (res.ok) {
+            setPhase('rc-phase3', 'done');
+            document.getElementById('rc-bar').style.width = '100%';
+            document.getElementById('rc-bar').style.background = '#66c0f4';
+            document.getElementById('rc-attempt').textContent = 'Connected! Redirecting...';
+            setTimeout(function() {
+                window.location.href = 'http://' + ip + '/';
+            }, 1500);
+        } else {
+            document.getElementById('rc-attempt').textContent = 'No response from ' + ip + '. Try another IP.';
+        }
+    }).catch(function() {
+        document.getElementById('rc-attempt').textContent = 'Could not reach ' + ip + '. Try another IP.';
+    });
+}
+
+function setPhase(id, state) {
+    var el = document.getElementById(id);
+    el.className = 'reconnect-phase' + (state ? ' ' + state : '');
+    var text = el.textContent.replace(/^[\u2610\u2611\u2612]\s*/, '');
+    if (state === 'done') {
+        el.innerHTML = '\u2611 ' + text;
+    } else if (state === 'active') {
+        el.innerHTML = '\u25B6 ' + text;
+    } else {
+        el.innerHTML = '\u2610 ' + text;
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+// Reconnection — Regular WebUI mode
+// ══════════════════════════════════════════════════════════════
+
+// Reconnection — Regular WebUI mode (Deprecated: unified into startReconnectionAssistant)
+function startWebuiReconnectPoll() {
+    startReconnectionAssistant();
 }
 
 // ══════════════════════════════════════════════════════════════
