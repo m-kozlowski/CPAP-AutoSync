@@ -492,7 +492,7 @@
 
 // Keys managed by the visual form (everything else is preserved as-is)
 var KNOWN_KEYS = [
-    'WIFI_SSID', 'WIFI_PASSWORD',
+    'WIFI_SSID', 'WIFI_PASSWORD', 'HOSTNAME',
     'TZ_STRING', 'TZ_NAME',
     'UPLOAD_MODE', 'UPLOAD_START_HOUR', 'UPLOAD_END_HOUR', 'COOLDOWN_MINUTES',
     'ENDPOINT_TYPE', 'ENDPOINT', 'ENDPOINT_USER', 'ENDPOINT_PASSWORD',
@@ -573,8 +573,11 @@ function parseConfig(text) {
 }
 
 function getValue(key) {
+    if (!key) return '';
+    var searchKey = key.toUpperCase();
     for (var i = 0; i < rawLines.length; i++) {
-        if (rawLines[i].type === 'kv' && rawLines[i].key === key) return rawLines[i].val;
+        var line = rawLines[i];
+        if (line.type === 'kv' && line.key.toUpperCase() === searchKey) return line.val;
     }
     return '';
 }
@@ -968,15 +971,17 @@ function buildConfigString() {
     // Pass 1: iterate rawLines, preserving order
     for (var i = 0; i < rawLines.length; i++) {
         var line = rawLines[i];
-        if (line.type === 'kv' && knownSet[line.key]) {
+        var uppercaseKey = (line.type === 'kv') ? line.key.toUpperCase() : null;
+
+        if (uppercaseKey && knownSet[uppercaseKey]) {
             // Known key — replace with form value or keep original
-            if (vals.hasOwnProperty(line.key)) {
-                output.push(line.key + '=' + vals[line.key]);
-                written[line.key] = true;
+            if (vals.hasOwnProperty(uppercaseKey)) {
+                output.push(line.key + '=' + vals[uppercaseKey]);
+                written[uppercaseKey] = true;
             } else {
-                // Form didn't produce this key (e.g., password unchanged) — keep original
+                // Form didn't produce this key (e.g., password unchanged or read-only) — keep original
                 output.push(line.raw);
-                written[line.key] = true;
+                written[uppercaseKey] = true;
             }
         } else {
             // Comment, blank, unknown key — preserve as-is
@@ -984,7 +989,7 @@ function buildConfigString() {
         }
     }
 
-    // Pass 2: append new keys not already in rawLines
+    // Pass 2: append new keys from vals that didn't exist in original config.txt
     for (var key in vals) {
         if (vals.hasOwnProperty(key) && !written[key]) {
             output.push(key + '=' + vals[key]);
@@ -1124,29 +1129,27 @@ function pollReconnect() {
     document.getElementById('rc-bar').style.width = (30 + (rcAttemptCount / RC_MAX_ATTEMPTS) * 60) + '%';
     rcLog('Polling: ' + url);
 
-    fetch(url, { mode: 'no-cors', cache: 'no-store' }).then(function(res) {
-        rcLog('<span class="rc-debug-ok">Pong (opaque)</span> from ' + url);
-        // If we get any response, the device is up
-        // Try a proper JSON fetch to confirm
-        return fetch('http://' + hostname + '.local/api/status', { cache: 'no-store' });
-    }).then(function(res) {
-        if (res && res.ok) {
-            rcLog('<span class="rc-debug-ok">Success!</span> Reconnected to ' + hostname + '.local');
-            // Device is back! Redirect to dashboard
-            setPhase('rc-phase3', 'done');
-            document.getElementById('rc-bar').style.width = '100%';
-            document.getElementById('rc-attempt').textContent = 'Connected! Redirecting...';
-            setTimeout(function() {
-                rcLog('Redirecting to origin...');
-                window.location.href = 'http://' + hostname + '.local/';
-            }, 1500);
-            return;
-        }
-        rcLog('Poll response not OK: ' + (res ? res.status : 'null'));
-        // Response but not OK — continue polling
-        scheduleNextPoll();
+    // Sane timeout: if the OS resolver or network takes > 4s, abort and retry
+    var controller = new AbortController();
+    var timeout = setTimeout(function() { controller.abort(); }, 4000);
+
+    fetch(url, { mode: 'no-cors', cache: 'no-store', signal: controller.signal }).then(function(res) {
+        clearTimeout(timeout);
+        rcLog('<span class="rc-debug-ok">Success!</span> Received heartbeat from ' + url);
+        
+        // Option A: Trust the opaque response as a definitive signal the device is up
+        setPhase('rc-phase3', 'done');
+        document.getElementById('rc-bar').style.width = '100%';
+        document.getElementById('rc-attempt').textContent = 'Connected! Redirecting...';
+        
+        setTimeout(function() {
+            rcLog('Redirecting to ' + hostname + '.local...');
+            window.location.href = 'http://' + hostname + '.local/';
+        }, 1500);
     }).catch(function(err) {
-        rcLog('<span class="rc-debug-err">Fail:</span> ' + err.message);
+        clearTimeout(timeout);
+        var msg = (err.name === 'AbortError') ? 'Timeout' : err.message;
+        rcLog('<span class="rc-debug-err">Fail:</span> ' + msg);
         // Expected: fetch fails while phone still on SoftAP or device not yet up
         scheduleNextPoll();
     });
