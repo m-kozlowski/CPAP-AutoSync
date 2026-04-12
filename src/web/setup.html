@@ -185,6 +185,20 @@
             border: 1px solid #2a475e; color: #fff; border-radius: 6px; font-size: .86em;
         }
 
+        /* ── Reconnection Debug Log ── */
+        .rc-debug-log {
+            margin-top: 15px; padding: 10px; background: #0a1118;
+            border: 1px solid #2a475e; border-radius: 6px;
+            font-family: monospace; font-size: 0.72em; color: #8faab8;
+            max-height: 120px; overflow-y: auto; line-height: 1.4;
+            white-space: pre-wrap; word-break: break-all;
+        }
+        .rc-debug-entry { margin-bottom: 4px; border-bottom: 1px solid #1a2a3a; padding-bottom: 2px; }
+        .rc-debug-entry:last-child { border-bottom: none; }
+        .rc-debug-ts { color: #5c7e8f; margin-right: 5px; }
+        .rc-debug-err { color: #ff6b6b; }
+        .rc-debug-ok { color: #44ff44; }
+
         @media (max-width: 600px) {
             .hdr svg { height: 108px; }
             .header-bar { gap: 6px; }
@@ -467,6 +481,7 @@
             <p style="font-size:.84em;color:#ff6b6b;margin-bottom:8px">&#9888; Could not reconnect automatically.</p>
             <div id="rc-error-msg" style="font-size:.82em;color:#8f98a0;line-height:1.5"></div>
         </div>
+        <div id="rc-debug" class="rc-debug-log"></div>
     </div>
 </div>
 
@@ -1077,14 +1092,21 @@ function startReconnectionAssistant() {
     setPhase('rc-phase3', '');
     document.getElementById('rc-attempt').textContent = '';
     document.getElementById('rc-bar').style.width = '10%';
+    document.getElementById('rc-debug').innerHTML = '';
+    rcLog('Assistant started inside ' + (isApMode ? 'AP' : 'Regular') + ' mode');
+    rcLog('Current origin: ' + window.location.origin);
 
     // Trigger soft reboot after a short delay
     setTimeout(function() {
-        fetch('/soft-reboot', { method: 'GET' }).catch(function() {});
+        rcLog('Sending /soft-reboot signal...');
+        fetch('/soft-reboot', { method: 'GET' }).catch(function(e) {
+            rcLog('Reboot trig error: ' + e.message);
+        });
     }, 500);
 
     // Phase 2: rebooting — wait 8s before starting to poll
     setTimeout(function() {
+        rcLog('Wait period over, starting network polls...');
         setPhase('rc-phase2', 'done');
         setPhase('rc-phase3', 'active');
         document.getElementById('rc-bar').style.width = '30%';
@@ -1100,28 +1122,44 @@ function pollReconnect() {
 
     document.getElementById('rc-attempt').textContent = 'Attempting to reconnect... (' + rcAttemptCount + '/' + RC_MAX_ATTEMPTS + ')';
     document.getElementById('rc-bar').style.width = (30 + (rcAttemptCount / RC_MAX_ATTEMPTS) * 60) + '%';
+    rcLog('Polling: ' + url);
 
     fetch(url, { mode: 'no-cors', cache: 'no-store' }).then(function(res) {
+        rcLog('<span class="rc-debug-ok">Pong (opaque)</span> from ' + url);
         // If we get any response, the device is up
         // Try a proper JSON fetch to confirm
         return fetch('http://' + hostname + '.local/api/status', { cache: 'no-store' });
     }).then(function(res) {
         if (res && res.ok) {
+            rcLog('<span class="rc-debug-ok">Success!</span> Reconnected to ' + hostname + '.local');
             // Device is back! Redirect to dashboard
             setPhase('rc-phase3', 'done');
             document.getElementById('rc-bar').style.width = '100%';
             document.getElementById('rc-attempt').textContent = 'Connected! Redirecting...';
             setTimeout(function() {
+                rcLog('Redirecting to origin...');
                 window.location.href = 'http://' + hostname + '.local/';
             }, 1500);
             return;
         }
+        rcLog('Poll response not OK: ' + (res ? res.status : 'null'));
         // Response but not OK — continue polling
         scheduleNextPoll();
-    }).catch(function() {
+    }).catch(function(err) {
+        rcLog('<span class="rc-debug-err">Fail:</span> ' + err.message);
         // Expected: fetch fails while phone still on SoftAP or device not yet up
         scheduleNextPoll();
     });
+}
+
+function rcLog(msg) {
+    var log = document.getElementById('rc-debug');
+    var div = document.createElement('div');
+    div.className = 'rc-debug-entry';
+    var ts = new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    div.innerHTML = '<span class="rc-debug-ts">[' + ts + ']</span> ' + msg;
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
 }
 
 function scheduleNextPoll() {
