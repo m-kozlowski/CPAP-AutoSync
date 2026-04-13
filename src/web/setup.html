@@ -197,6 +197,7 @@
         .rc-debug-entry:last-child { border-bottom: none; }
         .rc-debug-ts { color: #5c7e8f; margin-right: 5px; }
         .rc-debug-err { color: #ff6b6b; }
+        .rc-debug-warn { color: #ddcc44; }
         .rc-debug-ok { color: #44ff44; }
 
         @media (max-width: 600px) {
@@ -1140,9 +1141,9 @@ function pollReconnect() {
     document.getElementById('rc-bar').style.width = (30 + (rcAttemptCount / RC_MAX_ATTEMPTS) * 60) + '%';
     rcLog('Polling: ' + url);
 
-    // Sane timeout: if the OS resolver or network takes > 8s, abort and retry
+    // Sane timeout: if the OS resolver or network takes > 10s, abort and retry
     var controller = new AbortController();
-    var timeout = setTimeout(function() { controller.abort(); }, 8000);
+    var timeout = setTimeout(function() { controller.abort(); }, 10000);
 
     fetch(url, { mode: 'no-cors', cache: 'no-store', signal: controller.signal }).then(function(res) {
         clearTimeout(timeout);
@@ -1160,7 +1161,7 @@ function pollReconnect() {
     }).catch(function(err) {
         clearTimeout(timeout);
         var msg = (err.name === 'AbortError') ? 'Timeout' : err.message;
-        rcLog('<span class="rc-debug-err">Fail:</span> ' + msg);
+        rcLog('<span class="rc-debug-warn">Warning:</span> ' + msg);
         // Expected: fetch fails while phone still on SoftAP or device not yet up
         scheduleNextPoll();
     });
