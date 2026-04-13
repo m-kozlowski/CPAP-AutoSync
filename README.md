@@ -12,7 +12,7 @@ Automatically upload CPAP therapy data from your SD card to a network share or S
 ### **Power Compatibility & Known Hardware Limits**
 
 > [!NOTE]
-> ℹ️ **AirSense 10 units:** the introductions of always-on Stealth Mode in v3.6i allowed us to avoid the CPAP machine power-cycling the SD card slot (preventing 99% of reboots during therapy). Please upgrade to v3.6i or later to benefit from this feature.
+> ℹ️ **AirSense 10 units:** the introduction of an always-on Stealth Mode in v3.6i allowed us to avoid the CPAP machine power-cycling the SD card slot (preventing 99% of reboots during therapy). Please upgrade to v3.6i or later to benefit from this feature.
 
 > [!CAUTION]
 > ⚠️ **AirSense 11** ***(🔍 ONLY REF 39517, check back sticker! 🏷️)*** ➔ Most **REF 39517** units have severe power limitations on their SD card slot. If the ESP32 card does not receive enough power, it will continually reset. You may experience frequent WiFi disconnects, failed uploads, or an "**SD Card Error**" on your CPAP machine's screen.
