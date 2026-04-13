@@ -9,8 +9,8 @@ This package contains precompiled firmware for automatically uploading CPAP data
 - [Quick Start](#quick-start)
   - [0. Initialize SD Card](#0-initialize-the-sd-card)
   - [1. Upload Firmware](#1-upload-firmware)
-  - [2. Create Configuration](#2-create-configuration-file)
-  - [3. Insert SD Card](#3-insert-sd-card-and-power-on)
+  - [2. Visual Configuration](#2-visual-configuration-recommended)
+  - [3. Power On & Dashboard](#3-power-on--dashboard)
 - [Configuration Reference](#configuration-reference)
 - [Common Configuration Examples](#common-configuration-examples)
 - [How It Works](#how-it-works)
@@ -26,84 +26,21 @@ This package contains precompiled firmware for automatically uploading CPAP data
 ## 🚀 Get Started in 3 Steps (Seriously, It's This Easy!)
 
 ### Step 1: Flash the Firmware
-Upload the firmware using the included scripts (details below in [Quick Start](#quick-start))
+Upload the firmware using the included scripts (details below in [Quick Start](#1-upload-firmware)).
 
-### Step 2: Create `config.txt` 
-Create a file named `config.txt` on your SD card with **just these lines**:
+### Step 2: Power On & Connect
+Insert the card into your CPAP and power it on. On your phone or PC, connect to the WiFi network named **`CPAP-Setup`**.
 
-**👇👇👇 Click the option you want to use** (or click ▸ to expand additional options):
-
----
-
-<details>
-<summary><b>📤 For Network Share (SMB)</b></summary>
-
-```ini
-# WiFi
-WIFI_SSID = YourWiFiName
-WIFI_PASSWORD = YourWiFiPassword
-
-# Upload Destination
-ENDPOINT_TYPE = SMB
-ENDPOINT = //192.168.1.100/cpap_backups
-ENDPOINT_USER = username
-ENDPOINT_PASSWORD = password
-```
-
-**That's it!** Replace the values with your actual WiFi and network share details.
-</details>
-
-<details>
-<summary><b>☁️ For SleepHQ Cloud</b></summary>
-
-```ini
-# WiFi
-WIFI_SSID = YourWiFiName
-WIFI_PASSWORD = YourWiFiPassword
-
-# SleepHQ
-ENDPOINT_TYPE = CLOUD
-CLOUD_CLIENT_ID = your-sleephq-client-id
-CLOUD_CLIENT_SECRET = your-sleephq-client-secret
-```
-
-**That's it!** Replace with your actual WiFi and SleepHQ credentials.
-</details>
-
-<details>
-<summary><b>🔄 For Both SMB + SleepHQ (Dual Upload)</b></summary>
-
-```ini
-# WiFi
-WIFI_SSID = YourWiFiName
-WIFI_PASSWORD = YourWiFiPassword
-
-# Dual Upload
-ENDPOINT_TYPE = SMB,CLOUD
-ENDPOINT = //192.168.1.100/cpap_backups
-ENDPOINT_USER = username
-ENDPOINT_PASSWORD = password
-CLOUD_CLIENT_ID = your-sleephq-client-id
-CLOUD_CLIENT_SECRET = your-sleephq-client-secret
-```
-
-**That's it!** Provide both SMB and SleepHQ credentials to upload to both destinations.
-</details>
+### Step 3: Configure via Visual Wizard
+A setup page should open automatically. Follow the wizard to enter your WiFi and destination details.
 
 ---
 
-**All other settings are optional and have smart defaults.**
-
-### Step 3: Insert SD Card & Done!
-Insert the SD card into your CPAP machine. The device will automatically:
-- ✅ Connect to WiFi
-- ✅ Sync time
-- ✅ Wait for therapy to end (Smart Mode)
-- ✅ Upload your CPAP data
+**That's it!** The device will save, restart, and begin uploading your data.
 
 **💻 Web Interface:** Once running, access the dashboard at **`http://cpap.local`** (for 60 seconds after boot, then use the IP address) to monitor uploads, view logs, and manage settings.
 
-**No complex setup. No JSON syntax. Just simple key = value pairs.**
+**No SD card reader needed. No complex setup. Just a simple visual wizard.**
 
 Want more control? See [Configuration Reference](#configuration-reference) for all optional settings.
 
@@ -188,50 +125,30 @@ upload-ota.bat COM3
 
 Replace `COM3` or `/dev/ttyUSB0` with your actual serial port.
 
-### 2. Create Configuration File
+### 2. Visual Configuration (Recommended)
 
-Create a file named `config.txt` in the root of your SD card.
+**No SD card reader is required for configuration.**
 
-**Option A: Cloud Upload (SleepHQ)**
-```ini
-WIFI_SSID = YourNetworkName
-WIFI_PASSWORD = YourNetworkPassword
+1. Insert the card into your CPAP machine and power it on.
+2. On your smartphone or computer, search for the WiFi network named **`CPAP-Setup`** and connect to it.
+3. A setup page should automatically open (Captive Portal). If it does not, open your browser and go to **`http://192.168.4.1`**.
+4. Follow the visual wizard to enter your WiFi and upload details.
+5. Click **Save and Restart**.
 
-ENDPOINT_TYPE = CLOUD
-CLOUD_CLIENT_ID = your-sleephq-client-id
-CLOUD_CLIENT_SECRET = your-sleephq-client-secret
+---
 
-GMT_OFFSET_HOURS = 0
-```
+### 3. Power On & Dashboard
 
-**Option B: Network Share (SMB)**
-```ini
-WIFI_SSID = YourNetworkName
-WIFI_PASSWORD = YourNetworkPassword
-
-ENDPOINT_TYPE = SMB
-ENDPOINT = //192.168.1.100/cpap_backups
-ENDPOINT_USER = username
-ENDPOINT_PASSWORD = password
-
-GMT_OFFSET_HOURS = 0
-```
-
-**Syntax Notes:** 
-- Lines starting with `#` or `//` are comments.
-- Spaces around `=` are optional.
-- Keys are case-insensitive.
-
-**Common mistake that causes "SSID is empty" errors:**
-Missing `config.txt` file, or using invalid Key-Value syntax.
-
-### 3. Insert SD Card and Power On
-
-Insert the SD card into your CPAP machine's SD slot and power it on. The device will:
+After configuring, the device will restart and connect to your home WiFi. It will then automatically:
 1. Connect to WiFi
 2. Sync time with internet
 3. Wait for upload eligibility based on mode
-4. Upload new files to your network share
+4. Upload new files to your network share or SleepHQ
+
+**Dashboard Access:** Open **[http://cpap.local](http://cpap.local)** in your browser to view progress and logs.
+
+> [!NOTE]
+> **Manual Configuration:** If you prefer to edit files manually, you can still create a `config.txt` file in the root of the SD card. See the [Common Configuration Examples](#common-configuration-examples) below for templates.
 
 ---
 
@@ -390,17 +307,14 @@ Insert the SD card into your CPAP machine's SD slot and power it on. The device 
 
 ### Credential Security
 
-By default, credentials stay as plaintext in `config.txt`. This is the safest option — your passwords survive full firmware flashes without any extra steps.
+By default, credentials are migrated to the device's secure flash memory (NVS) and replaced with `***STORED_IN_FLASH***` in `config.txt`. This provides improved security while keeping the configuration file easy to manage.
 
-**To update a password:** Edit `config.txt` directly.
+**To update a password:** Replace `***STORED_IN_FLASH***` in your `config.txt` (or via the web UI) with the new plaintext value. The device will automatically re-migrate it to secure storage on the next boot.
 
-**Optional: credential masking**
-- Add `MASK_CREDENTIALS = true` to your `config.txt`
-- On next boot, passwords will be moved to encrypted ESP32 flash (NVS) and replaced with `***STORED_IN_FLASH***`
-- On subsequent boots, credentials are loaded from NVS instead of `config.txt`
-- To update a masked password, replace `***STORED_IN_FLASH***` with the new plaintext value — the device will re-migrate it
+**Optional: plaintext mode**
+If you prefer to keep your passwords as plaintext in `config.txt` (e.g., for easier debugging), add `MASK_CREDENTIALS = false` to your configuration.
 
-> **Warning:** A full (non-OTA) firmware flash erases NVS. After such a flash with masking enabled, you must re-enter all passwords in `config.txt`. OTA updates are not affected.
+> **Warning:** A full (non-OTA) firmware flash erases NVS. If you are using default masking, you must re-enter your passwords after a full flash. OTA updates are not affected.
 
 ---
 

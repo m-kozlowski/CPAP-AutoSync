@@ -8,8 +8,8 @@ All settings are read from `/config.txt` on the SD card at boot. The file uses s
 
 | Key | Default | Description |
 |---|---|---|
-| `WIFI_SSID` | *(required)* | WiFi network name to connect to |
-| `WIFI_PASSWORD` | *(empty)* | WiFi password. Supports all characters including `@`, `!`, `#`. After first successful boot the password is migrated to encrypted flash (NVS) and censored in the config file. |
+| `WIFI_SSID` | *(required)* | WiFi network name to connect to. |
+| `WIFI_PASSWORD` | *(empty)* | WiFi password. Supports all characters including `@`, `!`, `#`. By default, the password is migrated to encrypted flash (NVS) and censored in the config file on the first successful boot. |
 | `HOSTNAME` | `cpap` | mDNS hostname. Device becomes reachable at `http://<hostname>.local`. |
 | `NTP_SERVER` | *(empty)* | Custom NTP server for time synchronization. If empty, the device uses the NTP server provided by the router (DHCP Option 42), falling back to `pool.ntp.org` if none is provided. |
 
@@ -22,7 +22,7 @@ All settings are read from `/config.txt` on the SD card at boot. The file uses s
 | `ENDPOINT` | *(required)* | Upload destination. SMB share: `//server/share`. Cloud: `https://sleephq.com` (or leave empty when `ENDPOINT_TYPE=CLOUD`). |
 | `ENDPOINT_TYPE` | *(auto-detected)* | Comma-separated list of active backends: `SMB`, `CLOUD`, or `SMB,CLOUD`. If omitted, type is inferred from `ENDPOINT` value. |
 | `ENDPOINT_USER` | *(empty)* | SMB username. |
-| `ENDPOINT_PASSWORD` | *(empty)* | SMB password. Migrated to encrypted flash on first boot. |
+| `ENDPOINT_PASSWORD` | *(empty)* | SMB password. Migrated to encrypted flash by default. |
 
 ---
 
@@ -33,7 +33,7 @@ Only required when `ENDPOINT_TYPE` includes `CLOUD`.
 | Key | Default | Description |
 |---|---|---|
 | `CLOUD_CLIENT_ID` | *(required for cloud)* | OAuth2 client ID from SleepHQ developer settings. |
-| `CLOUD_CLIENT_SECRET` | *(required for cloud)* | OAuth2 client secret. Migrated to encrypted flash on first boot. |
+| `CLOUD_CLIENT_SECRET` | *(required for cloud)* | OAuth2 client secret. Migrated to encrypted flash by default. |
 | `CLOUD_TEAM_ID` | *(auto-discovered)* | SleepHQ team ID. If omitted, auto-discovered via `GET /api/v1/me` on each upload session. Set explicitly to skip the discovery round-trip. |
 | `CLOUD_DEVICE_ID` | `0` | SleepHQ device ID to associate imports with. `0` = let SleepHQ auto-assign. |
 | `CLOUD_BASE_URL` | `https://sleephq.com` | SleepHQ API base URL. Only change if using a self-hosted instance. |
@@ -89,7 +89,7 @@ Power defaults are optimised for AirSense 11 compatibility (low peak current). M
 
 | Key | Default | Description |
 |---|---|---|
-| `MASK_CREDENTIALS` | `false` | When `true`, credentials are migrated from `config.txt` to ESP32 NVS flash and replaced with `***STORED_IN_FLASH***`. When `false` (default), credentials remain as plaintext in `config.txt` — the safest option for development and reflashing, since a full (non-OTA) flash erases NVS. **Note:** The old key `STORE_CREDENTIALS_PLAIN_TEXT` is no longer recognised. |
+| `MASK_CREDENTIALS` | `true` | When `true` (default), credentials are migrated from `config.txt` to ESP32 NVS flash and replaced with `***STORED_IN_FLASH***`. When `false`, credentials remain as plaintext in `config.txt` — the safest option for development but less secure. **Note:** The old key `STORE_CREDENTIALS_PLAIN_TEXT` is no longer recognised. |
 
 ---
 
@@ -130,13 +130,28 @@ The following keys are **no longer used** by the firmware. They will generate a 
 
 ## Credential Security
 
-By default (`MASK_CREDENTIALS = false`), credentials stay as plaintext in `config.txt`. This is the recommended mode — it survives full firmware flashes without losing WiFi passwords.
+By default (`MASK_CREDENTIALS = true`), credentials are migrated to the device's secure flash memory (NVS) on the first successful boot.
 
-If `MASK_CREDENTIALS = true`, the firmware:
+**The migration process:**
 1. Migrates `WIFI_PASSWORD`, `ENDPOINT_PASSWORD`, and `CLOUD_CLIENT_SECRET` to encrypted ESP32 NVS (flash).
-2. Replaces those values in `config.txt` with `***STORED_IN_FLASH***`.
+2. Replaces those values in `config.txt` with the placeholder `***STORED_IN_FLASH***`.
 3. On subsequent boots, loads credentials from NVS instead of `config.txt`.
 
-> **Warning:** A full (non-OTA) firmware flash erases NVS. After such a flash with `MASK_CREDENTIALS = true`, you must re-enter all passwords in `config.txt`. OTA updates are not affected.
+> [!WARNING]
+> A full (non-OTA) firmware flash erases NVS. If masking is enabled (default), you must re-enter your passwords in `config.txt` (or via the Setup Wizard) after a full flash. OTA updates are not affected.
 
-If `MASK_CREDENTIALS` is `false` (or absent) and `config.txt` contains `***STORED_IN_FLASH***` as a password, the firmware logs an error prompting you to re-enter the password. It does **not** attempt to recover from NVS.
+**Plaintext Mode:**
+If you prefer to keep your passwords as plaintext in `config.txt`, set `MASK_CREDENTIALS = false`. This is the safest option for developers who frequently perform full flashes.
+
+If `MASK_CREDENTIALS` is `false` and `config.txt` contains `***STORED_IN_FLASH***` as a password, the firmware logs an error prompting you to re-enter the password. It does **not** attempt to recover from NVS in this mode.
+
+---
+
+## 10. Initial Setup (Web Wizard)
+
+If no valid WiFi configuration is found on the SD card (i.e. first boot or "Reset State" triggered), the device enters **SoftAP Mode**:
+
+1. **Broadcast**: It creates a WiFi network named `CPAP-Setup`.
+2. **Captive Portal**: Most devices will automatically open the setup page upon connection. If not, browse to `http://192.168.4.1`.
+3. **Wizard**: The Visual Setup Wizard allows you to scan for WiFi networks, enter credentials, and configure upload destinations.
+4. **Persistence**: All settings entered in the wizard are written back to `config.txt` on the SD card.
