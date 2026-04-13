@@ -197,6 +197,7 @@
         .rc-debug-entry:last-child { border-bottom: none; }
         .rc-debug-ts { color: #5c7e8f; margin-right: 5px; }
         .rc-debug-err { color: #ff6b6b; }
+        .rc-debug-warn { color: #ddcc44; }
         .rc-debug-ok { color: #44ff44; }
 
         @media (max-width: 600px) {
@@ -1074,14 +1075,24 @@ async function saveConfig() {
 // ══════════════════════════════════════════════════════════════
 
 function getReconnectHostname() {
-    // Use HOSTNAME from config if set, otherwise default 'cpap'
-    var h = getValue('HOSTNAME');
-    return (h && h.trim()) ? h.trim() : 'cpap';
+    // Determine the actual payload that will be (or was) saved
+    var payload = document.getElementById('raw-editable').checked 
+        ? document.getElementById('advanced-raw').value 
+        : buildConfigString();
+    
+    // Extract HOSTNAME using regex (case-insensitive, handles various whitespace)
+    var match = payload.match(/^HOSTNAME\s*=\s*(.+)$/mi);
+    if (match && match[1]) {
+        var h = match[1].trim();
+        if (h) return h;
+    }
+    return 'cpap';
 }
 
 var rcTimer = null;
 var rcStartTime = 0;
 var rcAttemptCount = 0;
+var rcHostname = 'cpap';     // Resolved hostname for current reconnection attempt
 var RC_MAX_ATTEMPTS = 40;    // 40 attempts × 3s = 120s (2 minutes)
 var RC_POLL_INTERVAL = 3000; // 3 seconds
 var RC_FALLBACK_AFTER = 10;  // Show IP fallback after 10 attempts (30s)
@@ -1090,6 +1101,7 @@ function startReconnectionAssistant() {
     document.getElementById('reconnect-modal').style.display = 'flex';
     rcStartTime = Date.now();
     rcAttemptCount = 0;
+    rcHostname = getReconnectHostname();
 
     // Phase 1: saved
     setPhase('rc-phase1', 'done');
@@ -1122,16 +1134,16 @@ function startReconnectionAssistant() {
 
 function pollReconnect() {
     rcAttemptCount++;
-    var hostname = getReconnectHostname();
+    var hostname = rcHostname;
     var url = 'http://' + hostname + '.local/api/status';
 
     document.getElementById('rc-attempt').textContent = 'Attempting to reconnect... (' + rcAttemptCount + '/' + RC_MAX_ATTEMPTS + ')';
     document.getElementById('rc-bar').style.width = (30 + (rcAttemptCount / RC_MAX_ATTEMPTS) * 60) + '%';
     rcLog('Polling: ' + url);
 
-    // Sane timeout: if the OS resolver or network takes > 8s, abort and retry
+    // Sane timeout: if the OS resolver or network takes > 10s, abort and retry
     var controller = new AbortController();
-    var timeout = setTimeout(function() { controller.abort(); }, 8000);
+    var timeout = setTimeout(function() { controller.abort(); }, 10000);
 
     fetch(url, { mode: 'no-cors', cache: 'no-store', signal: controller.signal }).then(function(res) {
         clearTimeout(timeout);
@@ -1149,7 +1161,7 @@ function pollReconnect() {
     }).catch(function(err) {
         clearTimeout(timeout);
         var msg = (err.name === 'AbortError') ? 'Timeout' : err.message;
-        rcLog('<span class="rc-debug-err">Fail:</span> ' + msg);
+        rcLog('<span class="rc-debug-warn">Warning:</span> ' + msg);
         // Expected: fetch fails while phone still on SoftAP or device not yet up
         scheduleNextPoll();
     });
@@ -1174,7 +1186,7 @@ function scheduleNextPoll() {
         document.getElementById('reconnect-error').classList.remove('hidden');
         document.getElementById('rc-attempt').textContent = '';
         
-        var hostname = getReconnectHostname();
+        var hostname = rcHostname;
         document.getElementById('rc-error-msg').innerHTML = 
             'The device could not be reached at <strong>' + hostname + '.local</strong> after 2 minutes.<br><br>' +
             'Please <strong>eject the SD card and reinsert it</strong> back into the device to restore the connection (or re-enter setup mode).';

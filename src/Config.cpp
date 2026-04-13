@@ -38,7 +38,7 @@ Config::Config() :
     _hasCloudEndpoint(false),
     _hasWebdavEndpoint(false),
     
-    maskCredentials(false),  // Default: plaintext — credentials stay in config.txt
+    maskCredentials(true),  // Default: masked — credentials migrated to NVS and censored in config.txt
     credentialsInFlash(false),  // Will be set during loadFromSD
     
     // Power management defaults (optimized for AirSense 11 compatibility)

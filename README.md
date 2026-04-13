@@ -3,7 +3,6 @@
 Automatically upload CPAP therapy data from your SD card to a network share or SleepHQ — **within minutes of taking your mask off.**
 
 * **Supports:** ResMed Series 10 and 11
-  - ℹ️ See note below for some AirSense 10 caveats
 * **Hardware:** [SD WIFI PRO](https://www.fysetc.com/products/fysetc-upgrade-sd-wifi-pro-with-card-reader-module-run-wireless-by-esp32-chip-web-server-reader-uploader-3d-printer-parts) — an ESP32-powered SD card that physically inserts into your CPAP's SD card slot like a regular memory card
 
 ---
@@ -13,7 +12,7 @@ Automatically upload CPAP therapy data from your SD card to a network share or S
 ### **Power Compatibility & Known Hardware Limits**
 
 > [!NOTE]
-> ℹ️ **AirSense 10 units:** These machines power-cycle the SD card slot every 60 seconds while actively blowing air. This causes the ESP32 card to constantly reboot during therapy, which will degrade the Web UI experience while you are sleeping. However, **this does not affect functionality** — once you stop therapy (take off the mask or stop the machine from blowing air), the card will boot up normally and complete the upload as expected.
+> ℹ️ **AirSense 10 units:** the introductions of always-on Stealth Mode in v3.6i allowed us to avoid the CPAP machine power-cycling the SD card slot (preventing 99% of reboots during therapy). Please upgrade to v3.6i or later to benefit from this feature.
 
 > [!CAUTION]
 > ⚠️ **AirSense 11** ***(🔍 ONLY REF 39517, check back sticker! 🏷️)*** ➔ Most **REF 39517** units have severe power limitations on their SD card slot. If the ESP32 card does not receive enough power, it will continually reset. You may experience frequent WiFi disconnects, failed uploads, or an "**SD Card Error**" on your CPAP machine's screen.
@@ -32,18 +31,23 @@ We are currently gathering statistics on which models work reliably. **If your m
 | **AirSense 11** | Singapore | `R390-420/1` | 39480 | *(not specified / Europe)* | ✅ **100%** | Fully working |
 | **AirSense 11** | Singapore | `R390-451/1` | 39483 | *(not specified / Europe)* | ✅ **100%** | Fully working |
 | **AirSense 11** | Singapore | `R390-447/1` | 39517 | AIR11M1G22 | ❌ **35%** | Has known power delivery issues. Fails on most units. |
-| ↳ *(modded)* | — | — | ↳ 39517 🔧 | — | ⚠️ **65%** | *With 1uF SD Extender Mod and `BROWNOUT_DETECT=OFF`* |
+| ↳ *(modded)* | — | — | ↳ 39517 🔧 | — | ⚠️ **65%** | *With SD Extender Mod and `BROWNOUT_DETECT=OFF`* |
+| ↳ *(modded)* | — | — | ↳ 39517 🔧 | — | ℹ️ **100%** | *With SD Extender + capacitor Mod* |
 | **AirSense 11** | Singapore | `R390-447/1` | 39520 | AIR11M1G22 | ✅ **100%** | Fully working |
 | **AirSense 11** | Singapore | `R390-447/1` | 39523 | AIR11M1U | ✅ **100%** | Stable since v1.0i-beta1 (had issues prior) |
 | **AirSense 11** | Australia | `R390-453/1` | 39532 | AIR114GT | ✅ **100%** | Fully working |
-| **AirSense 10** | Australia | `R370-4102/1` | 37043 | AIR104G | ✅ **100%** | ℹ️ Fully working, see notes |
-| **AirSense 10** | Singapore | `R370-4201/1` | 37127 | *(not specified / Europe)* | ✅ **100%** | ℹ️ Fully working, see notes |
-| **AirSense 10** | Singapore | `R370-4207/1` | 37160 | AIR104GU | ✅ **100%** | ℹ️ Fully working, see notes |
-| **AirSense 10** | Australia | `R370-449/1` | 37437 | *(not specified / Australia)* | ✅ **100%** | ℹ️ Fully working, see notes |
+| **AirSense 10** | Australia | `R370-4102/1` | 37043 | AIR104G | ✅ **100%** | Stable since v3.6i |
+| **AirSense 10** | Singapore | `R370-4201/1` | 37127 | *(not specified / Europe)* | ✅ **100%** | Stable since v3.6i  |
+| **AirSense 10** | Singapore | `R370-4207/1` | 37160 | AIR104GU | ✅ **100%** | Stable since v3.6i  |
+| **AirSense 10** | Australia | `R370-449/1` | 37437 | *(not specified / Australia)* | ✅ **100%** | Stable since v3.6i  |
 
 > 💡 **TIP: Hardware Modification Work in Progress**
 > 
-> One of our users is currently testing an **SD Card Extender mod** to add more capacitance to the power line. Initial tests show promising results (improving the R390-447/1 REF 39517 from 35% to 65% success rate). We are waiting for further testing with increased capacitance, which may fully resolve power issues for the problematic models. Investigations are also ongoing to see if a capacitor mod (or a newer AirSense firmware) might resolve the mid-therapy reboot issue on AirSense 10 units.
+> One of our users has created an **SD Card Extender mod** to add more capacitance to the power line. Testing has been successful, bringing R390-447/1 REF 39517 from 35% to 100% success rate.
+> 
+> We are also aware of another DIY solution that added external power to the SD card, which has also fixed the issues for REF 39517 machines.
+> 
+> Links to both projects will be provided with the next stable release of CPAP AutoSync.
 
 </details>
 
@@ -94,63 +98,28 @@ We are currently gathering statistics on which models work reliably. **If your m
 Open the release ZIP and follow the **Firmware Upload** steps in the included guide:
 **[Full Setup Guide](release/README.md)**
 
-### 3. Create `config.txt` on the SD card
-Just WiFi credentials and upload destination — **6 to 10 lines total**.
+### 3. Setup via Web Wizard (Recommended)
+**No SD card reader? No problem.** You can now configure everything from your phone or computer without editing any files.
 
-**👇 Click your upload destination:**
+1. **Power On:** Insert the card into your CPAP and power it on.
+2. **Connect:** On your phone or PC, look for a WiFi network named **`CPAP-Setup`** and connect to it.
+3. **Configure:** A setup page should open automatically. If it doesn't, navigate to **`http://192.168.4.1`**.
+4. **Follow the Wizard:** Enter your home WiFi details and your upload destination (SMB or SleepHQ).
 
-<details>
-<summary><b>📤 Network Share (SMB — Windows, NAS, Samba)</b></summary>
+The device will save your settings, restart, and automatically connect to your home network.
 
-```ini
-WIFI_SSID = YourWiFiName
-WIFI_PASSWORD = YourWiFiPassword
-ENDPOINT_TYPE = SMB
-ENDPOINT = //192.168.1.100/cpap_backups
-ENDPOINT_USER = username
-ENDPOINT_PASSWORD = password
-```
-</details>
+> [!TIP]
+> **Manual `config.txt` still works:** If you prefer the old way, you can still create a `config.txt` file manually. See the [Advanced Configuration Guide](docs/CONFIG_REFERENCE.md) for details.
 
-<details>
-<summary><b>☁️ SleepHQ Cloud</b></summary>
-
-*(Note: A SleepHQ Pro subscription is required. The API keys below are generated from your SleepHQ Account Settings, they are **NOT** your username and password).*
-
-```ini
-WIFI_SSID = YourWiFiName
-WIFI_PASSWORD = YourWiFiPassword
-
-ENDPOINT_TYPE = CLOUD
-CLOUD_CLIENT_ID = your-sleephq-client-id
-CLOUD_CLIENT_SECRET = your-sleephq-client-secret
-```
-</details>
-
-<details>
-<summary><b>🔄 Both (SMB + SleepHQ simultaneously)</b></summary>
-
-*(Note: A SleepHQ Pro subscription is required. The API keys below are generated from your SleepHQ Account Settings, they are **NOT** your username and password).*
-
-```ini
-WIFI_SSID = YourWiFiName
-WIFI_PASSWORD = YourWiFiPassword
-ENDPOINT_TYPE = SMB,CLOUD
-ENDPOINT = //192.168.1.100/cpap_backups
-ENDPOINT_USER = username
-ENDPOINT_PASSWORD = password
-CLOUD_CLIENT_ID = your-client-id
-CLOUD_CLIENT_SECRET = your-client-secret
-```
-</details>
-
-### 4. Insert card and open `http://cpap.local`
+### 4. Open `http://cpap.local`
 
 That's it. The device connects to WiFi, waits for your therapy session to end, and uploads automatically.
 
 Open **[http://cpap.local](http://cpap.local)** in your browser to see live upload status, view logs, and manage settings. *(Note: `cpap.local` only resolves for the first 60 seconds after boot to save power — accessing it within this window redirects you to the device's IP address.)*
 
-> **From here on, you can edit your config directly in the browser** — Config tab → Edit. No need to pull the SD card again.
+> **From here on, you can edit your config directly in the browser** — Config tab → Edit. 
+> 
+> **Note on Security:** For your protection, credentials are migrated to the device's secure flash memory (NVS) by default. After the first successful setup, you will see your passwords replaced with `***STORED_IN_FLASH***` in the configuration editor and the `config.txt` file. This is normal and expected.
 
 ---
 
@@ -203,7 +172,7 @@ See the [Full Setup Guide](release/README.md#️-sd-card-errors--use-scheduled-m
 | | |
 |---|---|
 | **Adapter** | [SD WIFI PRO](https://www.fysetc.com/products/fysetc-upgrade-sd-wifi-pro-with-card-reader-module-run-wireless-by-esp32-chip-web-server-reader-uploader-3d-printer-parts) (ESP32-PICO-D4, 4MB Flash, WiFi 2.4GHz) |
-| **CPAP machines** | ResMed Series 9, 10, and 11 |
+| **CPAP machines** | ResMed Series 10 and 11 |
 | **WiFi** | 2.4GHz only (ESP32 limitation) |
 | **Upload targets** | SMB/CIFS share, SleepHQ cloud, or both |
 
