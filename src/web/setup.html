@@ -353,6 +353,13 @@
                 <input type="number" id="f-cooldown" min="1" max="60" value="10" placeholder="10">
                 <span class="help-text">Minutes to wait after an upload completes before starting the next cycle. Default: 10.</span>
             </div>
+            <div id="smart-fields" class="conditional hidden" style="margin-top:8px">
+                <div class="fg">
+                    <label for="f-smart-start">Smart Start Hour (0-23)</label>
+                    <input type="number" id="f-smart-start" min="0" max="23" value="6">
+                    <span class="help-text">Hour when Smart mode begins checking for CPAP inactivity. Between the upload window end and this hour, no uploads are attempted (quiet period). Set equal to Window End to disable. Default: 6.</span>
+                </div>
+            </div>
             <div class="info-note" id="smart-note" style="display:none">
                 &#9432; Smart mode requires 4-bit SD bus activity detection. On AirSense 10 machines (which use 1-bit SD), the firmware automatically switches to Scheduled mode at boot.
             </div>
@@ -606,6 +613,7 @@ function populateFormFromConfig() {
     document.getElementById('f-start-hour').value = getValue('UPLOAD_START_HOUR') || '9';
     document.getElementById('f-end-hour').value = getValue('UPLOAD_END_HOUR') || '21';
     document.getElementById('f-cooldown').value = getValue('COOLDOWN_MINUTES') || '10';
+    document.getElementById('f-smart-start').value = getValue('SMART_START_HOUR') || '6';
 
     // ENDPOINT_TYPE → cloud/SMB checkboxes
     var endpointType = getValue('ENDPOINT_TYPE').toUpperCase();
@@ -849,6 +857,7 @@ function onModeChange() {
         if (radios[i].checked) { mode = radios[i].value; break; }
     }
     document.getElementById('schedule-fields').classList.toggle('hidden', mode !== 'scheduled');
+    document.getElementById('smart-fields').classList.toggle('hidden', mode !== 'smart');
     document.getElementById('smart-note').style.display = (mode === 'smart') ? '' : 'none';
     updateRawPreview();
 }
@@ -920,6 +929,9 @@ function collectFormValues() {
     vals['UPLOAD_START_HOUR'] = document.getElementById('f-start-hour').value;
     vals['UPLOAD_END_HOUR'] = document.getElementById('f-end-hour').value;
     vals['COOLDOWN_MINUTES'] = document.getElementById('f-cooldown').value;
+    if (mode === 'smart') {
+        vals['SMART_START_HOUR'] = document.getElementById('f-smart-start').value;
+    }
 
     // Endpoint type
     var cloudOn = document.getElementById('f-cloud-enable').checked;

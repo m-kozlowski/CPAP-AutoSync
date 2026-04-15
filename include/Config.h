@@ -75,6 +75,7 @@ private:
     bool stealthRestore;            // Restore card state via stealth after upload (AS10 only)
     bool minimizeReboots;           // Skip elective reboots between upload sessions
     bool flushLogsDuringUpload;      // Continue periodic log flushes during uploads (default: false)
+    int smartStartHour;              // 0-23, hour when Smart mode begins monitoring (quiet period ends)
     
     // Cached endpoint type flags (computed once during loadFromSD)
     bool _hasSmbEndpoint;
@@ -172,6 +173,7 @@ public:
     bool getStealthRestore() const;
     bool getMinimizeReboots() const;
     bool getFlushLogsDuringUpload() const;
+    int getSmartStartHour() const;
     bool isSmartMode() const;
     
     // Power management getters

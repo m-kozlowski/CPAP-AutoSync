@@ -266,7 +266,8 @@ static bool recoverWiFiAfterSmbTransportFailure() {
 
 SMBUploader::SMBUploader(const String& endpoint, const String& user, const String& password)
     : smbUser(user), smbPassword(password), smb2(nullptr), connected(false),
-      uploadBuffer(nullptr), uploadBufferSize(0), lastVerifiedParentDir("") {
+      uploadBuffer(nullptr), uploadBufferSize(0), maxUploadAttempts(0),
+      lastVerifiedParentDir("") {
     parseEndpoint(endpoint);
 }
 
@@ -458,6 +459,13 @@ bool SMBUploader::allocateBuffer(size_t size) {
     return true;
 }
 
+void SMBUploader::setMaxUploadAttempts(int attempts) {
+    maxUploadAttempts = attempts;
+    if (attempts > 0) {
+        LOGF("[SMB] Upload max attempts overridden to %d", attempts);
+    }
+}
+
 void SMBUploader::freeBuffer() {
     if (uploadBuffer) {
         free(uploadBuffer);
@@ -602,13 +610,14 @@ bool SMBUploader::upload(const String& localPath, const String& remotePath,
         fullRemotePath = fullRemotePath.substring(1);
     }
     
-    for (int attempt = 1; attempt <= SMB_UPLOAD_MAX_ATTEMPTS; ++attempt) {
+    int effectiveMaxAttempts = (maxUploadAttempts > 0) ? maxUploadAttempts : SMB_UPLOAD_MAX_ATTEMPTS;
+    for (int attempt = 1; attempt <= effectiveMaxAttempts; ++attempt) {
         bool shouldRetry = false;
         unsigned long attemptBytesTransferred = 0;
 
         if (attempt > 1) {
             LOG_WARNF("[SMB] Retry attempt %d/%d for %s",
-                      attempt, SMB_UPLOAD_MAX_ATTEMPTS, localPath.c_str());
+                      attempt, effectiveMaxAttempts, localPath.c_str());
         }
 
         // Open local file from SD card
@@ -804,7 +813,7 @@ bool SMBUploader::upload(const String& localPath, const String& remotePath,
                 if (recoverableTransportError) {
                     transportErrorDetected = true;
                     skipRemoteClose = true;
-                    if (attempt < SMB_UPLOAD_MAX_ATTEMPTS) {
+                    if (attempt < effectiveMaxAttempts) {
                         shouldRetry = true;
                         LOG_WARN("[SMB] Recoverable SMB transport error detected, will reconnect and retry once");
                     } else {

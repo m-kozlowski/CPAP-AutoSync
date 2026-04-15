@@ -153,6 +153,7 @@ struct UploadTaskParams {
     int maxMinutes;
     DataFilter filter;
     bool forceTriggered;  // true when upload was manually triggered via web UI
+    bool reducedRetries;  // true when outside scheduled hours (fewer retries, fast fail)
 };
 
 // ============================================================================
@@ -965,8 +966,13 @@ void setup() {
     if (!g_apSetupMode) {
         // Set initial FSM state based on upload mode
         if (uploader && uploader->getScheduleManager() && uploader->getScheduleManager()->isSmartMode()) {
-            LOG("[FSM] Smart mode — starting in LISTENING (continuous loop)");
-            transitionTo(UploadState::LISTENING);
+            if (uploader->getScheduleManager()->isSmartQuietPeriod()) {
+                LOG("[FSM] Smart mode — starting in IDLE (quiet period active)");
+                transitionTo(UploadState::IDLE);
+            } else {
+                LOG("[FSM] Smart mode — starting in LISTENING (continuous loop)");
+                transitionTo(UploadState::LISTENING);
+            }
         } else {
             LOG("[FSM] Scheduled mode — starting in IDLE");
             // IDLE is the correct initial state for scheduled mode
@@ -984,9 +990,8 @@ void setup() {
 // ============================================================================
 
 void handleIdle() {
-    // IDLE is only used in scheduled mode.
-    // Smart mode never enters IDLE — it uses the continuous loop:
-    // LISTENING → ACQUIRING → UPLOADING → RELEASING → COOLDOWN → LISTENING
+    // IDLE is used in scheduled mode AND Smart mode during quiet period.
+    // Smart mode quiet period: IDLE from UPLOAD_END_HOUR until SMART_START_HOUR.
     
     unsigned long now = millis();
     if (now - lastIdleCheck < IDLE_CHECK_INTERVAL_MS) return;
@@ -995,6 +1000,16 @@ void handleIdle() {
     if (!uploader || !uploader->getScheduleManager()) return;
     
     ScheduleManager* sm = uploader->getScheduleManager();
+    
+    if (sm->isSmartMode()) {
+        // Smart mode: transition to LISTENING when quiet period ends
+        if (!sm->isSmartQuietPeriod()) {
+            LOG("[FSM] Smart mode — quiet period ended, transitioning to LISTENING");
+            trafficMonitor.resetIdleTracking();
+            transitionTo(UploadState::LISTENING);
+        }
+        return;
+    }
     
     // In scheduled mode: transition to LISTENING when the upload window opens,
     // even if all known files are marked complete. This ensures new DATALOG
@@ -1067,6 +1082,15 @@ void handleListening() {
 
     // Smart mode logic
     if (config.isSmartMode()) {
+        // Check if we've entered the quiet period while listening
+        ScheduleManager* sm = uploader->getScheduleManager();
+        if (sm && sm->isSmartQuietPeriod()) {
+            LOG("[FSM] Smart mode — quiet period started, transitioning to IDLE");
+            g_noWorkSuppressed = false;
+            transitionTo(UploadState::IDLE);
+            return;
+        }
+        
         if (trafficMonitor.isIdleFor(inactivityMs)) {
             LOGF("[FSM] %ds of bus silence confirmed", config.getInactivitySeconds());
             
@@ -1075,10 +1099,10 @@ void handleListening() {
             transitionTo(UploadState::ACQUIRING);
             return;
         }
+        return;
     }
     
     // In scheduled mode, check if the upload window has closed while we were listening
-    // Smart mode never exits LISTENING to IDLE — it stays in the continuous loop
     ScheduleManager* sm = uploader->getScheduleManager();
     if (!sm->isSmartMode()) {
         if (!sm->isInUploadWindow() || sm->isDayCompleted()) {
@@ -1207,7 +1231,7 @@ void uploadTaskFunction(void* pvParameters) {
     LOGF("[Upload] Starting upload session: heap fh=%u ma=%u",
          (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
     UploadResult result = params->uploader->runFullSession(
-        params->sdManager, params->maxMinutes, params->filter);
+        params->sdManager, params->maxMinutes, params->filter, params->reducedRetries);
     
     // Step 5: Release SD card
     if (params->sdManager->hasControl()) {
@@ -1271,9 +1295,17 @@ void handleUploading() {
         uploader->setWebServer(nullptr);
 #endif
 
+        // Reduce retries outside scheduled hours to minimize SD card hold time
+        bool outsideWindow = false;
+        {
+            ScheduleManager* sm = uploader->getScheduleManager();
+            if (sm) outsideWindow = !sm->isInUploadWindow();
+        }
+
         UploadTaskParams* params = new UploadTaskParams{
             uploader, &sdManager, config.getExclusiveAccessMinutes(), filter,
-            g_uploadWasForceTriggered  // propagate manual-trigger state to upload task
+            g_uploadWasForceTriggered,  // propagate manual-trigger state to upload task
+            outsideWindow               // reduced retries when outside upload window
         };
         g_uploadWasForceTriggered = false;  // consumed
         
@@ -1458,10 +1490,15 @@ void handleCooldown() {
     ScheduleManager* sm = uploader->getScheduleManager();
     
     if (sm->isSmartMode()) {
-        // Smart mode: ALWAYS return to LISTENING (continuous loop)
-        trafficMonitor.resetIdleTracking();
-        LOG("[FSM] Smart mode — returning to LISTENING (continuous loop)");
-        transitionTo(UploadState::LISTENING);
+        // Smart mode: return to LISTENING unless in quiet period
+        if (sm->isSmartQuietPeriod()) {
+            LOG("[FSM] Smart mode — cooldown expired during quiet period, transitioning to IDLE");
+            transitionTo(UploadState::IDLE);
+        } else {
+            trafficMonitor.resetIdleTracking();
+            LOG("[FSM] Smart mode — returning to LISTENING (continuous loop)");
+            transitionTo(UploadState::LISTENING);
+        }
     } else {
         // Scheduled mode: return to LISTENING if still in window and day not done
         if (sm->isInUploadWindow() && !sm->isDayCompleted()) {

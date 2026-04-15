@@ -523,8 +523,15 @@ function renderStatus(d){
   var mBadge='<span class="mode-badge">';
   var mEnd='</span>';
   var fBtn='<span style="color:#ffaa44">Force Upload</span> <span style="color:#aa7733;font-size:.9em">(not recommended)</span>';
+  var sq=d.smart_quiet;
+  var ssh=cfg.smart_start_hour;
+  var quietDisabled=(ssh!=null&&eh!=null&&ssh===eh);
   if(mode==='SMART'){
-    if(winAll){
+    if(sq&&!quietDisabled){
+      help=mBadge+'\u25b6 Smart mode \u2014 quiet period (no uploads)'+mEnd+'<br>'
+        +'No upload attempts until <b>'+ssh+':00</b>. Safe for therapy.<br>'
+        +fBtn+' \u2192 forces an upload of recent data now.';
+    }else if(winAll&&quietDisabled){
       help=mBadge+'\u25b6 Smart mode \u2014 24/7 window'+mEnd+'<br>'
         +'Uploads up to <b>'+maxd+' days</b> of data whenever CPAP is idle.<br>'
         +fBtn+' \u2192 scans all eligible folders and uploads any new/changed files.';

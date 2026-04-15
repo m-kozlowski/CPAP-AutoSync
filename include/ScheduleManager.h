@@ -9,6 +9,7 @@ private:
     // Upload window
     int uploadStartHour;   // 0-23
     int uploadEndHour;     // 0-23
+    int smartStartHour;    // 0-23, hour when Smart mode quiet period ends
     String uploadMode;     // "scheduled" or "smart"
     
     // Legacy single-hour support (for backward compat in begin())
@@ -28,7 +29,8 @@ public:
     ScheduleManager();
     
     // New FSM-aware begin
-    bool begin(const String& mode, int startHour, int endHour, int gmtOffsetHours,
+    bool begin(const String& mode, int startHour, int endHour, int smartStart,
+               int gmtOffsetHours,
                const String& tzString = "", const String& ntpServer = "pool.ntp.org");
     // Legacy begin (backward compat — creates a 2-hour window from uploadHour)
     bool begin(int uploadHour, int gmtOffsetHours);
@@ -39,7 +41,8 @@ public:
     
     // New window-based methods
     bool isInUploadWindow();                                  // Current hour within [start, end]
-    bool canUploadFreshData();                                // Smart: always. Scheduled: in window.
+    bool isSmartQuietPeriod();                                // Smart mode quiet period active?
+    bool canUploadFreshData();                                // Smart: always (except quiet). Scheduled: in window.
     bool canUploadOldData();                                  // Both modes: in window only.
     bool isUploadEligible(bool hasFreshData, bool hasOldData); // Combines mode + window + data
     
@@ -62,6 +65,7 @@ public:
     const String& getUploadMode() const;
     int getUploadStartHour() const;
     int getUploadEndHour() const;
+    int getSmartStartHour() const;
     bool isSmartMode() const;
 };
 
