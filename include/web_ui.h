@@ -507,10 +507,14 @@ function renderStatus(d){
     seti('d-mode',mode+' <span title="Smart mode requires 4-bit SD bus activity (not available on this CPAP). Using scheduled mode instead." style="cursor:help;color:#ffaa44;font-size:.85em">\u24d8</span>');
   }else{set('d-mode',mode);}
   set('d-tsync',d.time_synced?'Yes':'No');
-  var sh=cfg.upload_start_hour,eh=cfg.upload_end_hour;
+  var sh=cfg.upload_start_hour,eh=cfg.upload_end_hour,ssh=cfg.smart_start_hour;
   var ws=(sh!=null&&eh!=null)?sh+':00 - '+eh+':00':'—';
   var winAll=(sh!=null&&eh!=null&&sh===eh);
-  set('d-win',winAll?'24/7 (always open)':ws);
+  var winDisplay=ws;
+  if(mode==='SMART'&&ssh!=null&&!winAll){
+    winDisplay=ssh+':00 / '+ws;
+  }
+  set('d-win',winAll?'24/7 (always open)':winDisplay);
   set('d-inact',cfg.inactivity_seconds!=null?cfg.inactivity_seconds+'s':'—');
   set('d-excl',cfg.exclusive_access_minutes!=null?cfg.exclusive_access_minutes+' min':'—');
   set('d-cool',cfg.cooldown_minutes!=null?cfg.cooldown_minutes+' min':'—');
