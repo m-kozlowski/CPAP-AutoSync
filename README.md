@@ -2,6 +2,12 @@
 
 Automatically upload CPAP therapy data from your SD card to a network share or SleepHQ — **within minutes of taking your mask off.**
 
+Built with **extreme ease of use** in mind:
+- 📱 **Setup Wizard**: No need to edit text files. Connect to the device's WiFi and follow a visual, step-by-step setup on your phone.
+- 🧠 **Auto-Detects Hardware**: Automatically detects if your CPAP supports Smart Mode (AirSense 11) or falls back safely (AirSense 10).
+- ✅ **Foolproof Configuration**: The wizard validates your upload schedule to prevent impossible configurations and SD card errors.
+- 🌐 **VPN & Network Friendly**: The setup process seamlessly handles complex networks, automatically falling back to IP-based connection if local hostnames fail.
+
 * **Supports:** ResMed Series 10 and 11
 * **Hardware:** [SD WIFI PRO](https://www.fysetc.com/products/fysetc-upgrade-sd-wifi-pro-with-card-reader-module-run-wireless-by-esp32-chip-web-server-reader-uploader-3d-printer-parts) — an ESP32-powered SD card that physically inserts into your CPAP's SD card slot like a regular memory card
 
@@ -145,12 +151,12 @@ See the [Full Setup Guide](release/README.md#️-sd-card-errors--use-scheduled-m
 
 | Feature | AirSense 10 (AS10) | AirSense 11 (AS11) |
 |---------|--------------------|--------------------|
-| Upload mode: Smart | ❌ Not supported* | ✅ Supported |
+| Upload mode: Smart | ❌ Automatically falls back | ✅ Supported |
 | Upload mode: Scheduled | ✅ Supported | ✅ Supported |
-| Stealth config read | ✅ Works | ✅ Works |
+| Stealth SD Card Access | ✅ Unified Capture/Restore | ✅ Unified Capture/Restore |
 | SD bus mode | 1-bit (no DAT3) | 4-bit (DAT3 active) |
 
-*AS10 uses 1-bit SD communication. The ESP32 cannot detect CPAP SD bus activity on DAT3, which Smart mode requires for automatic upload triggering. If `UPLOAD_MODE=smart` is set, the firmware automatically falls back to scheduled mode on AS10 units.
+*AS10 uses 1-bit SD communication. The ESP32 cannot detect CPAP SD bus activity on DAT3, which Smart mode requires for automatic upload triggering. If `UPLOAD_MODE=smart` is set, the firmware automatically detects the hardware limitations and seamlessly falls back to scheduled mode on AS10 units.*
 
 ---
 
@@ -158,6 +164,8 @@ See the [Full Setup Guide](release/README.md#️-sd-card-errors--use-scheduled-m
 
 - **Automatic uploads after every therapy session** — smart mode detects when your CPAP finishes and starts uploading within minutes
 - **Uploads to Windows shares, NAS, or SleepHQ** — or both at the same time
+- **Zero-Touch Configuration Validation** — the visual setup wizard prevents you from saving configurations that could crash your CPAP's SD access
+- **Automatic Device Discovery** — accesses the setup page natively, and automatically falls back to IP-based connection if your router or VPN blocks `cpap.local`
 - **Web dashboard at `http://cpap.local`** — live progress, logs, config editor, OTA updates *(available for first 60 seconds after boot, then use IP address)*
 - **Edit config from the browser** — no SD card pulls after initial setup
 - **Never uploads the same file twice** — tracks what's been sent, even across reboots
@@ -178,15 +186,17 @@ See the [Full Setup Guide](release/README.md#️-sd-card-errors--use-scheduled-m
 
 ---
 
-## Technical Note: Dual Stealth Mode Approaches
+## Technical Note: Unified Stealth SD Card Access
 
-The firmware implements two distinct stealth mode approaches for SD card access:
+The firmware implements a single, unified stealth mode approach for SD card access to ensure the CPAP machine is never disrupted:
 
-1. **Boot Config Reading (AS10 only)**: `StealthConfigReader::readConfigTxt()` reads `config.txt` without any SD card initialization (no CMD0). Uses custom FAT32 parser. Returns card to original state found. Used only on AS10 at boot when PCNT detection indicates AS10 hardware.
+1. **Capture**: Before `SD_MMC.begin()` is called (which sends CMD0), a stealth probe reads the card's RCA, current state, and bus width.
+2. **Mount & Access**: The card is mounted and accessed normally.
+3. **Restore**: After `SD_MMC.end()`, the card is restored to its exact pre-mount state (RCA, bus width, selected/deselected).
 
-2. **Upload State Preservation (AS10 and AS11)**: `captureCardState()`/`restoreToSavedState()` captures card state before `SD_MMC.begin()` (which sends CMD0) and restores it after `SD_MMC.end()`. No FAT32 parsing needed. Used on both AS10 and AS11 during upload cycles to preserve exact card state.
+This ensures the CPAP machine resumes seamlessly without noticing the interruption.
 
-These approaches are orthogonal - config reading avoids SD_MMC entirely, upload preservation works around SD_MMC.
+*(Historical Note: Earlier versions used a custom FAT32 parser specifically for AS10 boot-time config reads. This has been retired in favor of the safer, unified capture/restore approach for all devices).*
 
 ---
 

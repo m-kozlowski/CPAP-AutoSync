@@ -2,6 +2,12 @@
 
 This package contains precompiled firmware for automatically uploading CPAP data from your SD card to a network share or the Cloud (**SleepHQ**).
 
+Built with **extreme ease of use** in mind:
+- 📱 **Setup Wizard**: No need to edit text files. Connect to the device's WiFi and follow a visual, step-by-step setup on your phone.
+- 🧠 **Auto-Detects Hardware**: Automatically detects if your CPAP supports Smart Mode (AirSense 11) or falls back safely (AirSense 10).
+- ✅ **Foolproof Configuration**: The wizard validates your upload schedule to prevent impossible configurations and SD card errors.
+- 🌐 **VPN & Network Friendly**: The setup process seamlessly handles complex networks, automatically falling back to IP-based connection if local hostnames fail.
+
 ## Table of Contents
 - [🚀 Get Started in 3 Steps](#-get-started-in-3-steps-seriously-its-this-easy)
 - [What This Does](#what-this-does)
@@ -51,7 +57,8 @@ Want more control? See [Configuration Reference](#configuration-reference) for a
 - Automatically uploads CPAP data files from SD card to your network storage or the Cloud (SleepHQ)
 - Uploads automatically when therapy ends (Smart Mode) or at a scheduled time
 - Respects CPAP machine access to the SD card (short upload sessions)
-- **Local Network Discovery (mDNS):** Access the device via `http://cpap.local` instead of its IP address *(Note: To save power, `cpap.local` only resolves during the first 60 seconds after the device boots. Accessing it within this window automatically redirects your browser to the device's actual IP address, so your session won't drop when the 60 seconds are up).*
+- **Zero-Touch Configuration Validation**: The visual setup wizard prevents you from saving configurations that could crash your CPAP's SD access
+- **Automatic Device Discovery**: Access the device via `http://cpap.local` or automatically fall back to an IP-based connection if your router or VPN blocks it *(Note: To save power, `cpap.local` only resolves during the first 60 seconds after the device boots. Accessing it within this window automatically redirects your browser to the device's actual IP address, so your session won't drop when the 60 seconds are up).*
 - Tracks which files have been uploaded (no duplicates)
 - Automatically creates directories on remote shares as needed
 - **Supported CPAP Machines:** ResMed Series 9, 10, and 11 (other brands not supported)
@@ -846,15 +853,17 @@ python -m esptool --chip esp32 --port /dev/ttyUSB0 --baud 460800 write_flash 0x0
 
 ---
 
-## Technical Note: Dual Stealth Mode Approaches
+## Technical Note: Unified Stealth SD Card Access
 
-The firmware implements two distinct stealth mode approaches for SD card access:
+The firmware implements a single, unified stealth mode approach for SD card access to ensure the CPAP machine is never disrupted:
 
-1. **Boot Config Reading (AS10 only)**: `StealthConfigReader::readConfigTxt()` reads `config.txt` without any SD card initialization (no CMD0). Uses custom FAT32 parser. Returns card to original state found. Used only on AS10 at boot when PCNT detection indicates AS10 hardware.
+1. **Capture**: Before `SD_MMC.begin()` is called (which sends CMD0), a stealth probe reads the card's RCA, current state, and bus width.
+2. **Mount & Access**: The card is mounted and accessed normally.
+3. **Restore**: After `SD_MMC.end()`, the card is restored to its exact pre-mount state (RCA, bus width, selected/deselected).
 
-2. **Upload State Preservation (AS10 and AS11)**: `captureCardState()`/`restoreToSavedState()` captures card state before `SD_MMC.begin()` (which sends CMD0) and restores it after `SD_MMC.end()`. No FAT32 parsing needed. Used on both AS10 and AS11 during upload cycles to preserve exact card state.
+This ensures the CPAP machine resumes seamlessly without noticing the interruption.
 
-These approaches are orthogonal - config reading avoids SD_MMC entirely, upload preservation works around SD_MMC.
+*(Historical Note: Earlier versions used a custom FAT32 parser specifically for AS10 boot-time config reads. This has been retired in favor of the safer, unified capture/restore approach for all devices).*
 
 ---
 
