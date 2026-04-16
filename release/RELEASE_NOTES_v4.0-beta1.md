@@ -26,7 +26,7 @@ Both **`EXCLUSIVE_ACCESS_MINUTES`** and **`COOLDOWN_MINUTES`** are now configura
 
 ### 🎨 Redesigned Timeline Slider
 The upload schedule UI has been completely overhauled for clarity and usability.
-- **Intuitive Labels**: Replaced technical terms with plain-English descriptions: "When you usually stop therapy for the day", "When you're definitely up for the day", and "When you usually go to bed".
+- **Intuitive Labels**: Replaced technical terms with plain-English descriptions: "What time do you usually finish your therapy session?", "When are you absolutely done with therapy?", and "What is the earliest time you go to sleep?".
 - **Visual Timeline Bar**: A colored gradient bar shows the quiet period (dark blue), recent-data-only window (light blue), and full-archive window (green).
 - **Hour Tick Marks**: Time markers (0, 3, 6, 9, 12, 15, 18, 21) below the bar provide visual reference points.
 - **Color Legend**: A static legend explains what each color means without requiring hover interaction.

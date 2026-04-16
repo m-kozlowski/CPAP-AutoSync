@@ -343,7 +343,7 @@
                     <input type="radio" name="upload-mode" value="smart" onchange="onModeChange()" id="radio-smart">
                     Smart Mode
                 </label>
-                <div class="radio-desc">Uploads automatically whenever your CPAP is idle. Recommended.</div>
+                <div class="radio-desc">Auto-detects when you finish therapy near your usual wake-up time. Uploads recent data within minutes of taking your mask off.</div>
                 <div id="pcnt-unavail-note" style="display:none;margin:4px 0 6px 24px;padding:7px 10px;background:#1e2a1e;border:1px solid #3a5a3a;border-radius:6px;font-size:.82em;color:#88bb88">
                     &#9432; Smart mode is not available on your CPAP machine (AirSense 10 uses a 1-bit SD bus). Scheduled mode is used automatically at runtime.
                 </div>
@@ -379,30 +379,30 @@
                 </div>
                 <div id="smart-slider-row" style="margin-bottom:16px">
                     <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
-                        <span style="color:#c7d5e0;font-size:.88em;font-weight:600">When you usually stop therapy for the day</span>
+                        <span style="color:#c7d5e0;font-size:.88em;font-weight:600">What time do you usually finish your therapy session?</span>
                         <span id="lbl-ssh" style="color:#38bdf8;font-weight:700;font-size:.95em">06:00</span>
                     </div>
-                    <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Earliest time you get up without going back to bed or resuming CPAP</div>
+                    <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Earliest time you take the mask off with no intention of putting it back on. Smart Mode uses this to begin monitoring.</div>
                     <input type="range" id="f-smart-start" min="0" max="23" value="6" style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none">
+                    <div id="smart-slider-tip" style="margin-top:10px;padding:6px;background:#1e293b;border-left:3px solid #38bdf8;border-radius:4px;font-size:.78em;color:#94a3b8;line-height:1.4">
+                        &#128161; <strong>Tip:</strong> After Smart Mode starts uploading recent data, if you want to resume therapy, you must wait for the upload to complete first (usually under 3 minutes).
+                    </div>
                 </div>
                 <div style="margin-bottom:16px">
                     <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
-                        <span style="color:#c7d5e0;font-size:.88em;font-weight:600">When you're definitely up for the day</span>
+                        <span style="color:#c7d5e0;font-size:.88em;font-weight:600">When are you absolutely done with therapy?</span>
                         <span id="lbl-sh" style="color:#38bdf8;font-weight:700;font-size:.95em">09:00</span>
                     </div>
-                    <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Full archive uploads start here — safe even if you occasionally sleep in</div>
+                    <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Full archive uploads start here — resuming therapy after this time may cause SD card errors.</div>
                     <input type="range" id="f-start-hour" min="0" max="23" value="9" style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none">
                 </div>
                 <div style="margin-bottom:6px">
                     <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
-                        <span style="color:#c7d5e0;font-size:.88em;font-weight:600">When you usually go to bed</span>
+                        <span style="color:#c7d5e0;font-size:.88em;font-weight:600">What is the earliest time you go to sleep?</span>
                         <span id="lbl-eh" style="color:#38bdf8;font-weight:700;font-size:.95em">23:00</span>
                     </div>
-                    <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Uploads pause before your next sleep session begins</div>
+                    <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Uploads must pause before your next therapy session begins.</div>
                     <input type="range" id="f-end-hour" min="0" max="23" value="23" style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none">
-                </div>
-                <div id="smart-slider-tip" style="margin-top:8px;font-size:.78em;color:#475569">
-                    &#128161; Keep the first two times close together to minimise the risk of an upload running while you resume therapy.
                 </div>
             </div>
 
