@@ -272,6 +272,7 @@ bool FileUploader::begin() {
             config->getUploadMode(),
             config->getUploadStartHour(),
             config->getUploadEndHour(),
+            config->getSmartStartHour(),
             config->getGmtOffsetHours(),
             config->getTzString(),
             config->getNtpServer())) {
@@ -303,7 +304,7 @@ bool FileUploader::begin() {
 // ensures both backends make progress every session without reboots.
 // ============================================================================
 
-UploadResult FileUploader::runFullSession(SDCardManager* sdManager, int maxMinutes, DataFilter filter) {
+UploadResult FileUploader::runFullSession(SDCardManager* sdManager, int maxMinutes, DataFilter filter, bool reducedRetries) {
     fs::FS &sd = sdManager->getFS();
     fs::FS &stateFs = LittleFS;
     unsigned long sessionStart = millis();
@@ -314,12 +315,12 @@ UploadResult FileUploader::runFullSession(SDCardManager* sdManager, int maxMinut
     bool dual = hasBothBackends();
     if (dual) {
         maxMs *= 2;
-        LOGF("[FileUploader] Session start: DUAL mode, maxMinutes=%d×2=%d filter=%d",
-             maxMinutes, maxMinutes * 2, (int)filter);
+        LOGF("[FileUploader] Session start: DUAL mode, maxMinutes=%d×2=%d filter=%d reducedRetries=%d",
+             maxMinutes, maxMinutes * 2, (int)filter, reducedRetries);
     } else {
         const char* mode = hasCloudBackend() ? "CLOUD" : hasSmbBackend() ? "SMB" : "NONE";
-        LOGF("[FileUploader] Session start: %s mode, maxMinutes=%d filter=%d",
-             mode, maxMinutes, (int)filter);
+        LOGF("[FileUploader] Session start: %s mode, maxMinutes=%d filter=%d reducedRetries=%d",
+             mode, maxMinutes, (int)filter, reducedRetries);
     }
 
     if (!wifiManager || !wifiManager->isConnected()) {
@@ -622,6 +623,11 @@ UploadResult FileUploader::runFullSession(SDCardManager* sdManager, int maxMinut
         currentPhase = UploadBackend::SMB;
         strncpy(g_activeBackendStatus.name, "SMB", sizeof(g_activeBackendStatus.name) - 1);
         LOG("[FileUploader] === Phase 2: SMB Session ===");
+        
+        // Reduce retries outside scheduled hours to minimize SD card hold time
+        if (reducedRetries && smbUploader) {
+            smbUploader->setMaxUploadAttempts(1);
+        }
 
         // Allocate SMB buffer dynamically based on current heap state.
         // With ma=36852 being the safe floor (due to TLS/lwIP pegging), we can
@@ -680,17 +686,29 @@ UploadResult FileUploader::runFullSession(SDCardManager* sdManager, int maxMinut
                     LOG("[FileUploader] SMB: Fresh DATALOG folders");
                     for (const String& folder : freshFolders) {
                         if (isTimerExpired()) { timerExpired = true; break; }
-                        if (!uploadDatalogFolderSmb(sdManager, folder)) sessionHadFailure = true;
+                        if (!uploadDatalogFolderSmb(sdManager, folder)) {
+                            sessionHadFailure = true;
+                            if (reducedRetries) {
+                                LOG_WARN("[FileUploader] SMB folder failed — aborting session (reduced retries)");
+                                break;
+                            }
+                        }
 #ifdef ENABLE_WEBSERVER
                         if (webServer) webServer->handleClient();
 #endif
                     }
                 }
-                if (!timerExpired && needOld && scheduleManager && scheduleManager->canUploadOldData()) {
+                if (!timerExpired && !sessionHadFailure && needOld && scheduleManager && scheduleManager->canUploadOldData()) {
                     LOG("[FileUploader] SMB: Old DATALOG folders");
                     for (const String& folder : oldFolders) {
                         if (isTimerExpired()) { timerExpired = true; break; }
-                        if (!uploadDatalogFolderSmb(sdManager, folder)) sessionHadFailure = true;
+                        if (!uploadDatalogFolderSmb(sdManager, folder)) {
+                            sessionHadFailure = true;
+                            if (reducedRetries) {
+                                LOG_WARN("[FileUploader] SMB folder failed — aborting session (reduced retries)");
+                                break;
+                            }
+                        }
 #ifdef ENABLE_WEBSERVER
                         if (webServer) webServer->handleClient();
 #endif

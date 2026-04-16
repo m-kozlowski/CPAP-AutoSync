@@ -46,6 +46,9 @@ private:
     // Pre-allocated upload buffer (avoids per-file malloc/free fragmentation)
     uint8_t* uploadBuffer;
     size_t uploadBufferSize;
+    
+    // Upload retry override (0 = use default SMB_UPLOAD_MAX_ATTEMPTS)
+    int maxUploadAttempts;
 
     // Cache the last verified parent directory for current SMB session to
     // avoid redundant stat/mkdir checks for every file in the same folder.
@@ -145,6 +148,12 @@ public:
      * Safe to call even if no buffer is allocated.
      */
     void freeBuffer();
+    
+    /**
+     * Override max upload attempts per file (0 = use default).
+     * Used to reduce retries outside scheduled hours.
+     */
+    void setMaxUploadAttempts(int attempts);
     
     /**
      * Scan remote directory and count files (for delta scan functionality)

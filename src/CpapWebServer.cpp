@@ -941,11 +941,12 @@ void CpapWebServer::updateStatusSnapshot() {
         foldersPending = stateManager->getPendingFoldersCount();
         foldersTotal   = foldersDone + stateManager->getIncompleteFoldersCount();
     }
-    long nextUp = -1; bool timeSynced = false; bool inWindow = false;
+    long nextUp = -1; bool timeSynced = false; bool inWindow = false; bool smartQuiet = false;
     if (scheduleManager) {
         nextUp = scheduleManager->getSecondsUntilNextUpload();
         timeSynced = scheduleManager->isTimeSynced();
         inWindow = scheduleManager->isInUploadWindow();
+        smartQuiet = scheduleManager->isSmartQuietPeriod();
     }
     // CPU load computation (moved from handleApiDiagnostics — merged into status)
     static uint32_t prevIdle0 = 0, prevIdle1 = 0;
@@ -1009,7 +1010,7 @@ void CpapWebServer::updateStatusSnapshot() {
         ",\"active_backend\":\"%s\",\"folders_done\":%d,\"folders_total\":%d,\"folders_pending\":%d"
         ",\"next_backend\":\"%s\",\"next_done\":%d,\"next_total\":%d,\"next_empty\":%d,\"next_ts\":%lu"
         ",\"next_upload\":%ld"
-        ",\"in_window\":%s"
+        ",\"in_window\":%s,\"smart_quiet\":%s,\"smart_config_invalid\":%s"
         ",\"live_active\":%s,\"live_folder\":\"%s\",\"live_up\":%d,\"live_total\":%d"
         ",\"cpu0\":%u,\"cpu1\":%u"
         ",\"pcnt_capable\":%s"
@@ -1028,6 +1029,8 @@ void CpapWebServer::updateStatusSnapshot() {
         (unsigned long)g_inactiveBackendStatus.sessionStartTs,
         nextUp,
         inWindow ? "true" : "false",
+        smartQuiet ? "true" : "false",
+        (config && config->isSmartConfigInvalid()) ? "true" : "false",
         liveActive ? "true" : "false", liveFolder, liveUp, liveTotal,
         (unsigned)g_cpuLoad0, (unsigned)g_cpuLoad1,
         g_pcntCapable ? "true" : "false",
@@ -1053,6 +1056,7 @@ void CpapWebServer::initConfigSnapshot() {
         ",\"endpoint_type\":\"%s\",\"endpoint_user\":\"%s\""
         ",\"upload_mode\":\"%s\""
         ",\"upload_start_hour\":%d,\"upload_end_hour\":%d"
+        ",\"smart_start_hour\":%d"
         ",\"inactivity_seconds\":%d"
         ",\"exclusive_access_minutes\":%d,\"cooldown_minutes\":%d"
         ",\"gmt_offset_hours\":%d,\"tz_string\":\"%s\",\"tz_name\":\"%s\",\"ntp_server\":\"%s\""
@@ -1066,6 +1070,7 @@ void CpapWebServer::initConfigSnapshot() {
         config->getEndpointUser().c_str(),
         config->getUploadMode().c_str(),
         config->getUploadStartHour(), config->getUploadEndHour(),
+        config->getSmartStartHour(),
         config->getInactivitySeconds(),
         config->getExclusiveAccessMinutes(), config->getCooldownMinutes(),
         config->getGmtOffsetHours(),

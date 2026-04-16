@@ -9,6 +9,7 @@ extern bool g_heapRecoveryBoot;  // defined in main.cpp (RTC_DATA_ATTR)
 ScheduleManager::ScheduleManager() :
     uploadStartHour(8),
     uploadEndHour(22),
+    smartStartHour(6),
     uploadMode("scheduled"),
     uploadHour(12),
     uploadCompletedToday(false),
@@ -25,10 +26,12 @@ void ScheduleManager::setNtpServer(const String& server) {
 }
 
 bool ScheduleManager::begin(const String& mode, int startHour, int endHour,
-                            int gmtOffset, const String& tz, const String& ntp) {
+                            int smartStart, int gmtOffset,
+                            const String& tz, const String& ntp) {
     this->uploadMode = mode;
     this->uploadStartHour = startHour;
     this->uploadEndHour = endHour;
+    this->smartStartHour = smartStart;
     this->gmtOffsetHours = gmtOffset;
     this->tzString = tz;
     this->ntpServer = ntp;
@@ -37,11 +40,11 @@ bool ScheduleManager::begin(const String& mode, int startHour, int endHour,
     this->uploadHour = startHour;
     
     if (tzString.length() > 0) {
-        LOGF("[Schedule] Mode: %s, Window: %d:00-%d:00, TZ: %s",
-             mode.c_str(), startHour, endHour, tzString.c_str());
+        LOGF("[Schedule] Mode: %s, Window: %d:00-%d:00, SmartStart: %d:00, TZ: %s",
+             mode.c_str(), startHour, endHour, smartStart, tzString.c_str());
     } else {
-        LOGF("[Schedule] Mode: %s, Window: %d:00-%d:00, GMT%+d",
-             mode.c_str(), startHour, endHour, gmtOffset);
+        LOGF("[Schedule] Mode: %s, Window: %d:00-%d:00, SmartStart: %d:00, GMT%+d",
+             mode.c_str(), startHour, endHour, smartStart, gmtOffset);
     }
     LOGF("[Schedule] NTP server: %s", ntpServer.c_str());
     
@@ -58,7 +61,7 @@ bool ScheduleManager::begin(int uploadHour, int gmtOffsetHours) {
         this->uploadHour = 12;
     }
     
-    return begin("scheduled", this->uploadHour, (this->uploadHour + 2) % 24, gmtOffsetHours);
+    return begin("scheduled", this->uploadHour, (this->uploadHour + 2) % 24, this->smartStartHour, gmtOffsetHours);
 }
 
 bool ScheduleManager::syncTime() {
@@ -178,12 +181,35 @@ bool ScheduleManager::isInUploadWindow() {
     }
 }
 
+bool ScheduleManager::isSmartQuietPeriod() {
+    if (!isSmartMode()) return false;
+    if (!isTimeSynced()) return false;
+    
+    // If smartStartHour == uploadEndHour, quiet period is disabled (24/7 active)
+    if (smartStartHour == uploadEndHour) return false;
+    
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo)) return false;
+    
+    int currentHour = timeinfo.tm_hour;
+    
+    // Quiet period: from uploadEndHour to smartStartHour
+    // This typically crosses midnight (e.g., 21:00 → 06:00)
+    if (uploadEndHour <= smartStartHour) {
+        // Same-day range (e.g., end=6, start=9 — unlikely but valid)
+        return currentHour >= uploadEndHour && currentHour < smartStartHour;
+    } else {
+        // Cross-midnight range (e.g., end=21, start=6)
+        return currentHour >= uploadEndHour || currentHour < smartStartHour;
+    }
+}
+
 bool ScheduleManager::canUploadFreshData() {
     if (!isTimeSynced()) return false;
     
     if (isSmartMode()) {
-        // Smart mode: fresh data can upload anytime
-        return true;
+        // Smart mode: fresh data can upload anytime EXCEPT during quiet period
+        return !isSmartQuietPeriod();
     }
     // Scheduled mode: fresh data only within upload window
     return isInUploadWindow();
@@ -337,5 +363,6 @@ String ScheduleManager::getCurrentLocalTime() const {
 
 const String& ScheduleManager::getUploadMode() const { return uploadMode; }
 int ScheduleManager::getUploadStartHour() const { return uploadStartHour; }
+int ScheduleManager::getSmartStartHour() const { return smartStartHour; }
 int ScheduleManager::getUploadEndHour() const { return uploadEndHour; }
 bool ScheduleManager::isSmartMode() const { return uploadMode == "smart"; }

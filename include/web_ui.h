@@ -502,15 +502,22 @@ function renderStatus(d){
   else{var h=Math.floor(ins/3600),m=Math.floor((ins%3600)/60),s=ins%60;set('d-ins',h+'h '+m+'m '+s+'s');}
   var mode=(cfg.upload_mode||'—').toUpperCase();
   var pcntOk=d.pcnt_capable!==false;
+  var sciInvalid=d.smart_config_invalid===true;
   cfg._pcntCapable=pcntOk;
-  if(!pcntOk&&mode==='SCHEDULED'){
+  if(sciInvalid&&mode==='SMART'){
+    seti('d-mode','SCHEDULED <span title="SMART_START_HOUR is inside the upload window \u2014 Smart mode config is invalid. Downgraded to Scheduled. Fix in Config." style="cursor:help;color:#ff6b6b;font-size:.85em">\u24d8</span>');
+  }else if(!pcntOk&&mode==='SCHEDULED'){
     seti('d-mode',mode+' <span title="Smart mode requires 4-bit SD bus activity (not available on this CPAP). Using scheduled mode instead." style="cursor:help;color:#ffaa44;font-size:.85em">\u24d8</span>');
   }else{set('d-mode',mode);}
   set('d-tsync',d.time_synced?'Yes':'No');
-  var sh=cfg.upload_start_hour,eh=cfg.upload_end_hour;
+  var sh=cfg.upload_start_hour,eh=cfg.upload_end_hour,ssh=cfg.smart_start_hour;
   var ws=(sh!=null&&eh!=null)?sh+':00 - '+eh+':00':'—';
   var winAll=(sh!=null&&eh!=null&&sh===eh);
-  set('d-win',winAll?'24/7 (always open)':ws);
+  var winDisplay=ws;
+  if(mode==='SMART'&&ssh!=null&&!winAll){
+    winDisplay=ssh+':00 / '+ws;
+  }
+  set('d-win',winAll?'24/7 (always open)':winDisplay);
   set('d-inact',cfg.inactivity_seconds!=null?cfg.inactivity_seconds+'s':'—');
   set('d-excl',cfg.exclusive_access_minutes!=null?cfg.exclusive_access_minutes+' min':'—');
   set('d-cool',cfg.cooldown_minutes!=null?cfg.cooldown_minutes+' min':'—');
@@ -523,8 +530,20 @@ function renderStatus(d){
   var mBadge='<span class="mode-badge">';
   var mEnd='</span>';
   var fBtn='<span style="color:#ffaa44">Force Upload</span> <span style="color:#aa7733;font-size:.9em">(not recommended)</span>';
-  if(mode==='SMART'){
-    if(winAll){
+  var sq=d.smart_quiet;
+  var ssh=cfg.smart_start_hour;
+  var quietDisabled=(ssh!=null&&eh!=null&&ssh===eh);
+  if(sciInvalid&&mode==='SMART'){
+    help='<span style="color:#ff6b6b;font-weight:600">\u26a0 Scheduled mode \u2014 Smart config invalid</span><br>'
+      +'<b>SMART_START_HOUR ('+ssh+':00)</b> must be at least 1 hour before the upload window ('+ws+').<br>'
+      +'Smart mode is <b>disabled</b> until this is corrected.<br>'
+      +'<a href="/setup" style="color:#38bdf8">Fix in Config \u2192</a>';
+  }else if(mode==='SMART'){
+    if(sq&&!quietDisabled){
+      help=mBadge+'\u25b6 Smart mode \u2014 quiet period (no uploads)'+mEnd+'<br>'
+        +'No upload attempts until <b>'+ssh+':00</b>. Safe for therapy.<br>'
+        +fBtn+' \u2192 forces an upload of recent data now.';
+    }else if(winAll&&quietDisabled){
       help=mBadge+'\u25b6 Smart mode \u2014 24/7 window'+mEnd+'<br>'
         +'Uploads up to <b>'+maxd+' days</b> of data whenever CPAP is idle.<br>'
         +fBtn+' \u2192 scans all eligible folders and uploads any new/changed files.';

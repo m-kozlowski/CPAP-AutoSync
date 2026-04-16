@@ -115,12 +115,12 @@ The Web GUI Config tab provides a live editor for `config.txt` directly on the S
 
 ---
 
-## Note: Dual Stealth Mode Approaches
+## Stealth Mode for Configuration Loading (Unified)
 
-Configuration loading uses stealth mode on AS10 hardware only:
+Configuration loading uses the same stealth-aware `SDCardManager::takeControl()` / `releaseControl()` path on all devices (AS10 and AS11):
 
-1. **Boot Config Reading (AS10 only)**: `StealthConfigReader::readConfigTxt()` reads `config.txt` without any SD card initialization (no CMD0). Uses custom FAT32 parser. Returns card to original state found. Used only on AS10 at boot when PCNT detection indicates AS10 hardware.
+1. `captureCardState()` — stealth probe captures RCA, bus width, and card state (no CMD0)
+2. `SD_MMC.begin()` — standard mount; config.txt is read via the filesystem
+3. `SD_MMC.end()` + `restoreToSavedState()` — card returned to its exact pre-mount state
 
-2. **Upload State Preservation (AS10 and AS11)**: `captureCardState()`/`restoreToSavedState()` captures card state before `SD_MMC.begin()` (which sends CMD0) and restores it after `SD_MMC.end()`. No FAT32 parsing needed. Used on both AS10 and AS11 during upload cycles to preserve exact card state.
-
-These approaches are orthogonal - config reading avoids SD_MMC entirely, upload preservation works around SD_MMC.
+**Historical note**: `StealthConfigReader::readConfigTxt()` was previously used on AS10 at boot to read `config.txt` via a custom FAT32 parser (avoiding `SD_MMC` entirely). It is superseded by the unified approach above and retained as `#if 0` in `StealthConfigReader.cpp` for reference.

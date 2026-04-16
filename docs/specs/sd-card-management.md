@@ -278,12 +278,14 @@ INACTIVITY_SECONDS = 60
 
 ---
 
-## Note: Dual Stealth Mode Approaches
+## Stealth Mode Approach (Unified)
 
-The firmware implements two distinct stealth mode approaches for different use cases:
+The firmware uses a single stealth mode approach for all SD card access — both at boot and during upload cycles — on all device types (AS10 and AS11):
 
-1. **Boot Config Reading (AS10 only)**: `StealthConfigReader::readConfigTxt()` reads `config.txt` without any SD card initialization (no CMD0). Uses custom FAT32 parser. Returns card to original state found. Used only on AS10 at boot when PCNT detection indicates AS10 hardware.
+1. **Capture**: `captureCardState()` probes the card in stealth mode (no CMD0) to read the RCA, card state, and bus width. Called after MUX switches to ESP, before `SD_MMC.begin()`.
+2. **Mount & Access**: `SD_MMC.begin()` runs normally (sends CMD0, full init). Card is read/written via the standard ESP-IDF SDMMC driver.
+3. **Restore**: `restoreToSavedState()` puts the card back exactly as found (RCA, bus width, selected/deselected). Called after `SD_MMC.end()`. Falls back to `restoreCardState()` (hardcoded 1-bit Standby) if capture failed.
 
-2. **Upload State Preservation (AS10 and AS11)**: `captureCardState()`/`restoreToSavedState()` captures card state before `SD_MMC.begin()` (which sends CMD0) and restores it after `SD_MMC.end()`. No FAT32 parsing needed. Used on both AS10 and AS11 during upload cycles to preserve exact card state.
+This is implemented in `SDCardManager::takeControl()` / `releaseControl()` and applies to both config reads at boot and upload sessions.
 
-These approaches are orthogonal and serve different purposes - one avoids SD_MMC entirely (boot), the other works around SD_MMC (uploads).
+**Historical note**: `StealthConfigReader::readConfigTxt()` was previously used for AS10 boot-time config reads, bypassing `SD_MMC` entirely with a custom FAT32 parser. It has been superseded by the unified approach above and is retained in `StealthConfigReader.cpp` as `#if 0` for reference only.

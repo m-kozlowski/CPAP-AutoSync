@@ -27,11 +27,10 @@ struct SavedCardState {
 // Proven on both AirSense 10 and AirSense 11 (dev+27).
 // ============================================================================
 namespace StealthConfigReader {
-    // Reads config.txt from the SD card via stealth mode.
-    // Grabs MUX, does stealth init, reads FAT32, releases MUX.
-    // Returns raw file content as a String, or empty string on failure.
-    // Caller must NOT hold the MUX — this function manages MUX internally.
-    String readConfigTxt();
+    // readConfigTxt() — SUPERSEDED. Replaced by SDCardManager::takeControl() +
+    // captureCardState()/restoreToSavedState() which achieves the same card-state
+    // preservation without a custom FAT32 parser, and works for both AS10 and AS11.
+    // String readConfigTxt();
 
     // Restores the SD card to Standby state after SD_MMC.end().
     // Re-inits SDMMC in stealth mode (no CMD0), verifies card at RCA 0x1388,

@@ -124,7 +124,7 @@ public:
     // TLS connects on-demand in cloud phase — no pre-warm needed (arena protects heap).
     // Safety resetConnection() before SMB phase handles any lingering TLS.
     UploadResult runFullSession(class SDCardManager* sdManager, int maxMinutes,
-                                DataFilter filter);
+                                DataFilter filter, bool reducedRetries = false);
 
     // Getters for internal components (for web interface access)
     UploadStateManager* getStateManager()    { return primaryStateManager(); }
