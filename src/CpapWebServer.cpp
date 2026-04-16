@@ -1010,7 +1010,7 @@ void CpapWebServer::updateStatusSnapshot() {
         ",\"active_backend\":\"%s\",\"folders_done\":%d,\"folders_total\":%d,\"folders_pending\":%d"
         ",\"next_backend\":\"%s\",\"next_done\":%d,\"next_total\":%d,\"next_empty\":%d,\"next_ts\":%lu"
         ",\"next_upload\":%ld"
-        ",\"in_window\":%s,\"smart_quiet\":%s"
+        ",\"in_window\":%s,\"smart_quiet\":%s,\"smart_config_invalid\":%s"
         ",\"live_active\":%s,\"live_folder\":\"%s\",\"live_up\":%d,\"live_total\":%d"
         ",\"cpu0\":%u,\"cpu1\":%u"
         ",\"pcnt_capable\":%s"
@@ -1030,6 +1030,7 @@ void CpapWebServer::updateStatusSnapshot() {
         nextUp,
         inWindow ? "true" : "false",
         smartQuiet ? "true" : "false",
+        (config && config->isSmartConfigInvalid()) ? "true" : "false",
         liveActive ? "true" : "false", liveFolder, liveUp, liveTotal,
         (unsigned)g_cpuLoad0, (unsigned)g_cpuLoad1,
         g_pcntCapable ? "true" : "false",

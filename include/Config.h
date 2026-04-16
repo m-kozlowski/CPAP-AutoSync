@@ -76,6 +76,7 @@ private:
     bool minimizeReboots;           // Skip elective reboots between upload sessions
     bool flushLogsDuringUpload;      // Continue periodic log flushes during uploads (default: false)
     int smartStartHour;              // 0-23, hour when Smart mode begins monitoring (quiet period ends)
+    bool smartConfigInvalid;         // true when SMART_START_HOUR is inside upload window — mode treated as SCHEDULED
     
     // Cached endpoint type flags (computed once during loadFromSD)
     bool _hasSmbEndpoint;
@@ -174,7 +175,8 @@ public:
     bool getMinimizeReboots() const;
     bool getFlushLogsDuringUpload() const;
     int getSmartStartHour() const;
-    bool isSmartMode() const;
+    bool isSmartMode() const;          // returns false when smartConfigInvalid
+    bool isSmartConfigInvalid() const;
     
     // Power management getters
     int getCpuSpeedMhz() const;

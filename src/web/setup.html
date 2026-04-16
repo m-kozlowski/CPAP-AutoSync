@@ -204,6 +204,21 @@
             .hdr svg { height: 108px; }
             .header-bar { gap: 6px; }
         }
+
+        /* ── Schedule Timeline Sliders ── */
+        #f-smart-start::-webkit-slider-thumb,
+        #f-start-hour::-webkit-slider-thumb,
+        #f-end-hour::-webkit-slider-thumb {
+            -webkit-appearance: none; appearance: none;
+            width: 20px; height: 20px; border-radius: 50%;
+            background: #38bdf8; cursor: pointer; border: 2px solid #0f172a;
+        }
+        #f-smart-start::-moz-range-thumb,
+        #f-start-hour::-moz-range-thumb,
+        #f-end-hour::-moz-range-thumb {
+            width: 20px; height: 20px; border-radius: 50%;
+            background: #38bdf8; cursor: pointer; border: 2px solid #0f172a;
+        }
     </style>
 </head>
 <body>
@@ -335,30 +350,37 @@
                 </label>
                 <div class="radio-desc">Uploads only during a daily time window.</div>
             </div>
-            <div id="schedule-fields" class="conditional hidden">
-                <div style="display:flex;gap:10px">
-                    <div class="fg" style="flex:1">
-                        <label for="f-start-hour">Window Start (0-23)</label>
-                        <input type="number" id="f-start-hour" min="0" max="23" value="9">
+
+            <!-- Timeline slider (shared Smart + Scheduled) -->
+            <div id="sched-slider" style="margin-top:14px">
+                <div id="sched-timeline" style="height:10px;border-radius:5px;margin-bottom:18px;background:#1e293b"></div>
+                <div id="smart-slider-row" style="margin-bottom:14px">
+                    <div style="display:flex;justify-content:space-between;margin-bottom:5px;font-size:.85em">
+                        <span style="color:#94a3b8">Earliest wake-up <span style="color:#475569;font-size:.9em">(Smart monitoring starts)</span></span>
+                        <span id="lbl-ssh" style="color:#38bdf8;font-weight:600">06:00</span>
                     </div>
-                    <div class="fg" style="flex:1">
-                        <label for="f-end-hour">Window End (0-23)</label>
-                        <input type="number" id="f-end-hour" min="0" max="23" value="21">
-                    </div>
+                    <input type="range" id="f-smart-start" min="0" max="23" value="6" style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none">
                 </div>
-                <span class="help-text">Set both to the same value for a 24/7 always-open window.</span>
+                <div style="margin-bottom:14px">
+                    <div style="display:flex;justify-content:space-between;margin-bottom:5px;font-size:.85em">
+                        <span style="color:#94a3b8">Latest wake-up <span style="color:#475569;font-size:.9em">(Full uploads start)</span></span>
+                        <span id="lbl-sh" style="color:#38bdf8;font-weight:600">09:00</span>
+                    </div>
+                    <input type="range" id="f-start-hour" min="0" max="23" value="9" style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none">
+                </div>
+                <div style="margin-bottom:6px">
+                    <div style="display:flex;justify-content:space-between;margin-bottom:5px;font-size:.85em">
+                        <span style="color:#94a3b8">Earliest sleep <span style="color:#475569;font-size:.9em">(Uploads stop)</span></span>
+                        <span id="lbl-eh" style="color:#38bdf8;font-weight:600">23:00</span>
+                    </div>
+                    <input type="range" id="f-end-hour" min="0" max="23" value="23" style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none">
+                </div>
             </div>
+
             <div class="fg" style="margin-top:8px">
                 <label for="f-cooldown">Cooldown Between Uploads (minutes)</label>
                 <input type="number" id="f-cooldown" min="1" max="60" value="10" placeholder="10">
                 <span class="help-text">Minutes to wait after an upload completes before starting the next cycle. Default: 10.</span>
-            </div>
-            <div id="smart-fields" class="conditional hidden" style="margin-top:8px">
-                <div class="fg">
-                    <label for="f-smart-start">Smart Start Hour (0-23)</label>
-                    <input type="number" id="f-smart-start" min="0" max="23" value="6">
-                    <span class="help-text">Hour when Smart mode begins checking for CPAP inactivity. Between the upload window end and this hour, no uploads are attempted (quiet period). Set equal to Window End to disable. Default: 6.</span>
-                </div>
             </div>
             <div class="info-note" id="smart-note" style="display:none">
                 &#9432; Smart mode requires 4-bit SD bus activity detection. On AirSense 10 machines (which use 1-bit SD), the firmware automatically switches to Scheduled mode at boot.
@@ -850,17 +872,82 @@ function togglePwd(btn) {
     }
 }
 
+// ══════════════════════════════════════════════════════════════
+// Schedule Timeline Slider
+// ══════════════════════════════════════════════════════════════
+function fmtHour(v) { return (v < 10 ? '0' : '') + v + ':00'; }
+
+function updateTimeline() {
+    var mode = 'smart';
+    var radios = document.querySelectorAll('input[name="upload-mode"]');
+    for (var i = 0; i < radios.length; i++) { if (radios[i].checked) { mode = radios[i].value; break; } }
+
+    var ssh = parseInt(document.getElementById('f-smart-start').value);
+    var sh  = parseInt(document.getElementById('f-start-hour').value);
+    var eh  = parseInt(document.getElementById('f-end-hour').value);
+
+    // Enforce 1-hour minimum gaps (cascade from whichever slider moved)
+    if (mode === 'smart') {
+        if (sh <= ssh) { sh = ssh + 1; document.getElementById('f-start-hour').value = sh; }
+        if (eh <= sh)  { eh = sh + 1;  document.getElementById('f-end-hour').value   = eh; }
+        // Cap values at 23
+        if (ssh > 21) { ssh = 21; document.getElementById('f-smart-start').value = ssh;
+                        sh  = 22; document.getElementById('f-start-hour').value  = sh;
+                        eh  = 23; document.getElementById('f-end-hour').value    = eh; }
+        else if (sh > 22) { sh = 22; document.getElementById('f-start-hour').value = sh;
+                            eh = 23; document.getElementById('f-end-hour').value   = eh; }
+        else if (eh > 23) { eh = 23; document.getElementById('f-end-hour').value = eh; }
+    } else {
+        if (eh <= sh)  { eh = sh + 1;  document.getElementById('f-end-hour').value = eh; }
+        if (eh > 23)   { eh = 23;      document.getElementById('f-end-hour').value = eh;
+                         sh = Math.min(sh, 22); document.getElementById('f-start-hour').value = sh; }
+    }
+
+    // Update labels
+    if (mode === 'smart') document.getElementById('lbl-ssh').textContent = fmtHour(ssh);
+    document.getElementById('lbl-sh').textContent = fmtHour(sh);
+    document.getElementById('lbl-eh').textContent = fmtHour(eh);
+
+    // Update timeline gradient
+    var bar = document.getElementById('sched-timeline');
+    var sshPct = (ssh / 24) * 100;
+    var shPct  = (sh  / 24) * 100;
+    var ehPct  = (eh  / 24) * 100;
+    if (mode === 'smart') {
+        bar.style.background = 'linear-gradient(to right,'
+            + '#1e293b 0%,#1e293b ' + sshPct + '%,'
+            + '#38bdf8 ' + sshPct + '%,#38bdf8 ' + shPct + '%,'
+            + '#10b981 ' + shPct  + '%,#10b981 ' + ehPct  + '%,'
+            + '#1e293b ' + ehPct  + '%,#1e293b 100%)';
+    } else {
+        bar.style.background = 'linear-gradient(to right,'
+            + '#1e293b 0%,#1e293b ' + shPct + '%,'
+            + '#10b981 ' + shPct + '%,#10b981 ' + ehPct + '%,'
+            + '#1e293b ' + ehPct + '%,#1e293b 100%)';
+    }
+
+    updateRawPreview();
+}
+
 function onModeChange() {
     var radios = document.querySelectorAll('input[name="upload-mode"]');
     var mode = 'smart';
     for (var i = 0; i < radios.length; i++) {
         if (radios[i].checked) { mode = radios[i].value; break; }
     }
-    document.getElementById('schedule-fields').classList.toggle('hidden', mode !== 'scheduled');
-    document.getElementById('smart-fields').classList.toggle('hidden', mode !== 'smart');
+    var smartRow = document.getElementById('smart-slider-row');
+    if (smartRow) smartRow.style.display = (mode === 'smart') ? '' : 'none';
     document.getElementById('smart-note').style.display = (mode === 'smart') ? '' : 'none';
-    updateRawPreview();
+    updateTimeline();
 }
+
+// Attach slider listeners once DOM is ready
+document.addEventListener('DOMContentLoaded', function() {
+    ['f-smart-start','f-start-hour','f-end-hour'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.addEventListener('input', updateTimeline);
+    });
+});
 
 function updateConditionals() {
     var cloudOn = document.getElementById('f-cloud-enable').checked;
@@ -929,9 +1016,7 @@ function collectFormValues() {
     vals['UPLOAD_START_HOUR'] = document.getElementById('f-start-hour').value;
     vals['UPLOAD_END_HOUR'] = document.getElementById('f-end-hour').value;
     vals['COOLDOWN_MINUTES'] = document.getElementById('f-cooldown').value;
-    if (mode === 'smart') {
-        vals['SMART_START_HOUR'] = document.getElementById('f-smart-start').value;
-    }
+    vals['SMART_START_HOUR'] = document.getElementById('f-smart-start').value;
 
     // Endpoint type
     var cloudOn = document.getElementById('f-cloud-enable').checked;

@@ -34,6 +34,7 @@ Config::Config() :
     minimizeReboots(true),
     flushLogsDuringUpload(false),  // Default: defer log flushes during uploads
     smartStartHour(6),  // Default: Smart mode quiet period ends at 6am
+    smartConfigInvalid(false),
     
     _hasSmbEndpoint(false),
     _hasCloudEndpoint(false),
@@ -727,7 +728,8 @@ void Config::overrideUploadMode(const String& mode) {
 }
 bool Config::getFlushLogsDuringUpload() const { return flushLogsDuringUpload; }
 int Config::getSmartStartHour() const { return smartStartHour; }
-bool Config::isSmartMode() const { return uploadMode.equalsIgnoreCase("smart"); }
+bool Config::isSmartMode() const { return uploadMode.equalsIgnoreCase("smart") && !smartConfigInvalid; }
+bool Config::isSmartConfigInvalid() const { return smartConfigInvalid; }
 
 void Config::validateAndNormalize() {
     // Validation of numeric ranges
@@ -752,6 +754,22 @@ void Config::validateAndNormalize() {
     else if (cooldownMinutes > 60) { cooldownMinutes = 60; }
     
     if (smartStartHour < 0 || smartStartHour > 23) { smartStartHour = 6; }
+    
+    // Smart mode config validation: SMART_START_HOUR must be strictly less than UPLOAD_START_HOUR
+    // AND at least 1 hour below it. If invalid, the mode is effectively treated as SCHEDULED.
+    smartConfigInvalid = false;
+    if (uploadMode.equalsIgnoreCase("smart")) {
+        // Invalid if SSH >= USH (must be at least 1 hour before window opens)
+        bool sshInsideWindow = (uploadStartHour < uploadEndHour)
+            ? (smartStartHour >= uploadStartHour && smartStartHour < uploadEndHour)
+            : (smartStartHour >= uploadStartHour || smartStartHour < uploadEndHour); // cross-midnight window
+        if (smartStartHour >= uploadStartHour || sshInsideWindow) {
+            smartConfigInvalid = true;
+            LOG_WARN("[Config] SMART_START_HOUR inside or at upload window boundary — downgrading to SCHEDULED");
+            LOGF("[Config]   SMART_START_HOUR=%d, UPLOAD_START_HOUR=%d, UPLOAD_END_HOUR=%d",
+                 smartStartHour, uploadStartHour, uploadEndHour);
+        }
+    }
     
     if (cpuSpeedMhz < 80) { cpuSpeedMhz = 80; }
     else if (cpuSpeedMhz > 240) { cpuSpeedMhz = 240; }
