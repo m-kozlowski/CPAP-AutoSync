@@ -339,13 +339,16 @@
         <div class="card">
             <h2>Upload Schedule</h2>
             <div class="radio-group">
-                <label class="radio-label">
-                    <input type="radio" name="upload-mode" value="smart" onchange="onModeChange()">
+                <label class="radio-label" id="smart-mode-label">
+                    <input type="radio" name="upload-mode" value="smart" onchange="onModeChange()" id="radio-smart">
                     Smart Mode
                 </label>
                 <div class="radio-desc">Uploads automatically whenever your CPAP is idle. Recommended.</div>
+                <div id="pcnt-unavail-note" style="display:none;margin:4px 0 6px 24px;padding:7px 10px;background:#1e2a1e;border:1px solid #3a5a3a;border-radius:6px;font-size:.82em;color:#88bb88">
+                    &#9432; Smart mode is not available on your CPAP machine (AirSense 10 uses a 1-bit SD bus). Scheduled mode is used automatically at runtime.
+                </div>
                 <label class="radio-label">
-                    <input type="radio" name="upload-mode" value="scheduled" onchange="onModeChange()">
+                    <input type="radio" name="upload-mode" value="scheduled" onchange="onModeChange()" id="radio-scheduled">
                     Scheduled Mode
                 </label>
                 <div class="radio-desc">Uploads only during a daily time window.</div>
@@ -377,13 +380,24 @@
                 </div>
             </div>
 
-            <div class="fg" style="margin-top:8px">
-                <label for="f-cooldown">Cooldown Between Uploads (minutes)</label>
-                <input type="number" id="f-cooldown" min="1" max="60" value="10" placeholder="10">
-                <span class="help-text">Minutes to wait after an upload completes before starting the next cycle. Default: 10.</span>
-            </div>
-            <div class="info-note" id="smart-note" style="display:none">
-                &#9432; Smart mode requires 4-bit SD bus activity detection. On AirSense 10 machines (which use 1-bit SD), the firmware automatically switches to Scheduled mode at boot.
+            <!-- Collapsible timing settings -->
+            <div style="margin-top:12px">
+                <button type="button" id="btn-timing-toggle" onclick="toggleTiming()"
+                    style="background:none;border:none;color:#66c0f4;font-size:.85em;cursor:pointer;padding:0;display:flex;align-items:center;gap:5px">
+                    <span id="timing-chevron" style="font-size:.75em">&#9654;</span> Timing Settings
+                </button>
+                <div id="timing-fields" style="display:none;margin-top:10px;padding:10px 12px;background:#111d2e;border:1px solid #2a475e;border-radius:6px">
+                    <div class="fg" style="margin-bottom:10px">
+                        <label for="f-cooldown">Cooldown between uploads <span style="color:#8f98a0;font-weight:400">(minutes, 1–60)</span></label>
+                        <input type="number" id="f-cooldown" min="1" max="60" value="10" placeholder="10" oninput="clampField(this,1,60)">
+                        <span class="help-text">Time the SD card is released between upload cycles. Default: 10.</span>
+                    </div>
+                    <div class="fg">
+                        <label for="f-excl-access">Max SD card hold time <span style="color:#8f98a0;font-weight:400">(minutes, 1–30)</span></label>
+                        <input type="number" id="f-excl-access" min="1" max="30" value="5" placeholder="5" oninput="clampField(this,1,30)">
+                        <span class="help-text">Maximum time the device holds exclusive SD card control per upload session. Default: 5.</span>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -478,6 +492,17 @@
     </div><!-- /app -->
 </div>
 
+<!-- ════════ Validation Error Modal ════════ -->
+<div id="validation-modal" class="modal-overlay">
+    <div class="modal-card">
+        <h2 style="color:#ff6b6b">&#9888; Cannot Save</h2>
+        <p id="validation-msg" style="font-size:.9em;line-height:1.6"></p>
+        <div class="modal-actions">
+            <button class="btn bp" onclick="document.getElementById('validation-modal').style.display='none'">OK, fix it</button>
+        </div>
+    </div>
+</div>
+
 <!-- ════════ Save Confirmation Modal ════════ -->
 <div id="save-modal" class="modal-overlay">
     <div class="modal-card">
@@ -524,7 +549,7 @@
 var KNOWN_KEYS = [
     'WIFI_SSID', 'WIFI_PASSWORD', 'HOSTNAME',
     'TZ_STRING', 'TZ_NAME',
-    'UPLOAD_MODE', 'UPLOAD_START_HOUR', 'UPLOAD_END_HOUR', 'SMART_START_HOUR', 'COOLDOWN_MINUTES',
+    'UPLOAD_MODE', 'UPLOAD_START_HOUR', 'UPLOAD_END_HOUR', 'SMART_START_HOUR', 'COOLDOWN_MINUTES', 'EXCLUSIVE_ACCESS_MINUTES',
     'ENDPOINT_TYPE', 'ENDPOINT', 'ENDPOINT_USER', 'ENDPOINT_PASSWORD',
     'CLOUD_CLIENT_ID', 'CLOUD_CLIENT_SECRET'
 ];
@@ -553,6 +578,7 @@ async function init() {
             if (stRes.ok) {
                 var stData = await stRes.json();
                 isApMode = !!stData.ap_setup;
+                applyPcntCapable(stData.pcnt_capable !== false);
             }
         } catch (e) { /* status fetch failed — keep default isApMode=true */ }
 
@@ -635,6 +661,7 @@ function populateFormFromConfig() {
     document.getElementById('f-start-hour').value = getValue('UPLOAD_START_HOUR') || '9';
     document.getElementById('f-end-hour').value = getValue('UPLOAD_END_HOUR') || '21';
     document.getElementById('f-cooldown').value = getValue('COOLDOWN_MINUTES') || '10';
+    document.getElementById('f-excl-access').value = getValue('EXCLUSIVE_ACCESS_MINUTES') || '5';
     document.getElementById('f-smart-start').value = getValue('SMART_START_HOUR') || '6';
 
     // ENDPOINT_TYPE → cloud/SMB checkboxes
@@ -873,6 +900,51 @@ function togglePwd(btn) {
 }
 
 // ══════════════════════════════════════════════════════════════
+// PCNT capability (Smart Mode availability)
+// ══════════════════════════════════════════════════════════════
+function applyPcntCapable(capable) {
+    var radio = document.getElementById('radio-smart');
+    var label = document.getElementById('smart-mode-label');
+    var note  = document.getElementById('pcnt-unavail-note');
+    if (!capable) {
+        radio.disabled = true;
+        label.style.opacity = '0.4';
+        label.style.cursor = 'not-allowed';
+        note.style.display = '';
+        // Force Scheduled if Smart was selected
+        if (radio.checked) {
+            document.getElementById('radio-scheduled').checked = true;
+            onModeChange();
+        }
+    } else {
+        radio.disabled = false;
+        label.style.opacity = '';
+        label.style.cursor = '';
+        note.style.display = 'none';
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+// Timing Settings toggle
+// ══════════════════════════════════════════════════════════════
+function toggleTiming() {
+    var fields = document.getElementById('timing-fields');
+    var chevron = document.getElementById('timing-chevron');
+    var open = fields.style.display !== 'none';
+    fields.style.display = open ? 'none' : '';
+    chevron.innerHTML = open ? '&#9654;' : '&#9660;';
+}
+
+// ══════════════════════════════════════════════════════════════
+// Field clamping helpers
+// ══════════════════════════════════════════════════════════════
+function clampVal(v, min, max) { return Math.min(Math.max(v, min), max); }
+function clampField(el, min, max) {
+    var v = parseInt(el.value);
+    if (!isNaN(v)) { el.value = clampVal(v, min, max); updateRawPreview(); }
+}
+
+// ══════════════════════════════════════════════════════════════
 // Schedule Timeline Slider
 // ══════════════════════════════════════════════════════════════
 function fmtHour(v) { return (v < 10 ? '0' : '') + v + ':00'; }
@@ -1015,7 +1087,8 @@ function collectFormValues() {
 
     vals['UPLOAD_START_HOUR'] = document.getElementById('f-start-hour').value;
     vals['UPLOAD_END_HOUR'] = document.getElementById('f-end-hour').value;
-    vals['COOLDOWN_MINUTES'] = document.getElementById('f-cooldown').value;
+    vals['COOLDOWN_MINUTES'] = clampVal(parseInt(document.getElementById('f-cooldown').value)||10, 1, 60);
+    vals['EXCLUSIVE_ACCESS_MINUTES'] = clampVal(parseInt(document.getElementById('f-excl-access').value)||5, 1, 30);
     vals['SMART_START_HOUR'] = document.getElementById('f-smart-start').value;
 
     // Endpoint type
@@ -1114,7 +1187,55 @@ function updateRawPreview() {
 // Save Config
 // ══════════════════════════════════════════════════════════════
 
+function validateForm() {
+    var cloudOn = document.getElementById('f-cloud-enable').checked;
+    var smbOn   = document.getElementById('f-smb-enable').checked;
+    if (!cloudOn && !smbOn) {
+        document.getElementById('validation-msg').innerHTML =
+            'At least one upload destination must be enabled.<br><br>'
+            + 'Please enable <b>SleepHQ Cloud</b>, <b>Network Share (SMB)</b>, or both.';
+        document.getElementById('validation-modal').style.display = 'flex';
+        return false;
+    }
+    if (cloudOn) {
+        var cid = document.getElementById('f-cloud-id').value.trim();
+        if (!cid) {
+            document.getElementById('validation-msg').innerHTML =
+                'SleepHQ is enabled but the <b>Client ID</b> field is empty.<br><br>'
+                + 'Enter your SleepHQ API Client ID or disable SleepHQ.';
+            document.getElementById('validation-modal').style.display = 'flex';
+            return false;
+        }
+    }
+    if (smbOn) {
+        var host = document.getElementById('f-smb-host').value.trim();
+        if (!host) {
+            document.getElementById('validation-msg').innerHTML =
+                'SMB is enabled but the <b>Server</b> field is empty.<br><br>'
+                + 'Enter the hostname or IP address of your NAS/PC or disable SMB.';
+            document.getElementById('validation-modal').style.display = 'flex';
+            return false;
+        }
+    }
+    var cd = parseInt(document.getElementById('f-cooldown').value);
+    if (isNaN(cd) || cd < 1 || cd > 60) {
+        document.getElementById('validation-msg').innerHTML =
+            '<b>Cooldown</b> must be between 1 and 60 minutes.';
+        document.getElementById('validation-modal').style.display = 'flex';
+        return false;
+    }
+    var ea = parseInt(document.getElementById('f-excl-access').value);
+    if (isNaN(ea) || ea < 1 || ea > 30) {
+        document.getElementById('validation-msg').innerHTML =
+            '<b>Max SD card hold time</b> must be between 1 and 30 minutes.';
+        document.getElementById('validation-modal').style.display = 'flex';
+        return false;
+    }
+    return true;
+}
+
 function confirmSave() {
+    if (!validateForm()) return;
     var hostname = getReconnectHostname();
     var inst = document.getElementById('save-instruction');
     var msg = '';
