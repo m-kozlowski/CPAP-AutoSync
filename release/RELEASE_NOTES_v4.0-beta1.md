@@ -38,6 +38,13 @@ The setup wizard now validates inputs before saving to prevent invalid configura
 - **Numeric Range Validation**: `COOLDOWN_MINUTES` and `EXCLUSIVE_ACCESS_MINUTES` are clamped to their valid ranges (1–60 and 1–30 respectively) before saving.
 - **User-Friendly Feedback**: Validation errors appear in a styled modal matching the rest of the UI.
 
+### 🌐 VPN-Friendly Reconnection
+The "Saving & Rebooting" modal now includes intelligent fallback logic for users accessing the device via VPN or networks without mDNS.
+- **Two-Phase Polling**: First attempts hostname-based reconnection (`cpap.local`) for 30 seconds, then automatically switches to IP-based polling for the remaining 90 seconds.
+- **Automatic IP Detection**: The device's IP is automatically extracted from the browser's current URL — no manual input required.
+- **AP Mode Unchanged**: In Access Point (SoftAP) mode, the wizard continues to use hostname-based polling exclusively.
+- **Transparent Logging**: The debug console shows when and why the reconnection strategy switches, making troubleshooting easier.
+
 ---
 
 ## Partition Table Changes

@@ -553,11 +553,6 @@
         </div>
         <div class="reconnect-progress"><div class="reconnect-progress-bar" id="rc-bar"></div></div>
         <div class="reconnect-attempt" id="rc-attempt"></div>
-        <div class="reconnect-fallback hidden" id="rc-fallback">
-            <p style="font-size:.84em;color:#8f98a0;margin-bottom:8px">Could not auto-reconnect. Enter the device IP manually if known:</p>
-            <input type="text" id="rc-ip-input" placeholder="e.g. 192.168.1.42">
-            <button class="btn bp" style="margin-top:8px" onclick="tryReconnectManual()">Connect</button>
-        </div>
         <div id="reconnect-error" class="hidden" style="margin-top:15px; border-top:1px solid #2a475e; padding-top:15px">
             <p style="font-size:.84em;color:#ff6b6b;margin-bottom:8px">&#9888; Could not reconnect automatically.</p>
             <div id="rc-error-msg" style="font-size:.82em;color:#8f98a0;line-height:1.5"></div>
@@ -1343,15 +1338,22 @@ var rcTimer = null;
 var rcStartTime = 0;
 var rcAttemptCount = 0;
 var rcHostname = 'cpap';     // Resolved hostname for current reconnection attempt
+var rcIpAddress = '';        // Extracted IP address for fallback polling
+var rcUsingIpFallback = false; // Track if we've switched to IP-based polling
 var RC_MAX_ATTEMPTS = 40;    // 40 attempts × 3s = 120s (2 minutes)
 var RC_POLL_INTERVAL = 3000; // 3 seconds
-var RC_FALLBACK_AFTER = 10;  // Show IP fallback after 10 attempts (30s)
+var RC_FALLBACK_AFTER = 10;  // Switch to IP-based polling after 10 attempts (30s)
 
 function startReconnectionAssistant() {
     document.getElementById('reconnect-modal').style.display = 'flex';
     rcStartTime = Date.now();
     rcAttemptCount = 0;
     rcHostname = getReconnectHostname();
+    rcUsingIpFallback = false;
+    
+    // Extract IP address from current origin for automatic fallback
+    var originMatch = window.location.origin.match(/https?:\/\/([^/:]+)/);
+    rcIpAddress = originMatch ? originMatch[1] : '';
 
     // Phase 1: saved
     setPhase('rc-phase1', 'done');
@@ -1362,6 +1364,9 @@ function startReconnectionAssistant() {
     document.getElementById('rc-debug').innerHTML = '';
     rcLog('Assistant started inside ' + (isApMode ? 'AP' : 'Regular') + ' mode');
     rcLog('Current origin: ' + window.location.origin);
+    if (rcIpAddress) {
+        rcLog('IP fallback available: ' + rcIpAddress);
+    }
 
     // Trigger soft reboot after a short delay
     setTimeout(function() {
@@ -1384,8 +1389,20 @@ function startReconnectionAssistant() {
 
 function pollReconnect() {
     rcAttemptCount++;
+    
+    // Switch to IP-based polling after RC_FALLBACK_AFTER attempts (only in regular WiFi mode, not AP mode)
+    if (!isApMode && !rcUsingIpFallback && rcAttemptCount >= RC_FALLBACK_AFTER && rcIpAddress) {
+        rcUsingIpFallback = true;
+        rcLog('<span class="rc-debug-warn">Switching to IP-based polling:</span> ' + rcIpAddress);
+    }
+    
     var hostname = rcHostname;
-    var url = 'http://' + hostname + '.local/api/status';
+    var url;
+    if (rcUsingIpFallback && rcIpAddress) {
+        url = 'http://' + rcIpAddress + '/api/status';
+    } else {
+        url = 'http://' + hostname + '.local/api/status';
+    }
 
     document.getElementById('rc-attempt').textContent = 'Attempting to reconnect... (' + rcAttemptCount + '/' + RC_MAX_ATTEMPTS + ')';
     document.getElementById('rc-bar').style.width = (30 + (rcAttemptCount / RC_MAX_ATTEMPTS) * 60) + '%';
@@ -1405,8 +1422,15 @@ function pollReconnect() {
         document.getElementById('rc-attempt').textContent = 'Connected! Redirecting...';
         
         setTimeout(function() {
-            rcLog('Redirecting to ' + hostname + '.local...');
-            window.location.href = 'http://' + hostname + '.local/';
+            var redirectUrl;
+            if (rcUsingIpFallback && rcIpAddress) {
+                redirectUrl = 'http://' + rcIpAddress + '/';
+                rcLog('Redirecting to ' + redirectUrl);
+            } else {
+                redirectUrl = 'http://' + hostname + '.local/';
+                rcLog('Redirecting to ' + redirectUrl);
+            }
+            window.location.href = redirectUrl;
         }, 1500);
     }).catch(function(err) {
         clearTimeout(timeout);
@@ -1437,13 +1461,14 @@ function scheduleNextPoll() {
         document.getElementById('rc-attempt').textContent = '';
         
         var hostname = rcHostname;
-        document.getElementById('rc-error-msg').innerHTML = 
-            'The device could not be reached at <strong>' + hostname + '.local</strong> after 2 minutes.<br><br>' +
+        var errorMsg = 'The device could not be reached at <strong>' + hostname + '.local</strong>';
+        if (rcUsingIpFallback && rcIpAddress) {
+            errorMsg += ' or <strong>' + rcIpAddress + '</strong>';
+        }
+        errorMsg += ' after 2 minutes.<br><br>' +
             'Please <strong>eject the SD card and reinsert it</strong> back into the device to restore the connection (or re-enter setup mode).';
+        document.getElementById('rc-error-msg').innerHTML = errorMsg;
         return;
-    }
-    if (rcAttemptCount >= RC_FALLBACK_AFTER) {
-        document.getElementById('rc-fallback').classList.remove('hidden');
     }
     rcTimer = setTimeout(pollReconnect, RC_POLL_INTERVAL);
 }
