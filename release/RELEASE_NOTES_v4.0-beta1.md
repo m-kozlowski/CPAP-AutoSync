@@ -38,6 +38,13 @@ The setup wizard now validates inputs before saving to prevent invalid configura
 - **Numeric Range Validation**: `COOLDOWN_MINUTES` and `EXCLUSIVE_ACCESS_MINUTES` are clamped to their valid ranges (1–60 and 1–30 respectively) before saving.
 - **User-Friendly Feedback**: Validation errors appear in a styled modal matching the rest of the UI.
 
+### 🔧 Unified Stealth SD Card Access (AS10 + AS11)
+The firmware no longer uses two separate approaches for safe SD card access. All device types now go through a single stealth-aware path at both boot and during upload cycles.
+- **Capture Before Mount**: Before `SD_MMC.begin()` sends CMD0, the card's RCA, state, and bus width are captured via a stealth probe (`captureCardState()`).
+- **Restore After Unmount**: After `SD_MMC.end()`, the card is restored to its exact pre-mount state via `restoreToSavedState()`, so the CPAP machine resumes seamlessly.
+- **AS10 Boot Simplified**: Previously, AS10 at boot used a custom FAT32 parser to read `config.txt` without touching the SDMMC driver. This has been replaced by the same capture/mount/restore path used during uploads — less code, same card safety guarantee.
+- **No Behavioral Change for End Users**: The CPAP machine continues to see the SD card in exactly the state it left it.
+
 ### 🌐 VPN-Friendly Reconnection
 The "Saving & Rebooting" modal now includes intelligent fallback logic for users accessing the device via VPN or networks without mDNS.
 - **Two-Phase Polling**: First attempts hostname-based reconnection (`cpap.local`) for 30 seconds, then automatically switches to IP-based polling for the remaining 90 seconds.
@@ -132,4 +139,6 @@ Due to the partition table change, you **cannot** upgrade from v3.6i (or any ear
 - **UI/UX**: Redesigned the setup wizard timeline with intuitive labels, hour tick marks, and a color legend.
 - **Safety**: Added form validation to ensure at least one upload endpoint is configured before saving.
 - **Hardware**: Implemented auto-detection of PCNT capability with graceful fallback for older hardware.
+- **SD Access**: Unified stealth SD access path for both AS10 and AS11; retired custom FAT32 boot reader in favour of `captureCardState()`/`restoreToSavedState()` for all mounts.
+- **Reconnection**: VPN-friendly setup wizard reconnection — automatically falls back to IP-based polling after 30 s of failed hostname attempts (regular WiFi mode only).
 
