@@ -356,9 +356,26 @@
 
             <!-- Timeline slider (shared Smart + Scheduled) -->
             <div id="sched-slider" style="margin-top:14px">
-                <!-- Bar: inset 10px each side to align with slider thumb centres -->
-                <div style="background:#0a1520;border:1px solid #2a475e;border-radius:8px;padding:7px 10px;margin-bottom:16px">
-                    <div id="sched-timeline" style="height:10px;border-radius:5px;background:#1e293b"></div>
+                <!-- Bar + ticks (inset 10px each side to align with slider thumb centres) -->
+                <div style="background:#0a1520;border:1px solid #2a475e;border-radius:8px;padding:7px 10px 5px;margin-bottom:5px">
+                    <div id="sched-timeline" style="height:10px;border-radius:5px;background:#1e293b;margin-bottom:5px"></div>
+                    <!-- Hour ticks: positions are H/23*100% (matching gradient formula) -->
+                    <div style="position:relative;height:13px;user-select:none">
+                        <span style="position:absolute;left:0%;font-size:.65em;color:#475569">0</span>
+                        <span style="position:absolute;left:13.04%;font-size:.65em;color:#475569;transform:translateX(-50%)">3</span>
+                        <span style="position:absolute;left:26.09%;font-size:.65em;color:#475569;transform:translateX(-50%)">6</span>
+                        <span style="position:absolute;left:39.13%;font-size:.65em;color:#475569;transform:translateX(-50%)">9</span>
+                        <span style="position:absolute;left:52.17%;font-size:.65em;color:#475569;transform:translateX(-50%)">12</span>
+                        <span style="position:absolute;left:65.22%;font-size:.65em;color:#475569;transform:translateX(-50%)">15</span>
+                        <span style="position:absolute;left:78.26%;font-size:.65em;color:#475569;transform:translateX(-50%)">18</span>
+                        <span style="position:absolute;left:91.30%;font-size:.65em;color:#475569;transform:translateX(-50%)">21</span>
+                    </div>
+                </div>
+                <!-- Colour legend -->
+                <div id="timeline-legend" style="display:flex;gap:14px;flex-wrap:wrap;font-size:.74em;color:#64748b;margin-bottom:14px;padding:0 2px">
+                    <span><span style="display:inline-block;width:10px;height:10px;background:#162030;border:1px solid #2a475e;border-radius:2px;vertical-align:middle;margin-right:3px"></span>Quiet — no uploads</span>
+                    <span id="leg-blue"><span style="display:inline-block;width:10px;height:10px;background:#38bdf8;border-radius:2px;vertical-align:middle;margin-right:3px"></span>Recent data only (Smart)</span>
+                    <span><span style="display:inline-block;width:10px;height:10px;background:#10b981;border-radius:2px;vertical-align:middle;margin-right:3px"></span>Full archive upload</span>
                 </div>
                 <div id="smart-slider-row" style="margin-bottom:16px">
                     <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
@@ -1008,9 +1025,11 @@ function updateTimeline() {
             + '#10b981 ' + shPct + '%,#10b981 ' + ehPct + '%,'
             + '#1e293b ' + ehPct + '%,#1e293b 100%)';
     }
-    // Tip only relevant in Smart mode (3-slider context)
+    // Tip and blue legend entry only relevant in Smart mode
     var tip = document.getElementById('smart-slider-tip');
     if (tip) tip.style.display = (mode === 'smart') ? '' : 'none';
+    var legBlue = document.getElementById('leg-blue');
+    if (legBlue) legBlue.style.display = (mode === 'smart') ? '' : 'none';
 
     updateRawPreview();
 }
