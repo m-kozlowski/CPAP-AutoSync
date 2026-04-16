@@ -102,7 +102,7 @@ We are currently gathering statistics on which models work reliably. **If your m
 👉 **[Download Latest Release](../../releases)** — the preferred first-time flashing method is the browser-based web flasher in Chrome, Edge, or Opera. The release package also includes fallback scripts for Windows, Mac, and Linux if needed.
 
 Open the release ZIP and follow the **Firmware Upload** steps in the included guide:
-**[Full Setup Guide](release/README.md)**
+**[Full Setup Guide](docs/user/getting-started.md)**
 
 ### 3. Setup via Web Wizard (Recommended)
 **No SD card reader? No problem.** You can now configure everything from your phone or computer without editing any files.
@@ -115,7 +115,7 @@ Open the release ZIP and follow the **Firmware Upload** steps in the included gu
 The device will save your settings, restart, and automatically connect to your home network.
 
 > [!TIP]
-> **Manual `config.txt` still works:** If you prefer the old way, you can still create a `config.txt` file manually. See the [Advanced Configuration Guide](docs/CONFIG_REFERENCE.md) for details.
+> **Manual `config.txt` still works:** If you prefer the old way, you can still create a `config.txt` file manually. See the [Advanced Configuration Guide](docs/user/configuration-ui.md) for details.
 
 ### 4. Open `http://cpap.local`
 
@@ -143,7 +143,7 @@ UPLOAD_START_HOUR = 9
 UPLOAD_END_HOUR = 21
 ```
 
-See the [Full Setup Guide](release/README.md#️-sd-card-errors--use-scheduled-mode) for details.
+See the [Full Setup Guide](docs/user/getting-started.md#️-sd-card-errors--use-scheduled-mode) for details.
 
 ---
 
@@ -202,9 +202,9 @@ This ensures the CPAP machine resumes seamlessly without noticing the interrupti
 
 ## Documentation
 
-📖 **[Full Setup Guide](release/README.md)** — firmware flashing, all config options, troubleshooting, web interface reference
+📖 **[Full Setup Guide](docs/user/getting-started.md)** — firmware flashing, all config options, troubleshooting, web interface reference
 
-🔧 **[Developer Guide](docs/DEVELOPMENT.md)** — build from source, architecture, contributing
+🔧 **[Developer Guide](docs/dev/environment-setup.md)** — build from source, architecture, contributing
 
 ---
 
