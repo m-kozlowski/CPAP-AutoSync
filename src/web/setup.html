@@ -356,27 +356,36 @@
 
             <!-- Timeline slider (shared Smart + Scheduled) -->
             <div id="sched-slider" style="margin-top:14px">
-                <div id="sched-timeline" style="height:10px;border-radius:5px;margin-bottom:18px;background:#1e293b"></div>
-                <div id="smart-slider-row" style="margin-bottom:14px">
-                    <div style="display:flex;justify-content:space-between;margin-bottom:5px;font-size:.85em">
-                        <span style="color:#94a3b8">Earliest wake-up <span style="color:#475569;font-size:.9em">(Smart monitoring starts)</span></span>
-                        <span id="lbl-ssh" style="color:#38bdf8;font-weight:600">06:00</span>
+                <!-- Bar: inset 10px each side to align with slider thumb centres -->
+                <div style="background:#0a1520;border:1px solid #2a475e;border-radius:8px;padding:7px 10px;margin-bottom:16px">
+                    <div id="sched-timeline" style="height:10px;border-radius:5px;background:#1e293b"></div>
+                </div>
+                <div id="smart-slider-row" style="margin-bottom:16px">
+                    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
+                        <span style="color:#c7d5e0;font-size:.88em;font-weight:600">When you usually stop therapy for the day</span>
+                        <span id="lbl-ssh" style="color:#38bdf8;font-weight:700;font-size:.95em">06:00</span>
                     </div>
+                    <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Earliest time you get up without going back to bed or resuming CPAP</div>
                     <input type="range" id="f-smart-start" min="0" max="23" value="6" style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none">
                 </div>
-                <div style="margin-bottom:14px">
-                    <div style="display:flex;justify-content:space-between;margin-bottom:5px;font-size:.85em">
-                        <span style="color:#94a3b8">Latest wake-up <span style="color:#475569;font-size:.9em">(Full uploads start)</span></span>
-                        <span id="lbl-sh" style="color:#38bdf8;font-weight:600">09:00</span>
+                <div style="margin-bottom:16px">
+                    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
+                        <span style="color:#c7d5e0;font-size:.88em;font-weight:600">When you're definitely up for the day</span>
+                        <span id="lbl-sh" style="color:#38bdf8;font-weight:700;font-size:.95em">09:00</span>
                     </div>
+                    <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Full archive uploads start here — safe even if you occasionally sleep in</div>
                     <input type="range" id="f-start-hour" min="0" max="23" value="9" style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none">
                 </div>
                 <div style="margin-bottom:6px">
-                    <div style="display:flex;justify-content:space-between;margin-bottom:5px;font-size:.85em">
-                        <span style="color:#94a3b8">Earliest sleep <span style="color:#475569;font-size:.9em">(Uploads stop)</span></span>
-                        <span id="lbl-eh" style="color:#38bdf8;font-weight:600">23:00</span>
+                    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
+                        <span style="color:#c7d5e0;font-size:.88em;font-weight:600">When you usually go to bed</span>
+                        <span id="lbl-eh" style="color:#38bdf8;font-weight:700;font-size:.95em">23:00</span>
                     </div>
+                    <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Uploads pause before your next sleep session begins</div>
                     <input type="range" id="f-end-hour" min="0" max="23" value="23" style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none">
+                </div>
+                <div id="smart-slider-tip" style="margin-top:8px;font-size:.78em;color:#475569">
+                    &#128161; Keep the first two times close together to minimise the risk of an upload running while you resume therapy.
                 </div>
             </div>
 
@@ -981,10 +990,12 @@ function updateTimeline() {
     document.getElementById('lbl-eh').textContent = fmtHour(eh);
 
     // Update timeline gradient
+    // Divide by 23 (slider max) so value=23 fills to 100% of the bar width,
+    // which is inset 10px each side to align with the native slider thumb centres.
     var bar = document.getElementById('sched-timeline');
-    var sshPct = (ssh / 24) * 100;
-    var shPct  = (sh  / 24) * 100;
-    var ehPct  = (eh  / 24) * 100;
+    var sshPct = (ssh / 23) * 100;
+    var shPct  = (sh  / 23) * 100;
+    var ehPct  = (eh  / 23) * 100;
     if (mode === 'smart') {
         bar.style.background = 'linear-gradient(to right,'
             + '#1e293b 0%,#1e293b ' + sshPct + '%,'
@@ -997,6 +1008,9 @@ function updateTimeline() {
             + '#10b981 ' + shPct + '%,#10b981 ' + ehPct + '%,'
             + '#1e293b ' + ehPct + '%,#1e293b 100%)';
     }
+    // Tip only relevant in Smart mode (3-slider context)
+    var tip = document.getElementById('smart-slider-tip');
+    if (tip) tip.style.display = (mode === 'smart') ? '' : 'none';
 
     updateRawPreview();
 }
