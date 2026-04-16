@@ -37,8 +37,11 @@ static const char* SCR_SD_STATE_NAMES[] = {
 #define SCR_SD_STATE_NAME(s) ((s) < 9 ? SCR_SD_STATE_NAMES[s] : "Unknown")
 
 // Maximum config.txt size we'll read (4 sectors = 2KB, more than enough)
+// (Only used by readConfigTxt — retained for reference)
+#if 0
 static constexpr int MAX_CONFIG_SECTORS = 4;
 static constexpr int MAX_CONFIG_BYTES = MAX_CONFIG_SECTORS * 512;
+#endif
 
 // ============================================================================
 // Low-level bare-metal SDMMC helpers (static, file-scoped)
@@ -234,8 +237,9 @@ static void scrDeinitHardware() {
 
 // ============================================================================
 // Cleanup: tri-state pins + release MUX
+// (Only used by readConfigTxt — retained for reference)
 // ============================================================================
-
+#if 0
 static void scrCleanupAndReleaseMux() {
     const int sdPins[] = { SD_CMD_PIN, SD_CLK_PIN, SD_D0_PIN,
                            SD_D1_PIN, SD_D2_PIN, SD_D3_PIN };
@@ -259,11 +263,18 @@ static void scrCleanupAndReleaseMux() {
 
 static uint32_t readLE16(const uint8_t* p) { return p[0] | (p[1] << 8); }
 static uint32_t readLE32(const uint8_t* p) { return p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24); }
+#endif
 
 // ============================================================================
-// readConfigTxt — the main entry point
+// readConfigTxt — SUPERSEDED (retained for reference only)
+//
+// Previously used at boot on AS10 devices to read config.txt without sending
+// CMD0. Replaced by SDCardManager::takeControl() which calls captureCardState()
+// before SD_MMC.begin() and restoreToSavedState() after SD_MMC.end(), achieving
+// the same card-state preservation without a custom FAT32 parser.
+// See: main.cpp — unified config read path.
 // ============================================================================
-
+#if 0
 String StealthConfigReader::readConfigTxt() {
     LOG_INFO("[Stealth] === Stealth config.txt read ===");
 
@@ -545,6 +556,7 @@ dir_done:
     LOG_INFO("[Stealth] === Stealth config.txt read complete ===");
     return result;
 }
+#endif // readConfigTxt — superseded
 
 // ============================================================================
 // restoreCardState — restore card to Standby after SD_MMC.end()

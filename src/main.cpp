@@ -23,7 +23,6 @@
 #include "pins_config.h"
 #include "version.h"
 #include "EarlyPCNT.h"
-#include "StealthConfigReader.h"
 
 #include "TrafficMonitor.h"
 #include "UploadFSM.h"
@@ -631,42 +630,27 @@ void setup() {
 
         LOG("Boot delay complete.");
 
-        // ── Config read: conditional on PCNT detection ──
-        // AS11 (pcntCapable): regular SD init — AS11 gracefully re-inits the card
-        //   when MUX returns. Avoids the unclean card state caused by stealth mode.
-        // AS10 (!pcntCapable): stealth config read — preserves card state, prevents
-        //   the AS10 reboot loop caused by regular SD init.
+        // ── Config read: unified path for AS10 and AS11 ──
+        // SDCardManager::takeControl() calls StealthConfigReader::captureCardState()
+        // before SD_MMC.begin() on all devices, capturing the card's RCA and bus
+        // width without sending CMD0. After SD_MMC.end(), releaseControl() calls
+        // restoreToSavedState() to put the card back exactly as it was found.
+        // This replaces the old AS10-only custom FAT32 stealth reader and is safe
+        // for both AS10 and AS11 at boot.
         bool configLoaded = false;
 
-        if (g_pcntCapable) {
-            // AS11: regular SD init is safe
-            LOG_INFO("[Config] AS11 detected — using regular SD init for config read");
-            if (sdManager.takeControl()) {
-                configLoaded = config.loadFromSD(sdManager.getFS());
-                if (configLoaded) {
-                    LOG_INFO("[Config] Config loaded via regular SD init");
-                    Logger::getInstance().checkPreviousBootError(sdManager.getFS());
-                } else {
-                    LOG_WARN("[Config] Regular SD init succeeded but config parse failed");
-                }
-                sdManager.releaseControl();
+        LOG_INFOF("[Config] Loading config via SD init (%s)", g_pcntCapable ? "AS11" : "AS10");
+        if (sdManager.takeControl()) {
+            configLoaded = config.loadFromSD(sdManager.getFS());
+            if (configLoaded) {
+                LOG_INFO("[Config] Config loaded successfully");
+                Logger::getInstance().checkPreviousBootError(sdManager.getFS());
             } else {
-                LOG_WARN("[Config] SD takeControl failed — will try stealth fallback");
+                LOG_WARN("[Config] SD init succeeded but config parse failed");
             }
+            sdManager.releaseControl();
         } else {
-            // AS10: stealth mode required
-            LOG_INFO("[Config] AS10 detected — using stealth config read");
-            String rawConfig = StealthConfigReader::readConfigTxt();
-            if (!rawConfig.isEmpty()) {
-                configLoaded = config.loadFromString(rawConfig);
-                if (configLoaded) {
-                    LOG_INFO("[Config] Config loaded via stealth read");
-                } else {
-                    LOG_WARN("[Config] Stealth read returned data but parsing failed");
-                }
-            } else {
-                LOG_WARN("[Config] Stealth config read failed");
-            }
+            LOG_WARN("[Config] SD takeControl failed");
         }
 
         // ── Fallback: regular SD mount if primary config read failed ──
