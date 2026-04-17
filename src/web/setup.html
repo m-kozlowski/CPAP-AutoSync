@@ -88,11 +88,21 @@
         /* ── Radio Buttons (Upload Mode) ── */
         .radio-group { margin-bottom: 10px; }
         .radio-label {
-            display: flex; align-items: center; gap: 8px;
-            font-size: .88em; cursor: pointer; padding: 6px 0;
+            display: flex; align-items: center; gap: 8px; font-weight: 600;
+            cursor: pointer; margin-bottom: 4px;
         }
-        .radio-label input[type="radio"] { transform: scale(1.2); cursor: pointer; accent-color: #66c0f4; }
-        .radio-desc { color: #8f98a0; font-size: .82em; margin-left: 24px; margin-top: -2px; margin-bottom: 6px; }
+        .radio-label input[type="radio"] { transform: scale(1.3); accent-color: #66c0f4; }
+        .radio-desc { font-size: .82em; color: #8f98a0; margin-left: 24px; margin-bottom: 10px; line-height: 1.4; }
+
+        /* ── Per-Slider Locks ── */
+        .lock-btn {
+            background: none; border: none; padding: 4px 6px; font-size: 1.15em;
+            cursor: pointer; opacity: 0.5; transition: opacity 0.2s, transform 0.1s;
+        }
+        .lock-btn:active { transform: scale(0.9); }
+        .lock-btn:hover { opacity: 0.8; }
+
+        /* ── Toggle switch ── */
         .conditional { margin-left: 24px; padding-left: 12px; border-left: 2px solid #2a475e; }
 
         /* ── Buttons ── */
@@ -372,43 +382,47 @@
                     </div>
                 </div>
                 <!-- Colour legend -->
-                <div id="timeline-legend" style="display:flex;gap:14px;flex-wrap:wrap;font-size:.74em;color:#64748b;margin-bottom:14px;padding:0 2px">
+                <div id="timeline-legend" style="display:flex;gap:14px;flex-wrap:wrap;font-size:.74em;color:#64748b;margin-bottom:20px;padding:0 2px">
                     <span><span style="display:inline-block;width:10px;height:10px;background:#162030;border:1px solid #2a475e;border-radius:2px;vertical-align:middle;margin-right:3px"></span>Quiet — no uploads</span>
                     <span id="leg-blue"><span style="display:inline-block;width:10px;height:10px;background:#38bdf8;border-radius:2px;vertical-align:middle;margin-right:3px"></span>Recent data only (Smart)</span>
                     <span><span style="display:inline-block;width:10px;height:10px;background:#10b981;border-radius:2px;vertical-align:middle;margin-right:3px"></span>Full archive upload</span>
                 </div>
 
-                <label class="cb-label" style="margin-top:14px;margin-bottom:18px;font-size:.88em;color:#94a3b8">
-                    <input type="checkbox" id="f-customize-schedule" onchange="toggleScheduleEdit()">
-                    Customize schedule times (Advanced)
-                </label>
-
                 <div id="smart-slider-row" style="margin-bottom:16px">
-                    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
-                        <span style="color:#c7d5e0;font-size:.88em;font-weight:600">What time do you usually finish your therapy session?</span>
-                        <span id="lbl-ssh" style="color:#38bdf8;font-weight:700;font-size:.95em">06:00</span>
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
+                        <span style="color:#c7d5e0;font-size:.88em;font-weight:600;flex:1;padding-right:10px;">What time do you usually finish your therapy session?</span>
+                        <div style="display:flex;align-items:center;gap:6px">
+                            <span id="lbl-ssh" style="color:#38bdf8;font-weight:700;font-size:.95em">06:00</span>
+                            <button type="button" class="lock-btn" id="lock-f-smart-start" onclick="toggleSliderLock('f-smart-start')">&#128274;</button>
+                        </div>
                     </div>
                     <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Earliest time you take the mask off with no intention of putting it back on. Smart Mode uses this to begin monitoring.</div>
-                    <input type="range" id="f-smart-start" min="0" max="23" value="6" style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none;touch-action:pan-y">
+                    <input type="range" id="f-smart-start" min="0" max="23" value="6" disabled style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none;touch-action:pan-y;opacity:0.6;cursor:not-allowed;">
                     <div id="smart-slider-tip" style="margin-top:10px;padding:6px;background:#1e293b;border-left:3px solid #38bdf8;border-radius:4px;font-size:.78em;color:#94a3b8;line-height:1.4">
                         &#128161; <strong>Tip:</strong> After Smart Mode starts uploading recent data, if you want to resume therapy, you must wait for the upload to complete first (usually under 3 minutes).
                     </div>
                 </div>
                 <div style="margin-bottom:16px">
-                    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
-                        <span style="color:#c7d5e0;font-size:.88em;font-weight:600">When are you absolutely done with therapy?</span>
-                        <span id="lbl-sh" style="color:#38bdf8;font-weight:700;font-size:.95em">09:00</span>
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
+                        <span style="color:#c7d5e0;font-size:.88em;font-weight:600;flex:1;padding-right:10px;">When are you absolutely done with therapy?</span>
+                        <div style="display:flex;align-items:center;gap:6px">
+                            <span id="lbl-sh" style="color:#38bdf8;font-weight:700;font-size:.95em">09:00</span>
+                            <button type="button" class="lock-btn" id="lock-f-start-hour" onclick="toggleSliderLock('f-start-hour')">&#128274;</button>
+                        </div>
                     </div>
                     <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Full archive uploads start here — resuming therapy after this time may cause SD card errors.</div>
-                    <input type="range" id="f-start-hour" min="0" max="23" value="9" style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none;touch-action:pan-y">
+                    <input type="range" id="f-start-hour" min="0" max="23" value="9" disabled style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none;touch-action:pan-y;opacity:0.6;cursor:not-allowed;">
                 </div>
                 <div style="margin-bottom:6px">
-                    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
-                        <span style="color:#c7d5e0;font-size:.88em;font-weight:600">What is the earliest time you go to sleep?</span>
-                        <span id="lbl-eh" style="color:#38bdf8;font-weight:700;font-size:.95em">21:00</span>
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
+                        <span style="color:#c7d5e0;font-size:.88em;font-weight:600;flex:1;padding-right:10px;">What is the earliest time you go to sleep?</span>
+                        <div style="display:flex;align-items:center;gap:6px">
+                            <span id="lbl-eh" style="color:#38bdf8;font-weight:700;font-size:.95em">21:00</span>
+                            <button type="button" class="lock-btn" id="lock-f-end-hour" onclick="toggleSliderLock('f-end-hour')">&#128274;</button>
+                        </div>
                     </div>
                     <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Uploads must pause before your next therapy session begins.</div>
-                    <input type="range" id="f-end-hour" min="0" max="23" value="21" style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none;touch-action:pan-y">
+                    <input type="range" id="f-end-hour" min="0" max="23" value="21" disabled style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none;touch-action:pan-y;opacity:0.6;cursor:not-allowed;">
                 </div>
             </div>
 
@@ -691,13 +705,6 @@ function populateFormFromConfig() {
     document.getElementById('f-excl-access').value = getValue('EXCLUSIVE_ACCESS_MINUTES') || '5';
     document.getElementById('f-smart-start').value = getValue('SMART_START_HOUR') || '6';
 
-    // Lock schedule sliders by default unless they have custom values
-    var isCustomSchedule = (getValue('UPLOAD_START_HOUR') && getValue('UPLOAD_START_HOUR') !== '9') ||
-                           (getValue('UPLOAD_END_HOUR') && getValue('UPLOAD_END_HOUR') !== '21') ||
-                           (getValue('SMART_START_HOUR') && getValue('SMART_START_HOUR') !== '6');
-    document.getElementById('f-customize-schedule').checked = !!isCustomSchedule;
-    toggleScheduleEdit();
-
     // ENDPOINT_TYPE → cloud/SMB checkboxes
     var endpointType = getValue('ENDPOINT_TYPE').toUpperCase();
     var endpoint = getValue('ENDPOINT');
@@ -959,24 +966,53 @@ function applyPcntCapable(capable) {
 }
 
 // ══════════════════════════════════════════════════════════════
-// Schedule Customization Toggle
+// Per-Slider Lock Toggle & Auto-Relock
 // ══════════════════════════════════════════════════════════════
-function toggleScheduleEdit() {
-    var cb = document.getElementById('f-customize-schedule');
-    var isEnabled = cb.checked;
-    
-    var sliders = [
-        document.getElementById('f-smart-start'),
-        document.getElementById('f-start-hour'),
-        document.getElementById('f-end-hour')
-    ];
-    
-    for (var i = 0; i < sliders.length; i++) {
-        sliders[i].disabled = !isEnabled;
-        sliders[i].style.opacity = isEnabled ? '1' : '0.4';
-        sliders[i].style.cursor = isEnabled ? 'auto' : 'not-allowed';
+var unlockedSliders = {}; // track sliderId -> scrollY
+
+function toggleSliderLock(id) {
+    var slider = document.getElementById(id);
+    var btn = document.getElementById('lock-' + id);
+    if (!slider || !btn) return;
+
+    if (slider.disabled) {
+        // Unlock
+        slider.disabled = false;
+        slider.style.opacity = '1';
+        slider.style.cursor = 'auto';
+        btn.innerHTML = '&#128275;'; // open lock
+        unlockedSliders[id] = window.scrollY;
+    } else {
+        // Lock
+        slider.disabled = true;
+        slider.style.opacity = '0.6';
+        slider.style.cursor = 'not-allowed';
+        btn.innerHTML = '&#128274;'; // closed lock
+        delete unlockedSliders[id];
     }
 }
+
+// Auto-relock sliders if the user scrolls away
+window.addEventListener('scroll', function() {
+    var keys = Object.keys(unlockedSliders);
+    if (keys.length === 0) return;
+    
+    var currentY = window.scrollY;
+    for (var i = 0; i < keys.length; i++) {
+        var id = keys[i];
+        if (Math.abs(currentY - unlockedSliders[id]) > 150) {
+            var slider = document.getElementById(id);
+            var btn = document.getElementById('lock-' + id);
+            if (slider && btn) {
+                slider.disabled = true;
+                slider.style.opacity = '0.6';
+                slider.style.cursor = 'not-allowed';
+                btn.innerHTML = '&#128274;';
+            }
+            delete unlockedSliders[id];
+        }
+    }
+}, { passive: true });
 
 // ══════════════════════════════════════════════════════════════
 // Timing Settings toggle

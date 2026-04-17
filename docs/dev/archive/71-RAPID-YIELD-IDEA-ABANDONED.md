@@ -672,3 +672,10 @@ Files modified:
 - Cloud (SleepHQ) yield support
 - Edge case hardening (yield during folder scan, web config save, etc.)
 - Metrics and web UI integration
+
+
+
+===
+
+The whole idea of "Rapid Yield" has been abandoned as it was based on a flawed assumption about the SD protocol.
+Improvements to Smart Mode scheduling will be implemented instead to minimise the risk of collisions (together with minimised retries when in Smart Mode).
