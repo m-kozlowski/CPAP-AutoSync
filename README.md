@@ -25,8 +25,7 @@ We are currently gathering statistics on which models work reliably. **If your m
 **👇👇👇 Click below to expand:**
 <details>
 <summary>
-  <a><img src="./docs/logo/animated-arrow.svg?v3" alt="Point" width="25" style="vertical-align: middle;"/></a> 
-  <b style="font-size: 1.2em; vertical-align: middle;">Detailed Model Compatibility Statistics</b>
+  <b style="font-size: 1.2em; vertical-align: middle;">📊 Detailed Model Compatibility Statistics</b>
 </summary>
 
 | Model | Made In | Platform | REF | Modem | Success rate | Notes |
@@ -47,8 +46,7 @@ We are currently gathering statistics on which models work reliably. **If your m
 
 <details>
 <summary>
-  <a><img src="./docs/logo/animated-arrow.svg?v3" alt="Point" width="25" style="vertical-align: middle;"/></a>
-  <b style="font-size: 1.2em; vertical-align: middle;">Solution for affected REF 39517 AirSense 11 models</b>
+  <b style="font-size: 1.2em; vertical-align: middle;">⚡ Solution for affected REF 39517 AirSense 11 models</b>
 </summary>
 
 If your REF 39517 AirSense 11 has power issues, the following community-developed solutions may help:
