@@ -399,7 +399,7 @@
                     <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Earliest time you take the mask off with no intention of putting it back on. Smart Mode uses this to begin therapy detection.</div>
                     <input type="range" id="f-smart-start" min="0" max="23" value="6" disabled style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none;touch-action:pan-y;opacity:0.4;cursor:not-allowed;">
                     <div id="smart-slider-tip" style="margin-top:10px;padding:6px;background:#1e293b;border-left:3px solid #38bdf8;border-radius:4px;font-size:.78em;color:#94a3b8;line-height:1.4">
-                        &#128161; <strong>Tip:</strong> After Smart Mode starts uploading recent data, if you want to resume therapy, you must wait for the upload to complete first (usually under 5 minutes). Failure to do so may result in data loss / SD Card Error.
+                        &#128161; <strong>Tip:</strong> After Smart Mode starts uploading recent data, if you want to resume therapy, you must wait for the upload to complete first (usually under 5 minutes). Failure to do so may result in data loss (SD card error).
                     </div>
                 </div>
                 <div style="margin-bottom:16px">
@@ -410,7 +410,7 @@
                             <button type="button" class="lock-btn" id="lock-f-start-hour" onclick="toggleSliderLock('f-start-hour')">&#128274;</button>
                         </div>
                     </div>
-                    <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Regular uploads start here — starting therapy after this time may cause SD Card Errors.</div>
+                    <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Regular uploads start here — starting therapy after this time may cause SD card errors.</div>
                     <input type="range" id="f-start-hour" min="0" max="23" value="9" disabled style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none;touch-action:pan-y;opacity:0.4;cursor:not-allowed;">
                 </div>
                 <div style="margin-bottom:6px">
@@ -1339,12 +1339,12 @@ function confirmSave() {
         msg = '<p style="color:#ffcc44;font-weight:600;margin-top:10px">&#9888; Action Required After Reboot</p>' +
               '<p style="font-size:0.88em">After reboot, an attempt will be made to redirect you to the main Web UI (if connection to your WiFi is successful). ' +
               'If you are not redirected and you cannot connect to <strong>' + hostname + '.local</strong> within the first 2 minutes, ' +
-              'please eject the SD card and reinsert it back.</p>';
+              'please eject the SD card and reinsert it.</p>';
     } else {
         msg = '<p style="color:#ffcc44;font-weight:600;margin-top:10px">&#9888; Action Required After Reboot</p>' +
               '<p style="font-size:0.88em">After reboot, you will be redirected to the main Web UI. ' +
               'If you are not redirected and you cannot connect to <strong>' + hostname + '.local</strong> within the first 2 minutes, ' +
-              'please eject the SD card and reinsert it back.</p>';
+              'please eject the SD card and reinsert it.</p>';
     }
     inst.innerHTML = msg;
     document.getElementById('save-modal').style.display = 'flex';
@@ -1535,7 +1535,7 @@ function scheduleNextPoll() {
             errorMsg += ' or <strong>' + rcIpAddress + '</strong>';
         }
         errorMsg += ' after 2 minutes.<br><br>' +
-            'Please <strong>eject the SD card and reinsert it</strong> back into the device to restore the connection (or re-enter setup mode).';
+            'Please <strong>eject the SD card and reinsert it</strong> into the device to restore the connection or re-enter setup mode.';
         document.getElementById('rc-error-msg').innerHTML = errorMsg;
         return;
     }
