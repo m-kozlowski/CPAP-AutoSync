@@ -123,10 +123,10 @@ Open the release ZIP and follow the **Firmware Upload** steps in the included gu
 **[Full Setup Guide](docs/user/getting-started.md)**
 
 ### 3. Setup via Web Wizard (Recommended)
-**No SD card reader? No problem.** You can now configure everything from your phone or computer without editing any files.
+**No SD card reader? No problem.** You can configure everything from your phone or computer without editing any files.
 
 1. **Power On:** Insert the card into your CPAP and power it on.
-2. **Connect:** On your phone or PC, look for a WiFi network named **`CPAP-Setup`** and connect to it.
+2. **Connect:** On your phone or PC, look for a WiFi network named **`CPAP-AutoSync`** and connect to it.
 3. **Configure:** A setup page should open automatically. If it doesn't, navigate to **`http://192.168.4.1`**.
 4. **Follow the Wizard:** Enter your home WiFi details and your upload destination (SMB or SleepHQ).
 
@@ -137,11 +137,11 @@ The device will save your settings, restart, and automatically connect to your h
 
 ### 4. Open `http://cpap.local`
 
-That's it. The device connects to WiFi, waits for your therapy session to end, and uploads automatically.
+That's it. The device connects to WiFi and is ready to use.
 
 Open **[http://cpap.local](http://cpap.local)** in your browser to see live upload status, view logs, and manage settings. *(Note: `cpap.local` only resolves for the first 60 seconds after boot to save power — accessing it within this window redirects you to the device's IP address.)*
 
-> **From here on, you can edit your config directly in the browser** — Config tab → Edit. 
+> **From here on, you can edit your config directly in the browser** — Config tab → Open Setup Wizard. 
 > 
 > **Note on Security:** For your protection, credentials are migrated to the device's secure flash memory (NVS) by default. After the first successful setup, you will see your passwords replaced with `***STORED_IN_FLASH***` in the configuration editor and the `config.txt` file. This is normal and expected.
 
@@ -151,15 +151,9 @@ Open **[http://cpap.local](http://cpap.local)** in your browser to see live uplo
 
 SD card errors typically happen for two reasons:
 1. **Power Limits:** The CPAP machine cannot provide enough peak current to the SD slot during WiFi uploads. (Ensure you are running the latest firmware, which includes aggressive power-saving features).
-2. **Bad Timing (Collisions):** In **smart** mode, uploads begin shortly after therapy ends. If you briefly pause therapy and then resume it while an upload is actively running, the CPAP and the WiFi SD card will clash over SD access.
+2. **Bad Timing (Collisions):** In **Smart** mode, uploads begin shortly after therapy ends (within your configured time slot only). If you briefly pause therapy and then resume it while an upload is actively running, the CPAP and the WiFi SD card will clash over SD access. With a properly configured **Smart** mode time period, this should not happen.
 
-If bad timing is causing your errors, you can avoid it entirely by switching to **scheduled** mode in `config.txt`, setting a window during your waking hours:
-
-```ini
-UPLOAD_MODE = scheduled
-UPLOAD_START_HOUR = 9
-UPLOAD_END_HOUR = 21
-```
+If bad timing is causing your errors, you can avoid it entirely by switching to **Scheduled** mode.
 
 See the [Full Setup Guide](docs/user/getting-started.md#️-sd-card-errors--use-scheduled-mode) for details.
 
@@ -183,9 +177,9 @@ See the [Full Setup Guide](docs/user/getting-started.md#️-sd-card-errors--use-
 - **Automatic uploads after every therapy session** — smart mode detects when your CPAP finishes and starts uploading within minutes
 - **Uploads to Windows shares, NAS, or SleepHQ** — or both at the same time
 - **Zero-Touch Configuration Validation** — the visual setup wizard prevents you from saving configurations that could crash your CPAP's SD access
-- **Automatic Device Discovery** — accesses the setup page natively, and automatically falls back to IP-based connection if your router or VPN blocks `cpap.local`
+- **Automatic Device Discovery** — accesses the setup page natively, and automatically falls back to IP-based connection if your router or VPN blocks mDNS
 - **Web dashboard at `http://cpap.local`** — live progress, logs, config editor, OTA updates *(available for first 60 seconds after boot, then use IP address)*
-- **Edit config from the browser** — no SD card pulls after initial setup
+- **Edit config from the browser** — no SD card reader necessary and no need to edit any files manually
 - **Never uploads the same file twice** — tracks what's been sent, even across reboots
 - **Persistent log storage** — enable `PERSISTENT_LOGS=true` to flush logs to internal flash every 30 seconds; download past sessions from the browser. Emergency logs are always saved to SD card on boot failures and to internal flash before every reboot.
 - **Live system diagnostics** — System tab tracks free heap, max contiguous allocation (with rolling 2-minute minimums), and CPU load graphs for both cores
