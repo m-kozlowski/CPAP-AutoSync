@@ -45,8 +45,6 @@ We are currently gathering statistics on which models work reliably. **If your m
 | **AirSense 10** | Australia | `R370-449/1` | 37437 | *(not specified / Australia)* | ✅ **100%** | Stable since v3.6i  |
 </details>
 
----
-
 <details>
 <summary>
   <img src="./docs/logo/animated-arrow.svg?v3" alt="Point" width="25" style="vertical-align: middle;"/>
@@ -80,7 +78,6 @@ If your REF 39517 AirSense 11 has power issues, the following community-develope
 
 </details>
 
----
 
 <details>
 <summary><b>🔍 How to tell if your CPAP has power issues</b></summary>
