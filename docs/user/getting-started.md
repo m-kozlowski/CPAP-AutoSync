@@ -47,15 +47,17 @@ Insert the SD card in your CPAP machine and allow for the CPAP machine to format
 
 Use a **desktop Chromium-based browser** (Chrome, Microsoft Edge, or Opera). *Safari and Firefox are not supported.*
 
-1. Extract this release ZIP to a folder on your computer.
+1. Download the **`firmware-ota-***.bin`** file from the Releases page. ⚠️ **Do NOT use** `firmware-ota-upgrade-***.bin` — that file is for OTA upgrades only.
 2. Open `https://esptool.spacehuhn.com/` in Chrome, Edge, or Opera.
 3. Connect the ESP32 board by USB.
 4. Click **Connect** and choose the serial port for the board.
+   - **Windows:** `USB Serial (COM5)`, `USB-SERIAL CH340 (COMx)`, etc.
+   - **Mac/Linux:** `/dev/cu.usbserial-*` or `/dev/ttyUSB0`
    - *If you are not sure which port is correct, click Connect first, then plug in the board. The new port that appears is usually the right one.*
-5. Delete any existing rows if needed, then click **Add** once.
+5. Delete any existing rows if needed (by clicking the "bucket" icon on the right), then click **Add** once.
 6. Make sure the address is **`0x0`**.
-7. Select **`firmware-ota.bin`**.
-8. Click **Erase**.
+7. Select the downloaded **`firmware-ota-***.bin`** file.
+8. Click **Erase** (required for first-time setup).
 9. Click **Program**.
 
 > **Issues flashing or finding the port?** See [Advanced Flashing & Troubleshooting](../dev/advanced-flashing.md).
