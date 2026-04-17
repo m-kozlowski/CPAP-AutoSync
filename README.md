@@ -25,7 +25,7 @@ We are currently gathering statistics on which models work reliably. **If your m
 **👇👇👇 Click below to expand:**
 <details>
 <summary>
-  <img src="./docs/logo/animated-arrow.svg?v3" alt="Point" width="25" style="vertical-align: middle;"/> 
+  <a><img src="./docs/logo/animated-arrow.svg?v3" alt="Point" width="25" style="vertical-align: middle;"/></a> 
   <b style="font-size: 1.2em; vertical-align: middle;">Detailed Model Compatibility Statistics</b>
 </summary>
 
@@ -47,7 +47,7 @@ We are currently gathering statistics on which models work reliably. **If your m
 
 <details>
 <summary>
-  <img src="./docs/logo/animated-arrow.svg?v3" alt="Point" width="25" style="vertical-align: middle; pointer-events: none;"/>
+  <a><img src="./docs/logo/animated-arrow.svg?v3" alt="Point" width="25" style="vertical-align: middle;"/></a>
   <b style="font-size: 1.2em; vertical-align: middle;">Solution for affected REF 39517 AirSense 11 models</b>
 </summary>
 
