@@ -18,31 +18,11 @@ Built with **extreme ease of use** in mind:
 ### **Power Compatibility & Known Hardware Limits**
 
 > [!CAUTION]
-> ⚠️ **AirSense 11** ***(🔍 ONLY REF 39517, check back sticker! 🏷️)*** ➔ Most **REF 39517** units have severe power limitations on their SD card slot. If the ESP32 card does not receive enough power, it will continually reset. You may experience frequent WiFi disconnects, failed uploads, or an "**SD Card Error**" on your CPAP machine's screen.
+> ⚠️ **AirSense 11** ***(🔍 ONLY REF 39517, check back sticker! 🏷️)*** ➔ Most **REF 39517** units have severe power limitations on their SD card slot. If the ESP32 card does not receive enough power, it will continually reset. You may experience frequent WiFi disconnects, failed uploads, or an "**SD Card Error**" on your CPAP machine's screen. See below for available solutions.
 
 We are currently gathering statistics on which models work reliably. **If your model is not listed below, please report your experience to help us improve this data.**
 
 **👇👇👇 Click below to expand:**
-<details>
-<summary>
-  <b style="font-size: 1.2em; vertical-align: middle;">📊 Detailed Model Compatibility Statistics</b>
-</summary>
-
-| Model | Made In | Platform | REF | Modem | Success rate | Notes |
-| :--- | :--- | :--- | :--- | :--- | :---: | :--- |
-| **AirSense 11** | Singapore | `R390-420/1` | 39480 | *(not specified / Europe)* | ✅ **100%** | Fully working |
-| **AirSense 11** | Singapore | `R390-451/1` | 39483 | *(not specified / Europe)* | ✅ **100%** | Fully working |
-| **AirSense 11** | Singapore | `R390-447/1` | 39517 | AIR11M1G22 | ❌ **35%** | Has known power delivery issues. Fails on most units. |
-| ↳ *(modded)* | — | — | ↳ 39517 🔧 | — | ⚠️ **65%** | *With SD Extender Mod and `BROWNOUT_DETECT=OFF`* |
-| ↳ *(modded)* | — | — | ↳ 39517 🔧 | — | ℹ️ **100%** | *With SD Extender + capacitor Mod* |
-| **AirSense 11** | Singapore | `R390-447/1` | 39520 | AIR11M1G22 | ✅ **100%** | Fully working |
-| **AirSense 11** | Singapore | `R390-447/1` | 39523 | AIR11M1U | ✅ **100%** | Stable since v1.0i-beta1 (had issues prior) |
-| **AirSense 11** | Australia | `R390-453/1` | 39532 | AIR114GT | ✅ **100%** | Fully working |
-| **AirSense 10** | Australia | `R370-4102/1` | 37043 | AIR104G | ✅ **100%** | Stable since v3.6i |
-| **AirSense 10** | Singapore | `R370-4201/1` | 37127 | *(not specified / Europe)* | ✅ **100%** | Stable since v3.6i  |
-| **AirSense 10** | Singapore | `R370-4207/1` | 37160 | AIR104GU | ✅ **100%** | Stable since v3.6i  |
-| **AirSense 10** | Australia | `R370-449/1` | 37437 | *(not specified / Australia)* | ✅ **100%** | Stable since v3.6i  |
-</details>
 
 <details>
 <summary>
@@ -76,6 +56,26 @@ If your REF 39517 AirSense 11 has power issues, the following community-develope
 
 </details>
 
+<details>
+<summary>
+  <b style="font-size: 1.2em; vertical-align: middle;">📊 Detailed Model Compatibility Statistics</b>
+</summary>
+
+| Model | Made In | Platform | REF | Modem | Success rate | Notes |
+| :--- | :--- | :--- | :--- | :--- | :---: | :--- |
+| **AirSense 11** | Singapore | `R390-420/1` | 39480 | *(not specified / Europe)* | ✅ **100%** | Fully working |
+| **AirSense 11** | Singapore | `R390-451/1` | 39483 | *(not specified / Europe)* | ✅ **100%** | Fully working |
+| **AirSense 11** | Singapore | `R390-447/1` | 39517 | AIR11M1G22 | ❌ **35%** | Has known power delivery issues. Fails on most units. |
+| ↳ *(modded)* | — | — | ↳ 39517 🔧 | — | ⚠️ **65%** | *With SD Extender Mod and `BROWNOUT_DETECT=OFF`* |
+| ↳ *(modded)* | — | — | ↳ 39517 🔧 | — | ℹ️ **100%** | *With SD Extender + capacitor Mod* |
+| **AirSense 11** | Singapore | `R390-447/1` | 39520 | AIR11M1G22 | ✅ **100%** | Fully working |
+| **AirSense 11** | Singapore | `R390-447/1` | 39523 | AIR11M1U | ✅ **100%** | Stable since v1.0i-beta1 (had issues prior) |
+| **AirSense 11** | Australia | `R390-453/1` | 39532 | AIR114GT | ✅ **100%** | Fully working |
+| **AirSense 10** | Australia | `R370-4102/1` | 37043 | AIR104G | ✅ **100%** | Stable since v3.6i |
+| **AirSense 10** | Singapore | `R370-4201/1` | 37127 | *(not specified / Europe)* | ✅ **100%** | Stable since v3.6i  |
+| **AirSense 10** | Singapore | `R370-4207/1` | 37160 | AIR104GU | ✅ **100%** | Stable since v3.6i  |
+| **AirSense 10** | Australia | `R370-449/1` | 37437 | *(not specified / Australia)* | ✅ **100%** | Stable since v3.6i  |
+</details>
 
 <details>
 <summary><b>🔍 How to tell if your CPAP has power issues</b></summary>
