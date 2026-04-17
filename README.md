@@ -3,10 +3,10 @@
 Automatically upload CPAP therapy data from your SD card to a network share or SleepHQ — **within minutes of taking your mask off.**
 
 Built with **extreme ease of use** in mind:
-- 📱 **Setup Wizard**: No need to edit text files. Connect to the device's WiFi and follow a visual, step-by-step setup on your phone.
+- 😎 **No coding required**: Flash the firmware once via USB using a simple web-based tool, then manage everything through your web browser.
+- 📱 **Setup Wizard**: No need to edit text files. Connect to the device's WiFi and follow a visual, step-by-step setup on your phone or computer.
 - 🧠 **Auto-Detects Hardware**: Automatically detects if your CPAP supports Smart Mode (AirSense 11) or falls back safely (AirSense 10).
 - ✅ **Foolproof Configuration**: The wizard validates your upload schedule to prevent impossible configurations and SD card errors.
-- 🌐 **VPN & Network Friendly**: The setup process seamlessly handles complex networks, automatically falling back to IP-based connection if local hostnames fail.
 
 * **Supports:** ResMed Series 10 and 11
 * **Hardware:** [SD WIFI PRO](https://www.fysetc.com/products/fysetc-upgrade-sd-wifi-pro-with-card-reader-module-run-wireless-by-esp32-chip-web-server-reader-uploader-3d-printer-parts) — an ESP32-powered SD card that physically inserts into your CPAP's SD card slot like a regular memory card
@@ -17,15 +17,12 @@ Built with **extreme ease of use** in mind:
 
 ### **Power Compatibility & Known Hardware Limits**
 
-> [!NOTE]
-> ℹ️ **AirSense 10 units:** the introduction of an always-on Stealth Mode in v3.6i allowed us to avoid the CPAP machine power-cycling the SD card slot (preventing 99% of reboots during therapy). Please upgrade to v3.6i or later to benefit from this feature.
-
 > [!CAUTION]
 > ⚠️ **AirSense 11** ***(🔍 ONLY REF 39517, check back sticker! 🏷️)*** ➔ Most **REF 39517** units have severe power limitations on their SD card slot. If the ESP32 card does not receive enough power, it will continually reset. You may experience frequent WiFi disconnects, failed uploads, or an "**SD Card Error**" on your CPAP machine's screen.
 
 We are currently gathering statistics on which models work reliably. **If your model is not listed below, please report your experience to help us improve this data.**
 
-**👇👇👇 Click to expand:**
+**👇👇👇 Click below to expand:**
 <details>
 <summary>
   <img src="./docs/logo/animated-arrow.svg?v3" alt="Point" width="25" style="vertical-align: middle;"/> 
@@ -46,14 +43,41 @@ We are currently gathering statistics on which models work reliably. **If your m
 | **AirSense 10** | Singapore | `R370-4201/1` | 37127 | *(not specified / Europe)* | ✅ **100%** | Stable since v3.6i  |
 | **AirSense 10** | Singapore | `R370-4207/1` | 37160 | AIR104GU | ✅ **100%** | Stable since v3.6i  |
 | **AirSense 10** | Australia | `R370-449/1` | 37437 | *(not specified / Australia)* | ✅ **100%** | Stable since v3.6i  |
+</details>
 
-> 💡 **TIP: Hardware Modification Work in Progress**
+---
+
+<details>
+<summary>
+  <img src="./docs/logo/animated-arrow.svg?v3" alt="Point" width="25" style="vertical-align: middle;"/>
+  <b style="font-size: 1.2em; vertical-align: middle;">Solution for affected REF 39517 AirSense 11 models</b>
+</summary>
+
+If your REF 39517 AirSense 11 has power issues, the following community-developed solutions may help:
+
+- **SD Extender Mod + capacitor**
+  - [A fully "passive" solution by Ian Wilson](https://github.com/ianwilson-73/StableSlot) — adds capacitance to stabilize power delivery
+  - Available as both DIY and as a pre-made kit
+
+- **SD Extender Mod + power injector**
+  - [An "active" solution that provides external power to the SD card](https://www.reddit.com/r/CPAP/s/R1F9p5TwMB) — bypasses the CPAP's power limitations
+  - Available as a DIY project only (soldering required)
+
+[!CAUTION] ⚠️ **DISCLAIMER**
+
+> **CPAP AutoSync is NOT affiliated with, endorsed by, or responsible for any of the above solutions.**
 > 
-> One of our users has created an **SD Card Extender mod** to add more capacitance to the power line. Testing has been successful, bringing R390-447/1 REF 39517 from 35% to 100% success rate.
+> **Modifying your CPAP machine or its accessories may:**
+> - Void your CPAP manufacturer warranty
+> - Pose safety risks if not performed correctly
+> - Cause damage to your equipment
 > 
-> We are also aware of another DIY solution that added external power to the SD card, which has also fixed the issues for REF 39517 machines.
+> **You are solely responsible for:**
+> - Understanding the risks before attempting any modification
+> - Ensuring compliance with applicable laws and warranty terms
+> - Deciding whether these solutions are appropriate for your situation
 > 
-> Links to both projects will be provided with the next stable release of CPAP AutoSync.
+> The above links are provided for information purposes only. Proceed at your own risk.
 
 </details>
 
