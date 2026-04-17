@@ -384,8 +384,8 @@
                 <!-- Colour legend -->
                 <div id="timeline-legend" style="display:flex;gap:14px;flex-wrap:wrap;font-size:.74em;color:#64748b;margin-bottom:20px;padding:0 2px">
                     <span><span style="display:inline-block;width:10px;height:10px;background:#162030;border:1px solid #2a475e;border-radius:2px;vertical-align:middle;margin-right:3px"></span>Quiet — no uploads</span>
-                    <span id="leg-blue"><span style="display:inline-block;width:10px;height:10px;background:#38bdf8;border-radius:2px;vertical-align:middle;margin-right:3px"></span>Recent data only (Smart)</span>
-                    <span><span style="display:inline-block;width:10px;height:10px;background:#10b981;border-radius:2px;vertical-align:middle;margin-right:3px"></span>Full archive upload</span>
+                    <span id="leg-blue"><span style="display:inline-block;width:10px;height:10px;background:#38bdf8;border-radius:2px;vertical-align:middle;margin-right:3px"></span>Recent data only (quick)</span>
+                    <span><span style="display:inline-block;width:10px;height:10px;background:#10b981;border-radius:2px;vertical-align:middle;margin-right:3px"></span>Regular upload</span>
                 </div>
 
                 <div id="smart-slider-row" style="margin-bottom:16px">
@@ -396,21 +396,21 @@
                             <button type="button" class="lock-btn" id="lock-f-smart-start" onclick="toggleSliderLock('f-smart-start')">&#128274;</button>
                         </div>
                     </div>
-                    <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Earliest time you take the mask off with no intention of putting it back on. Smart Mode uses this to begin monitoring.</div>
+                    <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Earliest time you take the mask off with no intention of putting it back on. Smart Mode uses this to begin therapy detection.</div>
                     <input type="range" id="f-smart-start" min="0" max="23" value="6" disabled style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none;touch-action:pan-y;opacity:0.4;cursor:not-allowed;">
                     <div id="smart-slider-tip" style="margin-top:10px;padding:6px;background:#1e293b;border-left:3px solid #38bdf8;border-radius:4px;font-size:.78em;color:#94a3b8;line-height:1.4">
-                        &#128161; <strong>Tip:</strong> After Smart Mode starts uploading recent data, if you want to resume therapy, you must wait for the upload to complete first (usually under 3 minutes).
+                        &#128161; <strong>Tip:</strong> After Smart Mode starts uploading recent data, if you want to resume therapy, you must wait for the upload to complete first (usually under 5 minutes). Failure to do so may result in data loss / SD Card Error.
                     </div>
                 </div>
                 <div style="margin-bottom:16px">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
-                        <span style="color:#c7d5e0;font-size:.88em;font-weight:600;flex:1;padding-right:10px;">When are you absolutely done with therapy?</span>
+                        <span style="color:#c7d5e0;font-size:.88em;font-weight:600;flex:1;padding-right:10px;">What time will you definitely not go back to sleep?</span>
                         <div style="display:flex;align-items:center;gap:6px">
                             <span id="lbl-sh" style="color:#38bdf8;font-weight:700;font-size:.95em">09:00</span>
                             <button type="button" class="lock-btn" id="lock-f-start-hour" onclick="toggleSliderLock('f-start-hour')">&#128274;</button>
                         </div>
                     </div>
-                    <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Full archive uploads start here — resuming therapy after this time may cause SD card errors.</div>
+                    <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Regular uploads start here — starting therapy after this time may cause SD Card Errors.</div>
                     <input type="range" id="f-start-hour" min="0" max="23" value="9" disabled style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none;touch-action:pan-y;opacity:0.4;cursor:not-allowed;">
                 </div>
                 <div style="margin-bottom:6px">
@@ -456,7 +456,7 @@
             </label>
             <div id="cloud-fields" class="hidden">
                 <div class="info-note" style="margin-bottom:10px">
-                    &#8505;&#65039; To get your API credentials: go to <strong>sleephq.com/account</strong>,
+                    &#8505;&#65039; <strong>These are NOT your SleepHQ username and password.</strong> To get your Client ID and Client Secret: go to <strong>sleephq.com/account</strong>,
                     click <strong>Account Settings</strong> in the lower-left side,
                     navigate to <strong>API Keys</strong>, then click <strong>Add API Key</strong>.
                 </div>
@@ -518,7 +518,7 @@
                     <textarea id="advanced-raw" readonly></textarea>
                     <span class="help-text">
                         This is the complete config.txt that will be saved. Unknown/advanced keys are preserved.
-                        Comments are maintained. You can edit this directly if needed (uncheck read-only first).
+                        Comments are maintained. You can edit this directly if needed (tick "Allow manual editing" first).
                     </span>
                 </div>
                 <label class="cb-label" style="margin-top:6px">
