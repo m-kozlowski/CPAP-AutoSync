@@ -397,7 +397,7 @@
                         </div>
                     </div>
                     <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Earliest time you take the mask off with no intention of putting it back on. Smart Mode uses this to begin monitoring.</div>
-                    <input type="range" id="f-smart-start" min="0" max="23" value="6" disabled style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none;touch-action:pan-y;opacity:0.6;cursor:not-allowed;">
+                    <input type="range" id="f-smart-start" min="0" max="23" value="6" disabled style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none;touch-action:pan-y;opacity:0.4;cursor:not-allowed;">
                     <div id="smart-slider-tip" style="margin-top:10px;padding:6px;background:#1e293b;border-left:3px solid #38bdf8;border-radius:4px;font-size:.78em;color:#94a3b8;line-height:1.4">
                         &#128161; <strong>Tip:</strong> After Smart Mode starts uploading recent data, if you want to resume therapy, you must wait for the upload to complete first (usually under 3 minutes).
                     </div>
@@ -411,7 +411,7 @@
                         </div>
                     </div>
                     <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Full archive uploads start here — resuming therapy after this time may cause SD card errors.</div>
-                    <input type="range" id="f-start-hour" min="0" max="23" value="9" disabled style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none;touch-action:pan-y;opacity:0.6;cursor:not-allowed;">
+                    <input type="range" id="f-start-hour" min="0" max="23" value="9" disabled style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none;touch-action:pan-y;opacity:0.4;cursor:not-allowed;">
                 </div>
                 <div style="margin-bottom:6px">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
@@ -422,7 +422,7 @@
                         </div>
                     </div>
                     <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Uploads must pause before your next therapy session begins.</div>
-                    <input type="range" id="f-end-hour" min="0" max="23" value="21" disabled style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none;touch-action:pan-y;opacity:0.6;cursor:not-allowed;">
+                    <input type="range" id="f-end-hour" min="0" max="23" value="21" disabled style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none;touch-action:pan-y;opacity:0.4;cursor:not-allowed;">
                 </div>
             </div>
 
@@ -985,7 +985,7 @@ function toggleSliderLock(id) {
     } else {
         // Lock
         slider.disabled = true;
-        slider.style.opacity = '0.6';
+        slider.style.opacity = '0.4';
         slider.style.cursor = 'not-allowed';
         btn.innerHTML = '&#128274;'; // closed lock
         delete unlockedSliders[id];
@@ -1005,7 +1005,7 @@ window.addEventListener('scroll', function() {
             var btn = document.getElementById('lock-' + id);
             if (slider && btn) {
                 slider.disabled = true;
-                slider.style.opacity = '0.6';
+                slider.style.opacity = '0.4';
                 slider.style.cursor = 'not-allowed';
                 btn.innerHTML = '&#128274;';
             }
