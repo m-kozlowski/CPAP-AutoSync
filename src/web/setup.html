@@ -377,13 +377,19 @@
                     <span id="leg-blue"><span style="display:inline-block;width:10px;height:10px;background:#38bdf8;border-radius:2px;vertical-align:middle;margin-right:3px"></span>Recent data only (Smart)</span>
                     <span><span style="display:inline-block;width:10px;height:10px;background:#10b981;border-radius:2px;vertical-align:middle;margin-right:3px"></span>Full archive upload</span>
                 </div>
+
+                <label class="cb-label" style="margin-top:14px;margin-bottom:18px;font-size:.88em;color:#94a3b8">
+                    <input type="checkbox" id="f-customize-schedule" onchange="toggleScheduleEdit()">
+                    Customize schedule times (Advanced)
+                </label>
+
                 <div id="smart-slider-row" style="margin-bottom:16px">
                     <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
                         <span style="color:#c7d5e0;font-size:.88em;font-weight:600">What time do you usually finish your therapy session?</span>
                         <span id="lbl-ssh" style="color:#38bdf8;font-weight:700;font-size:.95em">06:00</span>
                     </div>
                     <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Earliest time you take the mask off with no intention of putting it back on. Smart Mode uses this to begin monitoring.</div>
-                    <input type="range" id="f-smart-start" min="0" max="23" value="6" style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none">
+                    <input type="range" id="f-smart-start" min="0" max="23" value="6" style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none;touch-action:pan-y">
                     <div id="smart-slider-tip" style="margin-top:10px;padding:6px;background:#1e293b;border-left:3px solid #38bdf8;border-radius:4px;font-size:.78em;color:#94a3b8;line-height:1.4">
                         &#128161; <strong>Tip:</strong> After Smart Mode starts uploading recent data, if you want to resume therapy, you must wait for the upload to complete first (usually under 3 minutes).
                     </div>
@@ -394,15 +400,15 @@
                         <span id="lbl-sh" style="color:#38bdf8;font-weight:700;font-size:.95em">09:00</span>
                     </div>
                     <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Full archive uploads start here — resuming therapy after this time may cause SD card errors.</div>
-                    <input type="range" id="f-start-hour" min="0" max="23" value="9" style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none">
+                    <input type="range" id="f-start-hour" min="0" max="23" value="9" style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none;touch-action:pan-y">
                 </div>
                 <div style="margin-bottom:6px">
                     <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
                         <span style="color:#c7d5e0;font-size:.88em;font-weight:600">What is the earliest time you go to sleep?</span>
-                        <span id="lbl-eh" style="color:#38bdf8;font-weight:700;font-size:.95em">23:00</span>
+                        <span id="lbl-eh" style="color:#38bdf8;font-weight:700;font-size:.95em">21:00</span>
                     </div>
                     <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Uploads must pause before your next therapy session begins.</div>
-                    <input type="range" id="f-end-hour" min="0" max="23" value="23" style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none">
+                    <input type="range" id="f-end-hour" min="0" max="23" value="21" style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none;touch-action:pan-y">
                 </div>
             </div>
 
@@ -685,6 +691,13 @@ function populateFormFromConfig() {
     document.getElementById('f-excl-access').value = getValue('EXCLUSIVE_ACCESS_MINUTES') || '5';
     document.getElementById('f-smart-start').value = getValue('SMART_START_HOUR') || '6';
 
+    // Lock schedule sliders by default unless they have custom values
+    var isCustomSchedule = (getValue('UPLOAD_START_HOUR') && getValue('UPLOAD_START_HOUR') !== '9') ||
+                           (getValue('UPLOAD_END_HOUR') && getValue('UPLOAD_END_HOUR') !== '21') ||
+                           (getValue('SMART_START_HOUR') && getValue('SMART_START_HOUR') !== '6');
+    document.getElementById('f-customize-schedule').checked = !!isCustomSchedule;
+    toggleScheduleEdit();
+
     // ENDPOINT_TYPE → cloud/SMB checkboxes
     var endpointType = getValue('ENDPOINT_TYPE').toUpperCase();
     var endpoint = getValue('ENDPOINT');
@@ -942,6 +955,26 @@ function applyPcntCapable(capable) {
         label.style.opacity = '';
         label.style.cursor = '';
         note.style.display = 'none';
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+// Schedule Customization Toggle
+// ══════════════════════════════════════════════════════════════
+function toggleScheduleEdit() {
+    var cb = document.getElementById('f-customize-schedule');
+    var isEnabled = cb.checked;
+    
+    var sliders = [
+        document.getElementById('f-smart-start'),
+        document.getElementById('f-start-hour'),
+        document.getElementById('f-end-hour')
+    ];
+    
+    for (var i = 0; i < sliders.length; i++) {
+        sliders[i].disabled = !isEnabled;
+        sliders[i].style.opacity = isEnabled ? '1' : '0.4';
+        sliders[i].style.cursor = isEnabled ? 'auto' : 'not-allowed';
     }
 }
 
