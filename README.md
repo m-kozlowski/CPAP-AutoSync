@@ -6,7 +6,7 @@ Built with **extreme ease of use** in mind:
 - 😎 **No coding required**: Flash the firmware once via USB using a simple web-based tool, then manage everything through your web browser.
 - 📱 **Setup Wizard**: No need to edit text files. Connect to the device's WiFi and follow a visual, step-by-step setup on your phone or computer.
 - 🧠 **Auto-Detects Hardware**: Automatically detects if your CPAP supports Smart Mode (AirSense 11) or falls back safely (AirSense 10).
-- ✅ **Foolproof Configuration**: The wizard validates your upload schedule to prevent impossible configurations and SD card errors.
+- ✅ **Error-Proof Configuration**: The wizard validates your upload schedule to prevent impossible configurations and SD card errors.
 
 * **Supports:** ResMed Series 10 and 11
 * **Hardware:** [SD WIFI PRO](https://www.fysetc.com/products/fysetc-upgrade-sd-wifi-pro-with-card-reader-module-run-wireless-by-esp32-chip-web-server-reader-uploader-3d-printer-parts) — an ESP32-powered SD card that physically inserts into your CPAP's SD card slot like a regular memory card
