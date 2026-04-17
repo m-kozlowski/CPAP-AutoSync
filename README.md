@@ -63,8 +63,7 @@ If your REF 39517 AirSense 11 has power issues, the following community-develope
   - [An "active" solution that provides external power to the SD card](https://www.reddit.com/r/CPAP/s/R1F9p5TwMB) — bypasses the CPAP's power limitations
   - Available as a DIY project only (soldering required)
 
-> [!CAUTION] ⚠️ **DISCLAIMER**
-> 
+⚠️ **DISCLAIMER** 
 > **CPAP AutoSync is NOT affiliated with, endorsed by, or responsible for any of the above solutions.**
 > 
 > **Modifying your CPAP machine or its accessories may:**
