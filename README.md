@@ -17,7 +17,7 @@ Built with **extreme ease of use** in mind:
 
 ### **Power Compatibility & Known Hardware Limits**
 
-> [!CAUTION]
+[!CAUTION]
 > ⚠️ **AirSense 11** ***(🔍 ONLY REF 39517, check back sticker! 🏷️)*** ➔ Most **REF 39517** units have severe power limitations on their SD card slot. If the ESP32 card does not receive enough power, it will continually reset. You may experience frequent WiFi disconnects, failed uploads, or an "**SD Card Error**" on your CPAP machine's screen.
 
 We are currently gathering statistics on which models work reliably. **If your model is not listed below, please report your experience to help us improve this data.**
