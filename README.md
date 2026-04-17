@@ -46,14 +46,14 @@ We are currently gathering statistics on which models work reliably. **If your m
 
 <details>
 <summary>
-  <b style="font-size: 1.2em; vertical-align: middle;">⚡ Solution for affected REF 39517 AirSense 11 models</b>
+  <b style="font-size: 1.2em; vertical-align: middle;">⚡ Solutions for affected REF 39517 AirSense 11 models</b>
 </summary>
 
 If your REF 39517 AirSense 11 has power issues, the following community-developed solutions may help:
 
 - **SD Extender Mod + capacitor**
-  - [A fully "passive" solution by Ian Wilson](https://github.com/ianwilson-73/StableSlot) — adds capacitance to stabilize power delivery
-  - Available as both DIY and as a pre-made kit
+  - [StableSlot© - a fully "passive" solution by Ian Wilson](https://github.com/ianwilson-73/StableSlot) — adds capacitance to stabilize power delivery
+  - Available as both DIY and as a pre-made kit available for purchase
 
 - **SD Extender Mod + power injector**
   - [An "active" solution that provides external power to the SD card](https://www.reddit.com/r/CPAP/s/R1F9p5TwMB) — bypasses the CPAP's power limitations
