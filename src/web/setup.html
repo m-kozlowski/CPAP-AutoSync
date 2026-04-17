@@ -88,11 +88,21 @@
         /* ── Radio Buttons (Upload Mode) ── */
         .radio-group { margin-bottom: 10px; }
         .radio-label {
-            display: flex; align-items: center; gap: 8px;
-            font-size: .88em; cursor: pointer; padding: 6px 0;
+            display: flex; align-items: center; gap: 8px; font-weight: 600;
+            cursor: pointer; margin-bottom: 4px;
         }
-        .radio-label input[type="radio"] { transform: scale(1.2); cursor: pointer; accent-color: #66c0f4; }
-        .radio-desc { color: #8f98a0; font-size: .82em; margin-left: 24px; margin-top: -2px; margin-bottom: 6px; }
+        .radio-label input[type="radio"] { transform: scale(1.3); accent-color: #66c0f4; }
+        .radio-desc { font-size: .82em; color: #8f98a0; margin-left: 24px; margin-bottom: 10px; line-height: 1.4; }
+
+        /* ── Per-Slider Locks ── */
+        .lock-btn {
+            background: none; border: none; padding: 4px 6px; font-size: 1.15em;
+            cursor: pointer; opacity: 0.5; transition: opacity 0.2s, transform 0.1s;
+        }
+        .lock-btn:active { transform: scale(0.9); }
+        .lock-btn:hover { opacity: 0.8; }
+
+        /* ── Toggle switch ── */
         .conditional { margin-left: 24px; padding-left: 12px; border-left: 2px solid #2a475e; }
 
         /* ── Buttons ── */
@@ -372,37 +382,47 @@
                     </div>
                 </div>
                 <!-- Colour legend -->
-                <div id="timeline-legend" style="display:flex;gap:14px;flex-wrap:wrap;font-size:.74em;color:#64748b;margin-bottom:14px;padding:0 2px">
+                <div id="timeline-legend" style="display:flex;gap:14px;flex-wrap:wrap;font-size:.74em;color:#64748b;margin-bottom:20px;padding:0 2px">
                     <span><span style="display:inline-block;width:10px;height:10px;background:#162030;border:1px solid #2a475e;border-radius:2px;vertical-align:middle;margin-right:3px"></span>Quiet — no uploads</span>
-                    <span id="leg-blue"><span style="display:inline-block;width:10px;height:10px;background:#38bdf8;border-radius:2px;vertical-align:middle;margin-right:3px"></span>Recent data only (Smart)</span>
-                    <span><span style="display:inline-block;width:10px;height:10px;background:#10b981;border-radius:2px;vertical-align:middle;margin-right:3px"></span>Full archive upload</span>
+                    <span id="leg-blue"><span style="display:inline-block;width:10px;height:10px;background:#38bdf8;border-radius:2px;vertical-align:middle;margin-right:3px"></span>Recent data only (quick)</span>
+                    <span><span style="display:inline-block;width:10px;height:10px;background:#10b981;border-radius:2px;vertical-align:middle;margin-right:3px"></span>Regular upload</span>
                 </div>
+
                 <div id="smart-slider-row" style="margin-bottom:16px">
-                    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
-                        <span style="color:#c7d5e0;font-size:.88em;font-weight:600">What time do you usually finish your therapy session?</span>
-                        <span id="lbl-ssh" style="color:#38bdf8;font-weight:700;font-size:.95em">06:00</span>
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
+                        <span style="color:#c7d5e0;font-size:.88em;font-weight:600;flex:1;padding-right:10px;">What time do you usually finish your therapy session?</span>
+                        <div style="display:flex;align-items:center;gap:6px">
+                            <span id="lbl-ssh" style="color:#38bdf8;font-weight:700;font-size:.95em">06:00</span>
+                            <button type="button" class="lock-btn" id="lock-f-smart-start" onclick="toggleSliderLock('f-smart-start')">&#128274;</button>
+                        </div>
                     </div>
-                    <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Earliest time you take the mask off with no intention of putting it back on. Smart Mode uses this to begin monitoring.</div>
-                    <input type="range" id="f-smart-start" min="0" max="23" value="6" style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none">
+                    <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Earliest time you take the mask off with no intention of putting it back on. Smart Mode uses this to begin therapy detection.</div>
+                    <input type="range" id="f-smart-start" min="0" max="23" value="6" disabled style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none;touch-action:pan-y;opacity:0.4;cursor:not-allowed;">
                     <div id="smart-slider-tip" style="margin-top:10px;padding:6px;background:#1e293b;border-left:3px solid #38bdf8;border-radius:4px;font-size:.78em;color:#94a3b8;line-height:1.4">
-                        &#128161; <strong>Tip:</strong> After Smart Mode starts uploading recent data, if you want to resume therapy, you must wait for the upload to complete first (usually under 3 minutes).
+                        &#128161; <strong>Tip:</strong> After Smart Mode starts uploading recent data, if you want to resume therapy, you must wait for the upload to complete first (usually under 5 minutes). Failure to do so may result in data loss (SD card error).
                     </div>
                 </div>
                 <div style="margin-bottom:16px">
-                    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
-                        <span style="color:#c7d5e0;font-size:.88em;font-weight:600">When are you absolutely done with therapy?</span>
-                        <span id="lbl-sh" style="color:#38bdf8;font-weight:700;font-size:.95em">09:00</span>
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
+                        <span style="color:#c7d5e0;font-size:.88em;font-weight:600;flex:1;padding-right:10px;">What time will you definitely not go back to sleep?</span>
+                        <div style="display:flex;align-items:center;gap:6px">
+                            <span id="lbl-sh" style="color:#38bdf8;font-weight:700;font-size:.95em">09:00</span>
+                            <button type="button" class="lock-btn" id="lock-f-start-hour" onclick="toggleSliderLock('f-start-hour')">&#128274;</button>
+                        </div>
                     </div>
-                    <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Full archive uploads start here — resuming therapy after this time may cause SD card errors.</div>
-                    <input type="range" id="f-start-hour" min="0" max="23" value="9" style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none">
+                    <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Regular uploads start here — starting therapy after this time may cause SD card errors.</div>
+                    <input type="range" id="f-start-hour" min="0" max="23" value="9" disabled style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none;touch-action:pan-y;opacity:0.4;cursor:not-allowed;">
                 </div>
                 <div style="margin-bottom:6px">
-                    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
-                        <span style="color:#c7d5e0;font-size:.88em;font-weight:600">What is the earliest time you go to sleep?</span>
-                        <span id="lbl-eh" style="color:#38bdf8;font-weight:700;font-size:.95em">23:00</span>
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
+                        <span style="color:#c7d5e0;font-size:.88em;font-weight:600;flex:1;padding-right:10px;">What is the earliest time you go to sleep?</span>
+                        <div style="display:flex;align-items:center;gap:6px">
+                            <span id="lbl-eh" style="color:#38bdf8;font-weight:700;font-size:.95em">21:00</span>
+                            <button type="button" class="lock-btn" id="lock-f-end-hour" onclick="toggleSliderLock('f-end-hour')">&#128274;</button>
+                        </div>
                     </div>
                     <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Uploads must pause before your next therapy session begins.</div>
-                    <input type="range" id="f-end-hour" min="0" max="23" value="23" style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none">
+                    <input type="range" id="f-end-hour" min="0" max="23" value="21" disabled style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none;touch-action:pan-y;opacity:0.4;cursor:not-allowed;">
                 </div>
             </div>
 
@@ -436,7 +456,7 @@
             </label>
             <div id="cloud-fields" class="hidden">
                 <div class="info-note" style="margin-bottom:10px">
-                    &#8505;&#65039; To get your API credentials: go to <strong>sleephq.com/account</strong>,
+                    &#8505;&#65039; <strong>These are NOT your SleepHQ username and password.</strong> To get your Client ID and Client Secret: go to <strong>sleephq.com/account</strong>,
                     click <strong>Account Settings</strong> in the lower-left side,
                     navigate to <strong>API Keys</strong>, then click <strong>Add API Key</strong>.
                 </div>
@@ -498,7 +518,7 @@
                     <textarea id="advanced-raw" readonly></textarea>
                     <span class="help-text">
                         This is the complete config.txt that will be saved. Unknown/advanced keys are preserved.
-                        Comments are maintained. You can edit this directly if needed (uncheck read-only first).
+                        Comments are maintained. You can edit this directly if needed (tick "Allow manual editing" first).
                     </span>
                 </div>
                 <label class="cb-label" style="margin-top:6px">
@@ -946,6 +966,55 @@ function applyPcntCapable(capable) {
 }
 
 // ══════════════════════════════════════════════════════════════
+// Per-Slider Lock Toggle & Auto-Relock
+// ══════════════════════════════════════════════════════════════
+var unlockedSliders = {}; // track sliderId -> scrollY
+
+function toggleSliderLock(id) {
+    var slider = document.getElementById(id);
+    var btn = document.getElementById('lock-' + id);
+    if (!slider || !btn) return;
+
+    if (slider.disabled) {
+        // Unlock
+        slider.disabled = false;
+        slider.style.opacity = '1';
+        slider.style.cursor = 'auto';
+        btn.innerHTML = '&#128275;'; // open lock
+        unlockedSliders[id] = window.scrollY;
+    } else {
+        // Lock
+        slider.disabled = true;
+        slider.style.opacity = '0.4';
+        slider.style.cursor = 'not-allowed';
+        btn.innerHTML = '&#128274;'; // closed lock
+        delete unlockedSliders[id];
+    }
+}
+
+// Auto-relock sliders if the user scrolls away
+window.addEventListener('scroll', function() {
+    var keys = Object.keys(unlockedSliders);
+    if (keys.length === 0) return;
+    
+    var currentY = window.scrollY;
+    for (var i = 0; i < keys.length; i++) {
+        var id = keys[i];
+        if (Math.abs(currentY - unlockedSliders[id]) > 100) {
+            var slider = document.getElementById(id);
+            var btn = document.getElementById('lock-' + id);
+            if (slider && btn) {
+                slider.disabled = true;
+                slider.style.opacity = '0.4';
+                slider.style.cursor = 'not-allowed';
+                btn.innerHTML = '&#128274;';
+            }
+            delete unlockedSliders[id];
+        }
+    }
+}, { passive: true });
+
+// ══════════════════════════════════════════════════════════════
 // Timing Settings toggle
 // ══════════════════════════════════════════════════════════════
 function toggleTiming() {
@@ -1270,12 +1339,12 @@ function confirmSave() {
         msg = '<p style="color:#ffcc44;font-weight:600;margin-top:10px">&#9888; Action Required After Reboot</p>' +
               '<p style="font-size:0.88em">After reboot, an attempt will be made to redirect you to the main Web UI (if connection to your WiFi is successful). ' +
               'If you are not redirected and you cannot connect to <strong>' + hostname + '.local</strong> within the first 2 minutes, ' +
-              'please eject the SD card and reinsert it back.</p>';
+              'please eject the SD card and reinsert it.</p>';
     } else {
         msg = '<p style="color:#ffcc44;font-weight:600;margin-top:10px">&#9888; Action Required After Reboot</p>' +
               '<p style="font-size:0.88em">After reboot, you will be redirected to the main Web UI. ' +
               'If you are not redirected and you cannot connect to <strong>' + hostname + '.local</strong> within the first 2 minutes, ' +
-              'please eject the SD card and reinsert it back.</p>';
+              'please eject the SD card and reinsert it.</p>';
     }
     inst.innerHTML = msg;
     document.getElementById('save-modal').style.display = 'flex';
@@ -1466,7 +1535,7 @@ function scheduleNextPoll() {
             errorMsg += ' or <strong>' + rcIpAddress + '</strong>';
         }
         errorMsg += ' after 2 minutes.<br><br>' +
-            'Please <strong>eject the SD card and reinsert it</strong> back into the device to restore the connection (or re-enter setup mode).';
+            'Please <strong>eject the SD card and reinsert it</strong> into the device to restore the connection or re-enter setup mode.';
         document.getElementById('rc-error-msg').innerHTML = errorMsg;
         return;
     }

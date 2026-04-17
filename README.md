@@ -3,10 +3,10 @@
 Automatically upload CPAP therapy data from your SD card to a network share or SleepHQ — **within minutes of taking your mask off.**
 
 Built with **extreme ease of use** in mind:
-- 📱 **Setup Wizard**: No need to edit text files. Connect to the device's WiFi and follow a visual, step-by-step setup on your phone.
+- 😎 **No coding required**: Flash the firmware once via USB using a simple web-based tool, then manage everything through your web browser.
+- 📱 **Setup Wizard**: No need to edit text files. Connect to the device's WiFi and follow a visual, step-by-step setup on your phone or computer.
 - 🧠 **Auto-Detects Hardware**: Automatically detects if your CPAP supports Smart Mode (AirSense 11) or falls back safely (AirSense 10).
 - ✅ **Foolproof Configuration**: The wizard validates your upload schedule to prevent impossible configurations and SD card errors.
-- 🌐 **VPN & Network Friendly**: The setup process seamlessly handles complex networks, automatically falling back to IP-based connection if local hostnames fail.
 
 * **Supports:** ResMed Series 10 and 11
 * **Hardware:** [SD WIFI PRO](https://www.fysetc.com/products/fysetc-upgrade-sd-wifi-pro-with-card-reader-module-run-wireless-by-esp32-chip-web-server-reader-uploader-3d-printer-parts) — an ESP32-powered SD card that physically inserts into your CPAP's SD card slot like a regular memory card
@@ -17,19 +17,48 @@ Built with **extreme ease of use** in mind:
 
 ### **Power Compatibility & Known Hardware Limits**
 
-> [!NOTE]
-> ℹ️ **AirSense 10 units:** the introduction of an always-on Stealth Mode in v3.6i allowed us to avoid the CPAP machine power-cycling the SD card slot (preventing 99% of reboots during therapy). Please upgrade to v3.6i or later to benefit from this feature.
-
 > [!CAUTION]
-> ⚠️ **AirSense 11** ***(🔍 ONLY REF 39517, check back sticker! 🏷️)*** ➔ Most **REF 39517** units have severe power limitations on their SD card slot. If the ESP32 card does not receive enough power, it will continually reset. You may experience frequent WiFi disconnects, failed uploads, or an "**SD Card Error**" on your CPAP machine's screen.
+> ⚠️ **AirSense 11** ***(🔍 ONLY REF 39517, check back sticker! 🏷️)*** ➔ Most **REF 39517** units have severe power limitations on their SD card slot. If the ESP32 card does not receive enough power, it will continually reset. You may experience frequent WiFi disconnects, failed uploads, or an "**SD Card Error**" on your CPAP machine's screen. See below for available solutions.
 
 We are currently gathering statistics on which models work reliably. **If your model is not listed below, please report your experience to help us improve this data.**
 
-**👇👇👇 Click to expand:**
+**👇👇👇 Click below to expand:**
+
 <details>
 <summary>
-  <img src="./docs/logo/animated-arrow.svg?v3" alt="Point" width="25" style="vertical-align: middle;"/> 
-  <b style="font-size: 1.2em; vertical-align: middle;">Detailed Model Compatibility Statistics</b>
+  <b style="font-size: 1.2em; vertical-align: middle;">⚡ Solutions for affected REF 39517 AirSense 11 models</b>
+</summary>
+
+If your REF 39517 AirSense 11 has power issues, the following community-developed solutions may help:
+
+- **SD Extender Mod + capacitor**
+  - [StableSlot© - a fully "passive" solution by Ian Wilson](https://github.com/ianwilson-73/StableSlot) — adds capacitance to stabilize power delivery
+  - Available as both DIY and as a pre-made kit available for purchase
+
+- **SD Extender Mod + power injector**
+  - [An "active" solution that provides external power to the SD card](https://www.reddit.com/r/CPAP/s/R1F9p5TwMB) — bypasses the CPAP's power limitations
+  - Available as a DIY project only (soldering required)
+
+⚠️ **DISCLAIMER** 
+> **CPAP AutoSync is NOT affiliated with, endorsed by, or responsible for any of the above solutions.**
+> 
+> **Modifying your CPAP machine or its accessories may:**
+> - Void your CPAP manufacturer warranty
+> - Pose safety risks if not performed correctly
+> - Cause damage to your equipment
+> 
+> **You are solely responsible for:**
+> - Understanding the risks before attempting any modification
+> - Ensuring compliance with applicable laws and warranty terms
+> - Deciding whether these solutions are appropriate for your situation
+> 
+> The above links are provided for information purposes only. Proceed at your own risk.
+
+</details>
+
+<details>
+<summary>
+  <b style="font-size: 1.2em; vertical-align: middle;">📊 Detailed Model Compatibility Statistics</b>
 </summary>
 
 | Model | Made In | Platform | REF | Modem | Success rate | Notes |
@@ -46,18 +75,7 @@ We are currently gathering statistics on which models work reliably. **If your m
 | **AirSense 10** | Singapore | `R370-4201/1` | 37127 | *(not specified / Europe)* | ✅ **100%** | Stable since v3.6i  |
 | **AirSense 10** | Singapore | `R370-4207/1` | 37160 | AIR104GU | ✅ **100%** | Stable since v3.6i  |
 | **AirSense 10** | Australia | `R370-449/1` | 37437 | *(not specified / Australia)* | ✅ **100%** | Stable since v3.6i  |
-
-> 💡 **TIP: Hardware Modification Work in Progress**
-> 
-> One of our users has created an **SD Card Extender mod** to add more capacitance to the power line. Testing has been successful, bringing R390-447/1 REF 39517 from 35% to 100% success rate.
-> 
-> We are also aware of another DIY solution that added external power to the SD card, which has also fixed the issues for REF 39517 machines.
-> 
-> Links to both projects will be provided with the next stable release of CPAP AutoSync.
-
 </details>
-
----
 
 <details>
 <summary><b>🔍 How to tell if your CPAP has power issues</b></summary>
@@ -105,10 +123,10 @@ Open the release ZIP and follow the **Firmware Upload** steps in the included gu
 **[Full Setup Guide](docs/user/getting-started.md)**
 
 ### 3. Setup via Web Wizard (Recommended)
-**No SD card reader? No problem.** You can now configure everything from your phone or computer without editing any files.
+**No SD card reader? No problem.** You can configure everything from your phone or computer without editing any files.
 
 1. **Power On:** Insert the card into your CPAP and power it on.
-2. **Connect:** On your phone or PC, look for a WiFi network named **`CPAP-Setup`** and connect to it.
+2. **Connect:** On your phone or PC, look for a WiFi network named **`CPAP-AutoSync`** and connect to it.
 3. **Configure:** A setup page should open automatically. If it doesn't, navigate to **`http://192.168.4.1`**.
 4. **Follow the Wizard:** Enter your home WiFi details and your upload destination (SMB or SleepHQ).
 
@@ -119,11 +137,11 @@ The device will save your settings, restart, and automatically connect to your h
 
 ### 4. Open `http://cpap.local`
 
-That's it. The device connects to WiFi, waits for your therapy session to end, and uploads automatically.
+That's it. The device connects to WiFi and is ready to use.
 
 Open **[http://cpap.local](http://cpap.local)** in your browser to see live upload status, view logs, and manage settings. *(Note: `cpap.local` only resolves for the first 60 seconds after boot to save power — accessing it within this window redirects you to the device's IP address.)*
 
-> **From here on, you can edit your config directly in the browser** — Config tab → Edit. 
+> **From here on, you can edit your config directly in the browser** — Config tab → Open Setup Wizard. 
 > 
 > **Note on Security:** For your protection, credentials are migrated to the device's secure flash memory (NVS) by default. After the first successful setup, you will see your passwords replaced with `***STORED_IN_FLASH***` in the configuration editor and the `config.txt` file. This is normal and expected.
 
@@ -133,15 +151,9 @@ Open **[http://cpap.local](http://cpap.local)** in your browser to see live uplo
 
 SD card errors typically happen for two reasons:
 1. **Power Limits:** The CPAP machine cannot provide enough peak current to the SD slot during WiFi uploads. (Ensure you are running the latest firmware, which includes aggressive power-saving features).
-2. **Bad Timing (Collisions):** In **smart** mode, uploads begin shortly after therapy ends. If you briefly pause therapy and then resume it while an upload is actively running, the CPAP and the WiFi SD card will clash over SD access.
+2. **Bad Timing (Collisions):** In **Smart** mode, uploads begin shortly after therapy ends (within your configured time slot only). If you briefly pause therapy and then resume it while an upload is actively running, the CPAP and the WiFi SD card will clash over SD access. With a properly configured **Smart** mode time period, this should not happen.
 
-If bad timing is causing your errors, you can avoid it entirely by switching to **scheduled** mode in `config.txt`, setting a window during your waking hours:
-
-```ini
-UPLOAD_MODE = scheduled
-UPLOAD_START_HOUR = 9
-UPLOAD_END_HOUR = 21
-```
+If bad timing is causing your errors, you can avoid it entirely by switching to **Scheduled** mode.
 
 See the [Full Setup Guide](docs/user/getting-started.md#️-sd-card-errors--use-scheduled-mode) for details.
 
@@ -165,9 +177,9 @@ See the [Full Setup Guide](docs/user/getting-started.md#️-sd-card-errors--use-
 - **Automatic uploads after every therapy session** — smart mode detects when your CPAP finishes and starts uploading within minutes
 - **Uploads to Windows shares, NAS, or SleepHQ** — or both at the same time
 - **Zero-Touch Configuration Validation** — the visual setup wizard prevents you from saving configurations that could crash your CPAP's SD access
-- **Automatic Device Discovery** — accesses the setup page natively, and automatically falls back to IP-based connection if your router or VPN blocks `cpap.local`
+- **Automatic Device Discovery** — accesses the setup page natively, and automatically falls back to IP-based connection if your router or VPN blocks mDNS
 - **Web dashboard at `http://cpap.local`** — live progress, logs, config editor, OTA updates *(available for first 60 seconds after boot, then use IP address)*
-- **Edit config from the browser** — no SD card pulls after initial setup
+- **Edit config from the browser** — no SD card reader necessary and no need to edit any files manually
 - **Never uploads the same file twice** — tracks what's been sent, even across reboots
 - **Persistent log storage** — enable `PERSISTENT_LOGS=true` to flush logs to internal flash every 30 seconds; download past sessions from the browser. Emergency logs are always saved to SD card on boot failures and to internal flash before every reboot.
 - **Live system diagnostics** — System tab tracks free heap, max contiguous allocation (with rolling 2-minute minimums), and CPU load graphs for both cores
