@@ -131,7 +131,7 @@ Due to the partition table change, you **cannot** upgrade from v3.6i (or any ear
    - Click **Program**.
 
 4. **First Boot**
-   - Power on the device. The LittleFS partition will be reformatted on first boot.
+   - Power on the device by inserting it into your CPAP machine. The LittleFS partition will be reformatted on first boot. Wait up to a minute if necessary.
    - Connect to the **`CPAP-AutoSync`** WiFi network; you should be automatically redirected to the Setup page. If not, open `http://192.168.4.1/setup` in your browser.
    - ⚠️ **MANDATORY RE-CONFIGURATION**: You **must** re-enter your WiFi credentials and other secret configuration values (SleepHQ/SMB credentials, etc.) if they were previously encrypted. Because the partition change requires a full flash with erase, all secrets previously stored in secure memory (NVS) are lost.
    - Verify your configuration and click **Save & Restart**.
