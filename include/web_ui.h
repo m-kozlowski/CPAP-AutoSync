@@ -609,20 +609,29 @@ function renderStatus(d){
     row.style.display='';
     var done=b.done||0,total=b.total||0;
     var live=b.live||{};
-    // During a live upload, the currently-uploading folder may not yet be
-    // counted in `total` (it's only promoted into the incomplete list once
-    // touched).  Synthesize a +1 slot and add fractional file progress so
-    // the bar fills smoothly instead of jumping from N/N to (N+1)/(N+1).
+    // During a live upload the currently-uploading folder may not be reflected
+    // in `total` yet.  Two sub-cases share the `done == total` shape:
+    //   (A) net-new folder — state manager hasn't ticked total up yet.
+    //   (B) recent-only re-upload — today's folder is already in `done`
+    //       and is being refreshed to pick up appended files.
+    // Case (B) is the dominant case in Force/FRESH_ONLY sessions, and when
+    // the iteration order is "newest first" we can safely assume the live
+    // folder is one already counted in `done`.  We therefore pre-subtract
+    // it from `dispDone` (instead of synthesising a +1 slot on `total`) so
+    // the bar smoothly drops to (N-1 + frac) / N during the refresh and
+    // returns to N/N on completion, matching the user's mental model.
+    // See docs/dev/archive/74-PROGRESS-BAR.md for the full decision trail.
     var dispTotal=total,dispDone=done,frac=0;
     if(live.active&&live.total>0){
       frac=Math.min(1,Math.max(0,live.up/live.total));
-      if(done>=total)dispTotal=total+1;
-      dispDone=done+frac;
+      if(done>=total&&done>0)dispDone=done-1+frac;
+      else dispDone=done+frac;
     }
     var inc=Math.max(0,dispTotal-done-(live.active?1:0));
     var pct=dispTotal>0?Math.min(100,Math.round(dispDone*100/dispTotal)):0;
     document.getElementById('d-pf-'+key).style.width=pct+'%';
-    var st=dispTotal>0?(done+' / '+dispTotal):'\u2014';
+    var shownDone=live.active?Math.floor(dispDone):done;
+    var st=dispTotal>0?(shownDone+' / '+dispTotal):'\u2014';
     if(live.active)st+=' &nbsp;<span style=color:#38bdf8>uploading</span>';
     else if(dispTotal>0&&inc>0)st+=' &nbsp;<span style=color:#ffaa44>'+inc+' left</span>';
     else if(dispTotal>0&&done>0)st+=' &nbsp;<span style=color:#44ff44>&#10003;</span>';

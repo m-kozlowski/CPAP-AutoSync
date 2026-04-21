@@ -47,7 +47,7 @@ Upload scheduling, smart-mode quiet period (for automated uploads), SD-card acce
 - **Docs**: `MINIMIZE_REBOOTS` removed from the user configuration reference and architecture guide; now commented as developer-only.
 - **Fix**: Force Upload in Smart-mode quiet period now runs a recent-data-only session instead of silently no-op'ing. Same semantics as Force Upload in Scheduled mode outside the window.
 - **Fix**: SMB "Last upload" timestamp is now updated on every successful phased session. Previously only the primary (cloud) backend got stamped, so the NAS row kept showing a stale "N days ago" even right after a successful upload.
-- **Fix**: Per-backend progress bar now fills smoothly during an active upload. Previously it jumped from `N/N ✓` to `(N+1)/(N+1) ✓` because the currently-uploading folder wasn't promoted into the `total` count until first touched. The UI now synthesises a `+1` slot for the live folder, adds fractional file progress, and replaces the misleading green tick with an `uploading` badge while the session is in flight.
+- **Fix**: Per-backend progress bar now fills smoothly during an active upload. Previously it sat frozen at `N / N ✓` while the `Uploading k/m · <folder>` detail ticked underneath, because the state manager counts the currently-uploading folder as "already done" whenever it's a refresh of a recent folder (the dominant case in Force / FRESH_ONLY sessions). The dashboard now pre-subtracts the folder under live upload, showing `(N-1) / N uploading` with fractional file progress and returning to `N / N ✓` on completion. The misleading green tick is replaced with an `uploading` badge during the session. Full decision trail in `docs/dev/archive/74-PROGRESS-BAR.md` §8.5.
 
 ---
 

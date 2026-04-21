@@ -217,3 +217,117 @@ I'd pick **(1)**: hide the flag, default stays `true`, no behaviour change, no d
 None. The progress bar shows *what the state managers know*, not *whether the device rebooted*. The proposal in §4 stands regardless of how `MINIMIZE_REBOOTS` is handled. If anything, moving to a per-backend UI makes it easier to explain the current behaviour in text next to the card ("both backends upload every cycle"), which further undermines the case for a user-facing reboot knob.
 
 No build-system, scan-logic, or state-manager changes are required.
+
+---
+
+## 8. Implementation log (v4.1-beta1)
+
+This section is the paper trail for what actually shipped. The analysis in §§1-7 is untouched; everything below is post-hoc.
+
+### 8.1 What was implemented from §4
+
+Delivered in v4.1-beta1:
+
+- **Per-backend rows** — `@/opt/projects/personal/CPAP_data_uploader/include/web_ui.h`, the Upload Progress card now renders `SleepHQ Cloud` and `NAS (SMB)` as two independent rows, each hidden unless that backend is configured.
+- **`backends` object in `/api/status`** — `@/opt/projects/personal/CPAP_data_uploader/src/CpapWebServer.cpp::updateStatusSnapshot` emits `backends.{cloud,smb} = { enabled, done, total, pending, last_ts, live: { active, folder, up, total } }`. Legacy fields (`active_backend`, `folders_*`, `live_*`) retained for back-compat; `next_*` removed (dead since the move to phased orchestration).
+- **`setCloudStateManager()` plumbed** — mirrors the existing `setSmbStateManager()`. `@/opt/projects/personal/CPAP_data_uploader/src/main.cpp` wires both after uploader creation.
+- **`"DUAL"` sentinel dropped** — `g_activeBackendStatus.name` now reports the currently-running phase (`CLOUD` / `SMB`) or the primary at rest (`@/opt/projects/personal/CPAP_data_uploader/src/FileUploader.cpp`).
+- **`"(N empty)"` counter and `Next: …` row removed** — both were leaky abstractions; replaced by silent accounting in `pending` and a backend-aware aggregate Status line (`Up to date` / `⚠ N on cloud, M on NAS pending`).
+- **Buffer bump** — `WEB_STATUS_BUF_SIZE` 1024 → 1536 in `@/opt/projects/personal/CPAP_data_uploader/include/WebStatus.h` to fit the new block with headroom.
+
+### 8.2 `MINIMIZE_REBOOTS` — decision from §7
+
+Chose **Option (1)**: hide it, keep it internal. The key and its default (`true`) are preserved unchanged; only the user-facing docs were updated:
+- Removed from `docs/user/configuration-ui.md` (replaced with a developer-only HTML comment).
+- User-facing mention removed from `docs/dev/architecture.md` (now references the `max_alloc < 32 KB` safety valve instead).
+
+No code change. Zero regression risk.
+
+### 8.3 Force Upload in Smart-mode quiet period (follow-up bug)
+
+**Symptom:** User pressed Force Upload at ~00:20 local time in Smart mode (`SMART_START_HOUR=6`, window 9–18). FSM logged `No data category eligible, releasing` and no upload ran. The dashboard copy (`Force Upload → forces an upload of recent data now`) and the Danger Zone warning (`takes control of the SD card …`) both already promised exactly what the user expected; only the trigger handler wasn't following through.
+
+**Options considered:**
+
+| # | Approach | Verdict |
+|---|---|---|
+| A | Mirror the Scheduled-outside-window rule: set `g_forceRecentOnlyFlag` whenever `!canUploadFreshData()`. One predicate covers both Scheduled-out-of-window and Smart-quiet-period. | **Chosen.** ~5-line diff in `handleTriggerUpload()`. No new flags, no FSM states, matches existing UI copy. |
+| B | Always set `g_forceRecentOnlyFlag` on any web trigger. | Rejected — would silently demote in-window Force Upload from `ALL_DATA` to `FRESH_ONLY`, breaking the "catch up on backlog" use case. |
+| C | Introduce a second flag `g_forceUploadFlag` that bypasses all eligibility checks. | Rejected — strictly more surface area than A with no functional win; the only setter of `g_forceRecentOnlyFlag` is already user-initiated web trigger, so the user-vs-automated distinction A provides is already clean. |
+| D | New config key `FORCE_UPLOAD_BYPASSES_QUIET`, default `false`. | Rejected — defeats the purpose of a button explicitly called *Force Upload*, doubles user cognitive load, and the Danger Zone copy already carries the consent language. |
+| E | Add a `bool forced` parameter to `ScheduleManager::canUploadFreshData()`. | Rejected — muddles a read-only predicate with caller intent; wrong layer; touches every caller. |
+
+**Shipped (A)** at `@/opt/projects/personal/CPAP_data_uploader/src/CpapWebServer.cpp::handleTriggerUpload`:
+
+```cpp
+if (scheduleManager && !scheduleManager->canUploadFreshData()) {
+    const char* why = scheduleManager->isSmartMode()
+        ? "Smart mode quiet period"
+        : "Scheduled mode outside window";
+    LOGF("[WebServer] %s — force upload limited to recent data", why);
+    g_forceRecentOnlyFlag = true;
+}
+```
+
+Automated FSM path untouched: Smart quiet period still fully suppresses scheduled uploads. Only user-initiated Force Upload bypasses it.
+
+### 8.4 SMB "Last upload" timestamp staleness (follow-up bug)
+
+**Symptom:** After a clean dual-backend session, the SleepHQ Cloud row updated to `Last upload: just now` but the NAS (SMB) row kept showing `Last upload: 4 days ago`.
+
+**Root cause:** `@/opt/projects/personal/CPAP_data_uploader/src/FileUploader.cpp::runFullSession()` only stamped `primaryStateManager()` (cloud when both are configured). The SMB state manager's `lastUploadTimestamp` was never written.
+
+**Fix:** Stamp every configured backend's state manager on a clean session, using the existing `hasIncompleteFolders() == false` guard (which was already two-backend-aware, so if it passes both backends legitimately finished):
+
+```cpp
+if (cloudStateManager) cloudStateManager->setLastUploadTimestamp((unsigned long)endNow);
+if (smbStateManager)   smbStateManager->setLastUploadTimestamp((unsigned long)endNow);
+if (scheduleManager)   scheduleManager->setLastUploadTimestamp((unsigned long)endNow);
+```
+
+`scheduleManager` also mirrored so any other consumer of "last upload" stays consistent.
+
+### 8.5 Progress-bar live-fill flicker (follow-up UX)
+
+Once §8.1 was in, users saw a live per-file `Uploading 5/12 · <folder>` line underneath the per-backend row while the bar itself sat at `15 / 15 ✓` and never moved during the upload. Two iterations were needed.
+
+**Root cause (state manager):** `@/opt/projects/personal/CPAP_data_uploader/src/UploadStateManager.cpp:575-585` — `getIncompleteFoldersCount()` is `totalFoldersCount - completedCount - pendingCount`, clamped to 0. And `totalFoldersCount` is set from `folders.size()` at `@/opt/projects/personal/CPAP_data_uploader/src/FileUploader.cpp:901`, i.e. the number of folders *this scan decided it needed to touch*, not the true universe of folders. As a result the UI's derived `total = done + incomplete` can read equal to `done` even while a folder is being uploaded. Two distinct sub-cases:
+
+- **Case A — net-new folder** (e.g. tonight's `20260421` appearing for the first time): `totalFoldersCount = 1`, `completedCount` stays at 15 → `incomplete = max(0, 1-15-0) = 0` → UI sees `15/15` until the folder finishes, then snaps to `16/16`.
+- **Case B — recent-only refresh** (RECENT_FOLDER_DAYS re-iterating today's already-completed folder to pick up appended files): counters don't move at all; `done == total == N` throughout the session. The dominant case in FRESH_ONLY / Force Upload runs.
+
+**First attempt — "+1 total" synthesis (shipped briefly):** when `live.active && done >= total`, render as `done + frac` over `total + 1`. Worked for Case A. For Case B it introduced a visible `16 / 16 ✓ → 16 / 17 uploading → 16 / 16 ✓` flicker because the synthesised `+1` slot vanished at the end of the session.
+
+**Options considered for the fix:**
+
+| # | Approach | Verdict |
+|---|---|---|
+| 1 | Flip synthesis to **`-1 done`** when `done >= total && live.active`. Pre-subtract the folder being refreshed. | **Chosen.** ~3-line JS diff. Case B: `16/16 ✓ → 15/16 uploading → 16/16 ✓` — matches user's mental model. Case A: `15/15 ✓ → 14/15 uploading → 16/16 ✓` — one-off visual jump of 2 at completion but bar behaviour is monotone and correct. |
+| 2 | Add a `live.refresh` (or `live.new_folder`) boolean to `/api/status`. Server knows whether the currently-uploading folder is already in that backend's `completedFolders`; client picks `+1` vs `-1` accordingly. | Held in reserve. Correct for every case, requires a small `UploadStateManager::isFolderCompleted(String)` getter plus ~3 lines in `updateStatusSnapshot()`. Worth doing only if (1)'s Case-A visual jump becomes user-visible. |
+| 3 | Fix the root cause — change `UploadStateManager::totalFoldersCount` semantics so it tracks `done + incomplete + pending`, not scan-result size. | Rejected. Touches the state manager hot path and the persisted field semantics, meaningful regression risk, existing devices would see a one-time inconsistency on upgrade. Not justified by a cosmetic UI polish. |
+| 4 | Revert to pre-beta1 behaviour (no synthesis). | Rejected — the user explicitly flagged the jumpy `N/N → (N+1)/(N+1)` as unacceptable. |
+
+**Shipped (1)** at `@/opt/projects/personal/CPAP_data_uploader/include/web_ui.h::renderBe`:
+
+```js
+if(live.active && live.total>0){
+  frac = Math.min(1, Math.max(0, live.up/live.total));
+  if(done >= total && done > 0) dispDone = done - 1 + frac;  // re-upload case
+  else dispDone = done + frac;                                // promoted-mid-scan case
+}
+var shownDone = live.active ? Math.floor(dispDone) : done;
+```
+
+The `done > 0` guard prevents a negative display during the first-ever upload on a virgin device.
+
+**Assumption documented:** the live folder in a FRESH_ONLY / recent-only session is one already counted in `done`. This is safe because `scanDatalogFolders()` sorts newest-first (`@/opt/projects/personal/CPAP_data_uploader/src/FileUploader.cpp:890-892`) and Force Upload in quiet-period uses `FRESH_ONLY` (see §8.3). If we ever need to be exact, promote to Option 2.
+
+### 8.6 Summary of regressions checked
+
+- **Upload scheduling** — untouched; Smart-mode automated path still fully quiet before `SMART_START_HOUR`.
+- **Phased orchestrator / state managers** — untouched beyond the one-line additional stamping in §8.4.
+- **External `/api/status` consumers** — legacy fields preserved; `next_*` removal is the only break, and those were zero/`"NONE"` in v4.0 (dead fields).
+- **`MINIMIZE_REBOOTS`** — config key, default, and behaviour all unchanged.
+- **Heap / flash** — status buffer +512 B `.bss`; flash usage 88.8% (flat vs v4.0).
+
+Release notes: `release/RELEASE_NOTES_v4.1-beta1.md`.
