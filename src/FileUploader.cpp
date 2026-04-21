@@ -753,9 +753,16 @@ UploadResult FileUploader::runFullSession(SDCardManager* sdManager, int maxMinut
 
     if (!hasIncompleteFolders() && !sessionHadFailure) {
         time_t endNow; time(&endNow);
-        UploadStateManager* sm = primaryStateManager();
-        if (sm) sm->setLastUploadTimestamp((unsigned long)endNow);
-        if (scheduleManager) scheduleManager->markDayCompleted();
+        // Update the last-upload timestamp on every configured backend.
+        // hasIncompleteFolders() checks both backends, so reaching here means
+        // both have no pending work — each backend legitimately finished
+        // this session.  Previously only the primary (cloud) got stamped,
+        // which left the NAS (SMB) row showing a stale "Last upload: N days
+        // ago" in the dashboard even after a successful phased session.
+        if (cloudStateManager) cloudStateManager->setLastUploadTimestamp((unsigned long)endNow);
+        if (smbStateManager)   smbStateManager->setLastUploadTimestamp((unsigned long)endNow);
+        if (scheduleManager)   scheduleManager->setLastUploadTimestamp((unsigned long)endNow);
+        if (scheduleManager)   scheduleManager->markDayCompleted();
         LOG("[FileUploader] All folders complete — session done");
         return UploadResult::COMPLETE;
     }
