@@ -24,7 +24,7 @@
 6. **SMB:** Automatically creates directories on remote share
    **Cloud:** Associates data with your SleepHQ account (OAuth only if needed)
 7. Releases SD card after session or time budget exhausted
-8. Enters COOLDOWN → LISTENING loop for the next cycle (elective reboots skipped by default; set `MINIMIZE_REBOOTS=false` to restore post-upload reboots)
+8. Enters COOLDOWN → LISTENING loop for the next cycle (elective reboots skipped by default; a heap safety valve forces a reboot if `max_alloc < 32 KB`)
 9. Saves progress to separate internal state files for each backend (`/littlefs/.upload_state.v2.smb`/`.cloud` + journals)
 
 ### Smart File Tracking

@@ -188,6 +188,7 @@ CpapWebServer::CpapWebServer(Config* cfg, UploadStateManager* state,
       config(cfg),
       stateManager(state),
       smbStateManager(nullptr),
+      cloudStateManager(nullptr),
       scheduleManager(schedule),
       wifiManager(wifi),
       trafficMonitor(nullptr),
@@ -930,17 +931,33 @@ void CpapWebServer::updateStatusSnapshot() {
         rssi = wifiManager->getSignalStrength();
         strncpy(wifiIp, wifiManager->getIPAddress().c_str(), sizeof(wifiIp) - 1);
     }
-    // Active backend folder counts from the current session's state manager.
+    // Per-backend folder counts — both backends render their own row in the UI.
     // Pending (empty) folders are excluded from the total so the progress bar
-    // only measures real data folders.  They are reported separately as a note.
-    int foldersDone    = 0;
-    int foldersTotal   = 0;
-    int foldersPending = 0;
-    if (stateManager) {
-        foldersDone    = stateManager->getCompletedFoldersCount();
-        foldersPending = stateManager->getPendingFoldersCount();
-        foldersTotal   = foldersDone + stateManager->getIncompleteFoldersCount();
+    // only measures real data folders.
+    int cloudDone = 0, cloudTotal = 0, cloudPending = 0;
+    unsigned long cloudLastTs = 0;
+    bool cloudEnabled = (cloudStateManager != nullptr);
+    if (cloudStateManager) {
+        cloudDone    = cloudStateManager->getCompletedFoldersCount();
+        cloudPending = cloudStateManager->getPendingFoldersCount();
+        cloudTotal   = cloudDone + cloudStateManager->getIncompleteFoldersCount();
+        cloudLastTs  = cloudStateManager->getLastUploadTimestamp();
     }
+
+    int smbDone = 0, smbTotal = 0, smbPending = 0;
+    unsigned long smbLastTs = 0;
+    bool smbEnabled = (smbStateManager != nullptr);
+    if (smbStateManager) {
+        smbDone    = smbStateManager->getCompletedFoldersCount();
+        smbPending = smbStateManager->getPendingFoldersCount();
+        smbTotal   = smbDone + smbStateManager->getIncompleteFoldersCount();
+        smbLastTs  = smbStateManager->getLastUploadTimestamp();
+    }
+
+    // Primary (legacy fields) — prefer cloud when both exist, else whichever is present.
+    int foldersDone    = cloudEnabled ? cloudDone    : smbDone;
+    int foldersTotal   = cloudEnabled ? cloudTotal   : smbTotal;
+    int foldersPending = cloudEnabled ? cloudPending : smbPending;
     long nextUp = -1; bool timeSynced = false; bool inWindow = false; bool smartQuiet = false;
     if (scheduleManager) {
         nextUp = scheduleManager->getSecondsUntilNextUpload();
@@ -965,19 +982,32 @@ void CpapWebServer::updateStatusSnapshot() {
     prevIdle1 = g_idleCount1;
     prevCpuMs = nowMs;
 
-    // Live per-file progress from the upload task — check both session statuses
-    // since the phased orchestrator runs CLOUD then SMB within one session.
-    char liveFolder[33] = "";
-    int  liveUp = 0, liveTotal = 0; bool liveActive = false;
+    // Live per-file progress from the upload task.  The phased orchestrator
+    // runs CLOUD then SMB within one session, so each backend has its own
+    // live-status slot; the legacy live_* fields below mirror whichever is
+    // currently active.
+    char cloudLiveFolder[33] = "";
+    int  cloudLiveUp = 0, cloudLiveTotal = 0; bool cloudLiveActive = false;
     if (g_cloudSessionStatus.uploadActive) {
-        strncpy(liveFolder, (const char*)g_cloudSessionStatus.currentFolder, sizeof(liveFolder) - 1);
-        liveUp = g_cloudSessionStatus.filesUploaded; liveTotal = g_cloudSessionStatus.filesTotal;
-        liveActive = true;
-    } else if (g_smbSessionStatus.uploadActive) {
-        strncpy(liveFolder, (const char*)g_smbSessionStatus.currentFolder, sizeof(liveFolder) - 1);
-        liveUp = g_smbSessionStatus.filesUploaded; liveTotal = g_smbSessionStatus.filesTotal;
-        liveActive = true;
+        strncpy(cloudLiveFolder, (const char*)g_cloudSessionStatus.currentFolder, sizeof(cloudLiveFolder) - 1);
+        cloudLiveUp = g_cloudSessionStatus.filesUploaded;
+        cloudLiveTotal = g_cloudSessionStatus.filesTotal;
+        cloudLiveActive = true;
     }
+    char smbLiveFolder[33] = "";
+    int  smbLiveUp = 0, smbLiveTotal = 0; bool smbLiveActive = false;
+    if (g_smbSessionStatus.uploadActive) {
+        strncpy(smbLiveFolder, (const char*)g_smbSessionStatus.currentFolder, sizeof(smbLiveFolder) - 1);
+        smbLiveUp = g_smbSessionStatus.filesUploaded;
+        smbLiveTotal = g_smbSessionStatus.filesTotal;
+        smbLiveActive = true;
+    }
+
+    // Legacy live_* fields — prefer whichever backend is currently active.
+    const char* liveFolder = cloudLiveActive ? cloudLiveFolder : smbLiveActive ? smbLiveFolder : "";
+    int  liveUp    = cloudLiveActive ? cloudLiveUp    : smbLiveActive ? smbLiveUp    : 0;
+    int  liveTotal = cloudLiveActive ? cloudLiveTotal : smbLiveActive ? smbLiveTotal : 0;
+    bool liveActive = cloudLiveActive || smbLiveActive;
 
     char recentTabs[128];
     buildRecentTabsField(recentTabs, sizeof(recentTabs), nowMs);
@@ -1008,7 +1038,12 @@ void CpapWebServer::updateStatusSnapshot() {
         ",\"free_heap\":%u,\"max_alloc\":%u"
         ",\"wifi\":%s,\"rssi\":%d,\"wifi_ip\":\"%s\""
         ",\"active_backend\":\"%s\",\"folders_done\":%d,\"folders_total\":%d,\"folders_pending\":%d"
-        ",\"next_backend\":\"%s\",\"next_done\":%d,\"next_total\":%d,\"next_empty\":%d,\"next_ts\":%lu"
+        ",\"backends\":{"
+            "\"cloud\":{\"enabled\":%s,\"done\":%d,\"total\":%d,\"pending\":%d,\"last_ts\":%lu"
+                ",\"live\":{\"active\":%s,\"folder\":\"%s\",\"up\":%d,\"total\":%d}}"
+            ",\"smb\":{\"enabled\":%s,\"done\":%d,\"total\":%d,\"pending\":%d,\"last_ts\":%lu"
+                ",\"live\":{\"active\":%s,\"folder\":\"%s\",\"up\":%d,\"total\":%d}}"
+        "}"
         ",\"next_upload\":%ld"
         ",\"in_window\":%s,\"smart_quiet\":%s,\"smart_config_invalid\":%s"
         ",\"live_active\":%s,\"live_folder\":\"%s\",\"live_up\":%d,\"live_total\":%d"
@@ -1023,10 +1058,13 @@ void CpapWebServer::updateStatusSnapshot() {
         timeBuf, timeSynced ? "true" : "false",
         (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap(),
         wifiConn ? "true" : "false", rssi, wifiIp,
-        g_activeBackendStatus.name,   foldersDone, foldersTotal, foldersPending,
-        g_inactiveBackendStatus.name, g_inactiveBackendStatus.foldersDone,
-        g_inactiveBackendStatus.foldersTotal, g_inactiveBackendStatus.foldersEmpty,
-        (unsigned long)g_inactiveBackendStatus.sessionStartTs,
+        g_activeBackendStatus.name, foldersDone, foldersTotal, foldersPending,
+        cloudEnabled ? "true" : "false", cloudDone, cloudTotal, cloudPending,
+            (unsigned long)cloudLastTs,
+            cloudLiveActive ? "true" : "false", cloudLiveFolder, cloudLiveUp, cloudLiveTotal,
+        smbEnabled ? "true" : "false", smbDone, smbTotal, smbPending,
+            (unsigned long)smbLastTs,
+            smbLiveActive ? "true" : "false", smbLiveFolder, smbLiveUp, smbLiveTotal,
         nextUp,
         inWindow ? "true" : "false",
         smartQuiet ? "true" : "false",
@@ -1092,6 +1130,8 @@ void CpapWebServer::updateManagers(UploadStateManager* state, ScheduleManager* s
 }
 
 void CpapWebServer::setSmbStateManager(UploadStateManager* sm) { smbStateManager = sm; }
+
+void CpapWebServer::setCloudStateManager(UploadStateManager* sm) { cloudStateManager = sm; }
 
 void CpapWebServer::setSdManager(SDCardManager* sd) { sdManager = sd; }
 

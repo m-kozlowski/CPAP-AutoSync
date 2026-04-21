@@ -14,7 +14,7 @@
 // updateStatusSnapshot() in the main task. No mutex needed — torn reads on a
 // status display are harmless.
 
-static const size_t WEB_STATUS_BUF_SIZE = 1024;
+static const size_t WEB_STATUS_BUF_SIZE = 1536;
 static const size_t WEB_CONFIG_BUF_SIZE = 1024;
 
 extern char g_webStatusBuf[WEB_STATUS_BUF_SIZE];

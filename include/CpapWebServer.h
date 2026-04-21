@@ -31,8 +31,9 @@ class CpapWebServer {
 private:
     WebServer* server;
     Config* config;
-    UploadStateManager* stateManager;     // cloud (or sole) state manager
-    UploadStateManager* smbStateManager;  // SMB state manager (may be null)
+    UploadStateManager* stateManager;        // primary (cloud if present, else SMB)
+    UploadStateManager* smbStateManager;     // SMB state manager (may be null)
+    UploadStateManager* cloudStateManager;   // Cloud state manager (may be null)
     ScheduleManager* scheduleManager;
     WiFiManager* wifiManager;
     TrafficMonitor* trafficMonitor;
@@ -101,6 +102,7 @@ public:
     // Update manager references (needed after uploader recreation)
     void updateManagers(UploadStateManager* state, ScheduleManager* schedule);
     void setSmbStateManager(UploadStateManager* sm);
+    void setCloudStateManager(UploadStateManager* sm);
     void setWiFiManager(WiFiManager* wifi);
     void setTrafficMonitor(TrafficMonitor* tm);
     void setSdManager(SDCardManager* sd);

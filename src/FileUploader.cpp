@@ -255,13 +255,15 @@ bool FileUploader::begin() {
         return false;
     }
 
-    // Populate GUI backend status
-    const char* mode = hasBothBackends() ? "DUAL" :
-                       hasCloudBackend() ? "CLOUD" :
+    // Populate GUI backend status — legacy single-name label.
+    // The new per-backend UI no longer uses a "DUAL" sentinel; each backend
+    // renders its own row from the `backends` block in /api/status.  This
+    // name is kept for the header (e.g. "CLOUD" during phase 1, "SMB" during
+    // phase 2) and for any external consumers of the legacy field.
+    const char* mode = hasCloudBackend() ? "CLOUD" :
                        hasSmbBackend()   ? "SMB"   : "NONE";
     strncpy(g_activeBackendStatus.name, mode, sizeof(g_activeBackendStatus.name) - 1);
     g_activeBackendStatus.valid = anyBackendCreated;
-    // Inactive backend display — not used in dual mode
     strncpy(g_inactiveBackendStatus.name, "NONE", sizeof(g_inactiveBackendStatus.name) - 1);
     g_inactiveBackendStatus.valid = false;
 
@@ -730,8 +732,10 @@ UploadResult FileUploader::runFullSession(SDCardManager* sdManager, int maxMinut
 #endif
 
     currentPhase = UploadBackend::NONE;
-    // Restore GUI status to show configured mode
-    const char* mode = dual ? "DUAL" : hasCloudBackend() ? "CLOUD" : "SMB";
+    // Restore GUI status to show configured primary backend (legacy label).
+    // The per-backend UI reads the `backends` block directly; this name is
+    // only consumed by the legacy header and external clients.
+    const char* mode = hasCloudBackend() ? "CLOUD" : hasSmbBackend() ? "SMB" : "NONE";
     strncpy(g_activeBackendStatus.name, mode, sizeof(g_activeBackendStatus.name) - 1);
 
     // ── Determine result ──────────────────────────────────────────────────────

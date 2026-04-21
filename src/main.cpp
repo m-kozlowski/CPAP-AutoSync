@@ -928,9 +928,10 @@ void setup() {
             webServer->setSdManager(&sdManager);
             LOG_DEBUG("SDCardManager linked to web server for config editor");
 
-            // Give web server access to the SMB state manager so updateStatusSnapshot()
-            // can show folder counts from the active backend (SMB pass vs cloud pass).
+            // Give web server access to both backend state managers so
+            // updateStatusSnapshot() can render one progress row per backend.
             webServer->setSmbStateManager(uploader->getSmbStateManager());
+            webServer->setCloudStateManager(uploader->getCloudStateManager());
             
             // Set web server reference in uploader for responsive handling during uploads
             if (uploader) {

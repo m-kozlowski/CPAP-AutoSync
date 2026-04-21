@@ -67,7 +67,13 @@ Only required when `ENDPOINT_TYPE` includes `CLOUD`.
 | `INACTIVITY_SECONDS` | `62` | 10–3600 | Seconds of SD bus silence required before the device attempts to take SD card control. Increase if your CPAP accesses the card frequently during warm-up. |
 | `EXCLUSIVE_ACCESS_MINUTES` | `5` | 1–30 | Maximum minutes the device holds exclusive SD card control per upload session. The session ends early if all work is done. |
 | `COOLDOWN_MINUTES` | `10` | 1–60 | Minutes to wait (SD card released) between upload cycles before starting the next inactivity check. |
-| `MINIMIZE_REBOOTS` | `true` | `true`/`false` | When `true` (default), the device skips elective soft-reboots after upload sessions and reuses the existing runtime (COOLDOWN → LISTENING loop). Mandatory reboots (watchdog, user-triggered state reset / soft reboot, OTA) still occur. When `false`, the device reboots after every real upload session to restore a clean heap. |
+<!-- MINIMIZE_REBOOTS is an internal / developer-only flag. It controls whether
+     the FSM performs an elective soft-reboot after each upload session. The
+     default (`true`) skips the reboot and reuses the runtime; a heap safety
+     valve at `max_alloc < 32 KB` forces a reboot regardless of this flag.
+     Not surfaced to end users; edit via raw `config.txt` only if diagnosing
+     heap issues. -->
+
 
 ---
 
