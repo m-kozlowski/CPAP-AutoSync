@@ -491,13 +491,21 @@ void CpapWebServer::handleRoot() {
 void CpapWebServer::handleTriggerUpload() {
     LOG("[WebServer] Upload trigger requested via web interface");
 
-    // Scheduled mode outside window: allow but restrict to recent data only.
-    // Old data is skipped to avoid lengthy SD access during therapy hours.
-    if (scheduleManager && !scheduleManager->isSmartMode()) {
-        if (!scheduleManager->isInUploadWindow()) {
-            LOG("[WebServer] Scheduled mode outside window — force upload limited to recent data");
-            g_forceRecentOnlyFlag = true;
-        }
+    // Force Upload outside a "fresh-eligible" period: allow but restrict to
+    // recent data only.  Covers two cases with one predicate:
+    //   • Scheduled mode outside the upload window.
+    //   • Smart  mode inside the quiet period (before SMART_START_HOUR).
+    // In both cases canUploadFreshData() returns false, so the FSM would
+    // otherwise bail with "No data category eligible, releasing".  The user
+    // explicitly pressed Force Upload and has been warned via the Danger
+    // Zone copy, so honour the request with FRESH_ONLY semantics and the
+    // usual EXCLUSIVE_ACCESS_MINUTES time budget.
+    if (scheduleManager && !scheduleManager->canUploadFreshData()) {
+        const char* why = scheduleManager->isSmartMode()
+            ? "Smart mode quiet period"
+            : "Scheduled mode outside window";
+        LOGF("[WebServer] %s — force upload limited to recent data", why);
+        g_forceRecentOnlyFlag = true;
     }
 
     // Set global trigger flag — FSM picks this up in the next loop iteration

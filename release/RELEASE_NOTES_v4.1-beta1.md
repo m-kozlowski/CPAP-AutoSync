@@ -25,8 +25,15 @@ The `MINIMIZE_REBOOTS` config key was originally meaningful back when each uploa
 - The key and its default (`true`) are **unchanged** — your existing configs continue to work with no behaviour change.
 - It has been **removed from the user configuration reference** and is no longer documented as a tuning parameter. Treat it as a developer-only diagnostic toggle.
 
-### 🚫 No behaviour changes to uploads
-This release is UI-layer and documentation only. Upload scheduling, smart-mode quiet period, SD-card access, SMB/cloud transport, and state tracking are all identical to v4.0.
+### � Fixed: Force Upload now honours its name in Smart mode
+Previously, pressing **Force Upload** during Smart mode's quiet period (before `SMART_START_HOUR`) silently no-op'd with `No data category eligible, releasing`. The dashboard already advertised this as "forces an upload of recent data now" and the Danger Zone already carried the SD-access warning — only the web trigger handler was not following through.
+
+- Force Upload in **Smart mode quiet period** now runs a normal phased upload session restricted to recent data (`FRESH_ONLY`), same semantics as Force Upload already had in **Scheduled mode outside the upload window**.
+- The automated FSM path is untouched: the quiet period still fully suppresses scheduled uploads. Only the user-initiated web trigger bypasses it, matching existing UI copy.
+- Standard safeguards still apply: `EXCLUSIVE_ACCESS_MINUTES` time budget, pre-flight work probe, and the `nothing-to-upload` short-circuit.
+
+### 🚫 No other behaviour changes to uploads
+Upload scheduling, smart-mode quiet period (for automated uploads), SD-card access, SMB/cloud transport, and state tracking are otherwise identical to v4.0.
 
 ---
 
@@ -38,6 +45,7 @@ This release is UI-layer and documentation only. Upload scheduling, smart-mode q
 - **Internals**: `g_activeBackendStatus.name` no longer emits `"DUAL"`; set to `CLOUD` or `SMB` at rest and to the currently-running phase mid-session.
 - **Buffer**: `WEB_STATUS_BUF_SIZE` grown from 1024 → 1536 to fit the new per-backend block.
 - **Docs**: `MINIMIZE_REBOOTS` removed from the user configuration reference and architecture guide; now commented as developer-only.
+- **Fix**: Force Upload in Smart-mode quiet period now runs a recent-data-only session instead of silently no-op'ing. Same semantics as Force Upload in Scheduled mode outside the window.
 
 ---
 
