@@ -1217,7 +1217,24 @@ void uploadTaskFunction(void* pvParameters) {
          (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
     UploadResult result = params->uploader->runFullSession(
         params->sdManager, params->maxMinutes, params->filter, params->reducedRetries);
-    
+
+    // Step 4b: Refresh the work-probe snapshot with post-upload state while
+    // the SD is still mounted.  Without this, the dashboard progress counts
+    // stay frozen at their pre-session values until the next upload session
+    // runs a fresh probe — so a successful RECENT_FOLDER_DAYS refresh of
+    // today's folder would leave the UI stuck at "N-1 / N · 1 left" even
+    // though the folder is now fully synced.  The probe is cheap (100–200 ms
+    // of SD time for a typical card) and we've already paid the SD-mount
+    // cost.  Skipped when the session errored or hit exclusive-access
+    // timeout — in those cases the counts are already volatile and a fresh
+    // probe on the next cycle will sort it out.
+    if ((result == UploadResult::COMPLETE || result == UploadResult::NOTHING_TO_DO)
+        && params->sdManager->hasControl()) {
+        params->uploader->hasWorkToUpload(params->sdManager->getFS());
+        esp_task_wdt_reset();
+        g_uploadHeartbeat = millis();
+    }
+
     // Step 5: Release SD card
     if (params->sdManager->hasControl()) {
         params->sdManager->releaseControl();

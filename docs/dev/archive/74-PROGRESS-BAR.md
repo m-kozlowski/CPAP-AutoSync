@@ -428,6 +428,39 @@ Side-effects of the refactor:
 
 **Semantics preserved:** the "incomplete + old + outside upload window" case still counts in the universe and surfaces as `1 left`, because in that scenario the folder *does* contain real data and the `1 left` message is correct (it just can't be uploaded this session).
 
-### 9.7 Future work
+### 9.7 Follow-up bug: stale snapshot after successful upload
+
+Second post-deploy test surfaced:
+
+- Pre-upload: `12 / 12 ✓` for both backends.
+- New CPAP activity: 2 new `.edf` files land in today's folder.
+- Force Upload runs. During the session: `11 / 12 · 1 left` (correct — the folder has changed content).
+- Session completes successfully, files uploaded, folder marked completed.
+- **UI remains stuck at `11 / 12 · 1 left`** indefinitely. Only the next full upload session (triggered later) corrects it back to `12 / 12`.
+
+**Root cause.** `FileUploader::hasWorkToUpload()` is the sole producer of the `(universe, synced)` snapshot, and it only runs **once per session** at the pre-upload work-probe step (`@/opt/projects/personal/CPAP_data_uploader/src/main.cpp:1193`). Between the pre-upload probe and the end of the session, `markFolderCompleted()` is called multiple times but **does not touch the probe snapshot** — it's a derived-cache that nothing refreshes at session end. The stale cache survives until the next pre-upload probe overwrites it.
+
+**Fix.** Add a post-session probe refresh in the upload task, immediately after `runFullSession()` returns and before releasing the SD card. The SD is still mounted, so no additional exclusive-access cost; the probe itself is ~100–200 ms on a typical card.
+
+```cpp
+// src/main.cpp — upload task, step 4b
+if ((result == UploadResult::COMPLETE || result == UploadResult::NOTHING_TO_DO)
+    && params->sdManager->hasControl()) {
+    params->uploader->hasWorkToUpload(params->sdManager->getFS());
+    esp_task_wdt_reset();
+    g_uploadHeartbeat = millis();
+}
+```
+
+Conditional on `COMPLETE` / `NOTHING_TO_DO` because:
+
+- On `ERROR`, the state is already partially volatile (folder marked completed but import didn't finalize, etc.). A fresh probe would lock in potentially inconsistent numbers. Wait for the next session.
+- On `TIMEOUT`, the exclusive-access window expired mid-upload. Leave the pre-session snapshot until the next cycle — the user knows a timeout happened and will trigger another session.
+
+**Why not refresh the snapshot incrementally** (i.e. bump `probeSynced` inside `markFolderCompleted`)? Considered and rejected: `markFolderCompleted` doesn't know whether the folder counted toward `universe` (it might be an empty stub; see §9.6), doesn't know whether the folder had changed `.edf` content that the probe had excluded, and would need a parallel decrement path for `removeFolderFromCompleted`. The probe already encapsulates all that logic correctly — running it once more at session end is cheaper to write and easier to trust than mirroring its rules in three places.
+
+**Result.** After session completion, the UI reflects the fresh post-upload counts in the next `/api/status` poll — typically within 1 second of `RELEASING → COOLDOWN`.
+
+### 9.8 Future work
 
 If users report the one-off "left side drops by 1 unexpectedly" case (Case A from §8.5 — a genuinely net-new folder appearing), we can promote Option 2 from §8.5: add a `live.refresh` hint to `/api/status` so the client can disambiguate.  Not needed for v4.1-beta1 because the state manager's `hasFileChanged` path naturally handles the dominant case.
