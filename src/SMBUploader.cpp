@@ -180,6 +180,7 @@ static int smb2_set_basic_info_ev(struct smb2_context* smb2, struct smb2fh* fh,
 
     struct smb2_pdu* pdu = smb2_cmd_set_info_async(smb2, &req, smb2_generic_cb, &cb);
     if (pdu == NULL) return -1;
+    smb2_queue_pdu(smb2, pdu);
     int rc = smb2_run_event_loop(smb2, &cb);
     if (rc < 0) return rc;
     return cb.status;
