@@ -15,6 +15,7 @@
 extern "C" {
     #include "smb2/smb2.h"
     #include "smb2/libsmb2.h"
+    #include "smb2/libsmb2-raw.h"
 }
 
 // ============================================================================
@@ -164,6 +165,22 @@ static int smb2_stat_ev(struct smb2_context* smb2, const char* path,
     int rc = smb2_stat_async(smb2, path, st, smb2_generic_cb, &cb);
     if (rc < 0) return rc;
     rc = smb2_run_event_loop(smb2, &cb);
+    if (rc < 0) return rc;
+    return cb.status;
+}
+
+static int smb2_set_basic_info_ev(struct smb2_context* smb2, struct smb2fh* fh,
+                                  const struct smb2_file_basic_info* info) {
+    struct smb2_async_cb_data cb = {0, 0, nullptr};
+    struct smb2_set_info_request req = {};
+    req.info_type = SMB2_0_INFO_FILE;
+    req.file_info_class = SMB2_FILE_BASIC_INFORMATION;
+    memcpy(req.file_id, smb2_get_file_id(fh), SMB2_FD_SIZE);
+    req.input_data = (void*)info;
+
+    struct smb2_pdu* pdu = smb2_cmd_set_info_async(smb2, &req, smb2_generic_cb, &cb);
+    if (pdu == NULL) return -1;
+    int rc = smb2_run_event_loop(smb2, &cb);
     if (rc < 0) return rc;
     return cb.status;
 }
@@ -883,6 +900,32 @@ bool SMBUploader::upload(const String& localPath, const String& remotePath,
                  attemptBytesTransferred, (unsigned int)fileSize);
             LOG("[SMB] Upload incomplete - file may be corrupted on remote server");
             success = false;
+        }
+
+        // Preserve original file timestamps from SD card
+        if (success && !skipRemoteClose) {
+            time_t localMtime = localFile.getLastWrite();
+            if (localMtime > 0) {
+                struct smb2_timeval tv;
+                tv.tv_sec = localMtime;
+                tv.tv_usec = 0;
+
+                struct smb2_file_basic_info info = {};
+                info.creation_time = tv;
+                info.last_access_time = tv;
+                info.last_write_time = tv;
+                info.change_time = tv;
+                info.file_attributes = 0;  // Don't change attributes
+
+                int rc = smb2_set_basic_info_ev(smb2, remoteFile, &info);
+                if (rc < 0) {
+                    const char* err = smb2_get_error(smb2);
+                    LOG_WARNF("[SMB] Failed to preserve timestamp for %s: %s",
+                              fullRemotePath.c_str(), err ? err : "unknown");
+                } else {
+                    LOG_DEBUGF("[SMB] Preserved original timestamp for %s", fullRemotePath.c_str());
+                }
+            }
         }
 
         // Close remote file. If transport is known broken and we are about to
