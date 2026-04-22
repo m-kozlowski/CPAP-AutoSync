@@ -1225,10 +1225,16 @@ void uploadTaskFunction(void* pvParameters) {
     // today's folder would leave the UI stuck at "N-1 / N · 1 left" even
     // though the folder is now fully synced.  The probe is cheap (100–200 ms
     // of SD time for a typical card) and we've already paid the SD-mount
-    // cost.  Skipped when the session errored or hit exclusive-access
-    // timeout — in those cases the counts are already volatile and a fresh
-    // probe on the next cycle will sort it out.
-    if ((result == UploadResult::COMPLETE || result == UploadResult::NOTHING_TO_DO)
+    // cost.
+    //
+    // TIMEOUT is included because the timer expiring with partial progress
+    // is a normal outcome (not an error).  If we skip the probe, the
+    // progress bar reverts to the stale pre-session snapshot — e.g. SMB
+    // shows 0 / 12 even though two folders were successfully uploaded during
+    // the phase.  ERROR is still skipped: the state may be inconsistent and
+    // a fresh probe on the next cycle will sort it out.
+    if ((result == UploadResult::COMPLETE || result == UploadResult::NOTHING_TO_DO ||
+         result == UploadResult::TIMEOUT)
         && params->sdManager->hasControl()) {
         params->uploader->hasWorkToUpload(params->sdManager->getFS());
         esp_task_wdt_reset();
