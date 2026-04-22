@@ -197,23 +197,50 @@ FileUploader::WorkProbeResult FileUploader::hasWorkToUpload(fs::FS &sd) {
             continue;
         }
 
-        universe++;
-
         char path[64];
         snprintf(path, sizeof(path), "/DATALOG/%s", folderName.c_str());
         const String folderPath(path);
-        const bool recent  = isRecentFolder(folderName);
+        const bool recent = isRecentFolder(folderName);
+
+        // Look up completion state once per backend (memory-only lookup, cheap).
+        const bool cloudCompleted = cloudSm && cloudSm->isFolderCompleted(folderName);
+        const bool smbCompleted   = smbSm   && smbSm->isFolderCompleted(folderName);
+        const bool anyCompleted   = cloudCompleted || smbCompleted;
+
+        // Lazy `.edf` presence check — one SD read at most per folder, skipped
+        // entirely when a backend already knows this folder is completed.
+        bool edfChecked = false;
+        bool hasEdf = false;
+        auto checkEdf = [&]() -> bool {
+            if (!edfChecked) { hasEdf = folderHasEdf(folderPath); edfChecked = true; }
+            return hasEdf;
+        };
+
+        // ── Universe filter ─────────────────────────────────────────────────
+        // A folder counts toward the shared denominator only when it is
+        // visible to the user as "real data": either it has .edf content now,
+        // or at least one backend has successfully uploaded it before (even
+        // if the files have since been pruned).  Empty, never-uploaded stubs
+        // — e.g. a DATALOG/YYYYMMDD directory the CPAP has pre-created for
+        // tonight's session but not yet written to — are skipped so they
+        // don't produce a phantom "1 left" that can't be acted on.
+        if (!anyCompleted && !checkEdf()) {
+            entry.close();
+            continue;
+        }
+
+        universe++;
 
         // Evaluate sync status for one backend.  `hasWork` is an output
         // variable that gets OR'd; `syncedOut` is incremented when fully
         // in sync for this backend.
-        auto evaluateBackend = [&](UploadStateManager* sm, bool& hasWork, int& syncedOut) {
+        auto evaluateBackend = [&](UploadStateManager* sm, bool completed,
+                                    bool& hasWork, int& syncedOut) {
             if (!sm) return;
-            const bool completed = sm->isFolderCompleted(folderName);
 
             if (completed) {
                 if (recent) {
-                    // Need to verify no appended/changed file since last upload.
+                    // Verify no appended/changed file since last upload.
                     if (folderHasChangedEdf(folderPath, sm)) {
                         hasWork = true;
                     } else {
@@ -226,19 +253,25 @@ FileUploader::WorkProbeResult FileUploader::hasWorkToUpload(fs::FS &sd) {
                 return;
             }
 
-            // Incomplete.  Work only counts if the folder has actual content
-            // AND this backend is allowed to upload it right now (old folders
-            // are skipped outside the upload window).
+            // Incomplete for this backend.  Work only counts if this backend
+            // is allowed to upload the folder right now (old folders are
+            // skipped outside the upload window).  In that window-closed
+            // case the folder still legitimately belongs in the universe —
+            // the other backend may have completed it, or it has content
+            // waiting for the next window — so a "1 left" display is
+            // correct even though this probe run reports no work.
             if (!recent && !canUploadOld) return;
-            if (folderHasEdf(folderPath)) {
+            if (checkEdf()) {
                 hasWork = true;
             }
-            // Empty incomplete folders are neither "work" nor "synced" — they
-            // sit in the pending bucket until they grow content or age out.
+            // Empty incomplete folders are neither work nor synced here;
+            // they were filtered out of the universe above unless the other
+            // backend had completed them, which is a meaningful divergence
+            // worth surfacing to the user.
         };
 
-        evaluateBackend(cloudSm, result.hasCloudWork, cloudSynced);
-        evaluateBackend(smbSm,   result.hasSmbWork,   smbSynced);
+        evaluateBackend(cloudSm, cloudCompleted, result.hasCloudWork, cloudSynced);
+        evaluateBackend(smbSm,   smbCompleted,   result.hasSmbWork,   smbSynced);
 
         entry.close();
     }

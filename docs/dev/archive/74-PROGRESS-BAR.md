@@ -399,6 +399,35 @@ It existed purely to paper over a broken denominator.  Now that the denominator 
 
 Flash usage: 88.8% → 88.9% (`pico32-ota`, esp32doit-devkit-v1).  RAM `.bss`: +8 B per state manager instance (two `int` fields).
 
-### 9.6 Future work
+### 9.6 Follow-up bug: phantom "1 left" on empty stub folders
+
+First post-deploy test surfaced:
+
+```
+[WorkProbe] Result: cloud=0 smb=0 | universe=12 cloudSynced=11 smbSynced=11
+```
+
+— yet the UI rendered `11 / 12 · 1 left` for both backends, contradicting `hasWork=false`.
+
+**Root cause.** The universe filter was too permissive: *every* in-window DATALOG subdirectory was counted, including empty stubs with no `.edf` content that no backend had ever uploaded. Such a folder hit the incomplete-but-empty branch of `evaluateBackend`, which neither flagged it as work nor counted it as synced, leaving `total − done = 1` with nothing actually behind it.
+
+This is common in practice — the CPAP pre-creates `DATALOG/YYYYMMDD` for tonight's session slightly before any file lands in it.
+
+**Fix.** Added an explicit universe filter before `universe++`:
+
+```cpp
+if (!anyCompleted && !checkEdf()) continue;
+```
+
+A folder only counts toward the shared denominator when it is either (a) completed for at least one configured backend, or (b) currently contains at least one `.edf` file. Empty-never-uploaded stubs are invisible until they grow content.
+
+Side-effects of the refactor:
+
+- `isFolderCompleted` is now looked up once per folder per backend (memory-only, no SD cost), not once inside each `evaluateBackend` call.
+- `folderHasEdf` is wrapped in a lazy `checkEdf` closure so it runs **at most once per folder** regardless of how many backends consult it — a small additional SD-hold-time win over the §9 baseline when both backends are configured.
+
+**Semantics preserved:** the "incomplete + old + outside upload window" case still counts in the universe and surfaces as `1 left`, because in that scenario the folder *does* contain real data and the `1 left` message is correct (it just can't be uploaded this session).
+
+### 9.7 Future work
 
 If users report the one-off "left side drops by 1 unexpectedly" case (Case A from §8.5 — a genuinely net-new folder appearing), we can promote Option 2 from §8.5: add a `live.refresh` hint to `/api/status` so the client can disambiguate.  Not needed for v4.1-beta1 because the state manager's `hasFileChanged` path naturally handles the dominant case.
