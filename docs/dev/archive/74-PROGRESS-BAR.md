@@ -461,6 +461,32 @@ Conditional on `COMPLETE` / `NOTHING_TO_DO` because:
 
 **Result.** After session completion, the UI reflects the fresh post-upload counts in the next `/api/status` poll — typically within 1 second of `RELEASING → COOLDOWN`.
 
-### 9.8 Future work
+### 9.8 Mid-session refresh between Cloud and SMB phases
+
+**Bug (follow-up).** The post-session probe fixes the stale-count case when everything completes quickly, but when both backends are configured the Cloud phase usually finishes minutes before the SMB phase does. SMB can legitimately take a long time (or fail with a long retry loop if the user's NAS is off at night). In that window, the Cloud row stays frozen at its pre-session value — e.g. `11 / 12 · 1 left` — even though Cloud has actually finished and the folder is fully synced on SleepHQ. Users reasonably ask "why isn't the counter moving, the SMB step is already running?".
+
+**Fix.** Add a **mid-session probe refresh** at the seam between Phase 1 (Cloud) and Phase 2 (SMB) in `FileUploader::runFullSession()`, guarded by `if (smbWork)` so it only fires when an SMB phase is actually about to run:
+
+```cpp
+// src/FileUploader.cpp — end of Phase 1, before Phase 2
+if (smbWork) {
+    LOG("[FileUploader] Post-cloud snapshot refresh (pre-SMB)");
+    hasWorkToUpload(sd);
+}
+```
+
+Placement rationale — after `cloudStateManager->save(stateFs)`, after `sleephqUploader->resetConnection()`, and after the `delay(100)` lwIP cleanup. By this point the cloud state is durable on LittleFS and TLS buffers are released, so the probe runs against a clean, consistent state. SD is still mounted, so no extra exclusive-access cost.
+
+**Correctness of partial-success case.** If Cloud completed some folders and left others pending (e.g. a transient 429, or the time budget ran out mid-phase), the probe re-walks `/DATALOG` and re-computes `cloudSynced` from the actual state-manager contents. The `folderHasChangedEdf` path handles "completed but a recent file has grown since" correctly. The SMB row is also refreshed in the same call, which is desirable: any folder Cloud just completed is still *not* synced for SMB until Phase 2 uploads it too, so the SMB numerator legitimately stays at its pre-session value (or drops, if a backend-symmetric bookkeeping change happened).
+
+**Why guarded by `smbWork`.** If there's no SMB phase coming up, the post-session probe at `main.cpp:1231` already handles everything within ~1 second of `RELEASING`. Running an additional probe when only Cloud is configured would be pure cost with no UX benefit.
+
+**Why not incremental bump on phase completion** (e.g. `cloudSm->setProbeSnapshot(universe, cloudUniverse)` on a clean Cloud exit)? Rejected for the same reason as §9.7: it would mirror probe semantics in a second place, would need special-casing for partial Cloud success, and would force Phase 1 to track exactly which folders fed which bucket. The probe already owns that logic and the re-run cost is a rounding error next to even the fastest SMB phase.
+
+**Cost.** ~100–200 ms of SD CPU+SPI time, run once per session that has both phases. Negligible compared to the multi-minute SMB phase it precedes.
+
+**Result.** The Cloud row in the dashboard updates to its post-Cloud-phase value the moment Phase 1 ends, regardless of how long SMB takes or whether SMB fails. The SMB row continues to show live upload progress during Phase 2, and both rows get a final refresh via the `main.cpp:1231` post-session probe.
+
+### 9.9 Future work
 
 If users report the one-off "left side drops by 1 unexpectedly" case (Case A from §8.5 — a genuinely net-new folder appearing), we can promote Option 2 from §8.5: add a `live.refresh` hint to `/api/status` so the client can disambiguate.  Not needed for v4.1-beta1 because the state manager's `hasFileChanged` path naturally handles the dominant case.

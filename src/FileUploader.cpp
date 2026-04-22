@@ -684,6 +684,21 @@ UploadResult FileUploader::runFullSession(SDCardManager* sdManager, int maxMinut
         g_cloudSessionStatus.filesTotal       = 0;
         g_cloudSessionStatus.currentFolder[0] = '\0';
 
+        // Mid-session snapshot refresh — publish fresh per-backend counts
+        // now that the Cloud phase is done, so the dashboard Cloud row
+        // updates immediately instead of waiting for the (potentially
+        // multi-minute, possibly failing) SMB phase to finish.  SD card
+        // is still mounted; the probe adds ~100–200 ms and reuses the
+        // same logic that produced the pre-session snapshot, so partial
+        // Cloud success (some folders synced, others left for retry) is
+        // reported correctly.  The SMB row's snapshot also gets
+        // refreshed, which is desirable — any folder Cloud completed is
+        // still "not synced" for SMB until SMB uploads it too.
+        if (smbWork) {
+            LOG("[FileUploader] Post-cloud snapshot refresh (pre-SMB)");
+            hasWorkToUpload(sd);
+        }
+
         // Reset timer flag for SMB phase — cloud budget expiry shouldn't block SMB
         timerExpired = false;
     }
