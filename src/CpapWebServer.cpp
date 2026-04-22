@@ -948,17 +948,37 @@ void CpapWebServer::updateStatusSnapshot() {
     // back to the legacy state-manager math so boot-time snapshots are still
     // coherent (completed / completed+incomplete).
     //
+    // During an active upload phase the probe snapshot is frozen (it only
+    // updates at the pre-session, post-cloud, and post-session seams).  To
+    // prevent the progress bar from oscillating between the frozen probe
+    // count and probe+1 as fractional live folder progress ticks up and down,
+    // we add newly-completed folders since the last probe snapshot to `done`.
+    // This gives smooth, monotonic progress that matches the actual upload.
+    //
     // `pending` still reflects empty-folder bookkeeping and is reported as-is.
     auto readBackendCounts = [](UploadStateManager* sm,
                                 int& done, int& total, int& pending,
-                                unsigned long& lastTs) {
+                                unsigned long& lastTs, bool liveActive) {
         if (!sm) return;
         pending = sm->getPendingFoldersCount();
         lastTs  = sm->getLastUploadTimestamp();
         int u = sm->getProbeUniverse();
         int s = sm->getProbeSynced();
         if (u >= 0 && s >= 0) {
-            done  = s;
+            done = s;
+            // Live delta: add folders completed since the snapshot was taken.
+            // Only folders that are NEW to the completed set are counted here;
+            // re-uploaded already-completed folders are handled by the next
+            // probe refresh, so the live count may briefly under-count them
+            // (progress bar shows "uploading" anyway).
+            if (liveActive) {
+                int snapComp = sm->getProbeSnapshotCompletedCount();
+                int currComp = sm->getCompletedFoldersCount();
+                if (snapComp >= 0 && currComp > snapComp) {
+                    done += (currComp - snapComp);
+                    if (done > u) done = u;
+                }
+            }
             total = u;
         } else {
             done  = sm->getCompletedFoldersCount();
@@ -969,12 +989,10 @@ void CpapWebServer::updateStatusSnapshot() {
     int cloudDone = 0, cloudTotal = 0, cloudPending = 0;
     unsigned long cloudLastTs = 0;
     bool cloudEnabled = (cloudStateManager != nullptr);
-    readBackendCounts(cloudStateManager, cloudDone, cloudTotal, cloudPending, cloudLastTs);
 
     int smbDone = 0, smbTotal = 0, smbPending = 0;
     unsigned long smbLastTs = 0;
     bool smbEnabled = (smbStateManager != nullptr);
-    readBackendCounts(smbStateManager, smbDone, smbTotal, smbPending, smbLastTs);
 
     // Primary (legacy fields) — prefer cloud when both exist, else whichever is present.
     int foldersDone    = cloudEnabled ? cloudDone    : smbDone;
@@ -1030,6 +1048,15 @@ void CpapWebServer::updateStatusSnapshot() {
     int  liveUp    = cloudLiveActive ? cloudLiveUp    : smbLiveActive ? smbLiveUp    : 0;
     int  liveTotal = cloudLiveActive ? cloudLiveTotal : smbLiveActive ? smbLiveTotal : 0;
     bool liveActive = cloudLiveActive || smbLiveActive;
+
+    // Now that live flags are known, compute per-backend counts.
+    readBackendCounts(cloudStateManager, cloudDone, cloudTotal, cloudPending, cloudLastTs, cloudLiveActive);
+    readBackendCounts(smbStateManager,   smbDone,   smbTotal,   smbPending,   smbLastTs,   smbLiveActive);
+
+    // Recompute legacy primary fields now that the counts are populated.
+    foldersDone    = cloudEnabled ? cloudDone    : smbDone;
+    foldersTotal   = cloudEnabled ? cloudTotal   : smbTotal;
+    foldersPending = cloudEnabled ? cloudPending : smbPending;
 
     char recentTabs[128];
     buildRecentTabsField(recentTabs, sizeof(recentTabs), nowMs);

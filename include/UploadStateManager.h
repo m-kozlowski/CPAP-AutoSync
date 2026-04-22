@@ -86,6 +86,10 @@ private:
     // fall back to legacy (done / done+incomplete) math in that case.
     int probeUniverse;
     int probeSynced;
+    // completedCount captured at the moment setProbeSnapshot() was called,
+    // so updateStatusSnapshot() can add newly-completed folders to the live
+    // progress bar while a backend is actively uploading.
+    int probeSnapshotCompletedCount;
     
     static const unsigned long PENDING_FOLDER_TIMEOUT_SECONDS = 7 * 24 * 60 * 60;  // 604800 seconds
     
@@ -148,6 +152,7 @@ public:
     void setProbeSnapshot(int universe, int synced);
     int  getProbeUniverse() const;
     int  getProbeSynced()   const;
+    int  getProbeSnapshotCompletedCount() const;
     
     // Pending folder tracking for empty folders
     bool isPendingFolder(const String& folderName);

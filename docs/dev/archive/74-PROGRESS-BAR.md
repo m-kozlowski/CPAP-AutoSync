@@ -487,6 +487,47 @@ Placement rationale — after `cloudStateManager->save(stateFs)`, after `sleephq
 
 **Result.** The Cloud row in the dashboard updates to its post-Cloud-phase value the moment Phase 1 ends, regardless of how long SMB takes or whether SMB fails. The SMB row continues to show live upload progress during Phase 2, and both rows get a final refresh via the `main.cpp:1231` post-session probe.
 
-### 9.9 Future work
+### 9.9 Live progress bar oscillation during active upload
+
+**Bug.** During an active upload session the progress bar `done` count comes from the last `probeSynced` snapshot, which is frozen until the next probe refresh (pre-session, post-cloud, or post-session). The web UI adds fractional folder-level progress when `live.active` is true:
+
+```
+dispDone = done + frac     // frac = live.up / live.total
+shownDone = floor(dispDone)
+```
+
+This creates an oscillation:
+- Folder starts: `done=3, frac=0` → `shownDone=3`
+- Folder uploads: `frac` grows to `0.9` → `shownDone=3`
+- Folder nearly done: `frac=1.0` → `shownDone=4`
+- Folder completes, `live.active` briefly false → `shownDone=3`
+- Next folder starts → `shownDone=3`
+- Cycle repeats.
+
+The user sees the progress bar stuck at `3`, flickering to `4` periodically, and at the very end jumping straight to `12` when the post-session probe finally refreshes the snapshot.
+
+The same phenomenon affects the Cloud phase: `done` is frozen at the pre-session probe value while folders are actually being uploaded, so the Cloud bar sits in the middle and then jumps straight to the end at the post-cloud probe.
+
+**Root cause.** `probeSynced` is a derived cache that only gets refreshed by `hasWorkToUpload()`. Running that full probe after every folder is correct but wasteful (~100–200 ms × 12 folders = ~2 s extra SD time per phase). Incrementing `probeSynced` blindly inside `markFolderCompleted()` is tempting but wrong: it would over-count re-uploaded already-completed folders and folders that were already counted as synced by the previous probe.
+
+**Fix.** Store the state manager's `completedCount` at the moment the probe snapshot is taken (`probeSnapshotCompletedCount`). In `updateStatusSnapshot()`, when a backend is actively uploading, compute a *live* `done` count:
+
+```cpp
+liveDone = probeSynced + max(0, completedCount - probeSnapshotCompletedCount);
+if (liveDone > universe) liveDone = universe;
+```
+
+This adds only *newly* completed folders since the snapshot — i.e., folders that `addCompletedInternal()` actually inserted into the array. Re-uploaded already-completed folders (where `addCompletedInternal` returns false because the entry already exists) are not double-counted. The progress bar advances monotonically: `3 → 3.1 → 3.5 → 3.9 → 4 → 4.2 → ... → 12`.
+
+**Edge case: re-uploaded already-completed folder with changed files.** If a folder was completed in a previous session but its `.edf` files have since grown, the pre-session probe correctly marks it as NOT synced (`folderHasChangedEdf` returns true). During the current session it is re-uploaded, `markFolderCompleted()` is called, but `completedCount` does not increase (folder was already in the set). The live delta therefore does NOT increment `done` for this folder. The progress bar shows `11 / 12 uploading` while the folder is being refreshed, then stays at `11` until the post-session probe runs and snaps to `12`. This is a minor and brief under-count during an active upload; it is acceptable because the detail line already shows `Uploading k/m · folder`, and the count self-heals at session end.
+
+**Files changed.**
+- `include/UploadStateManager.h` — added `probeSnapshotCompletedCount` field, getter.
+- `src/UploadStateManager.cpp` — init in constructor/`clearState`, set in `setProbeSnapshot()`, getter.
+- `src/CpapWebServer.cpp` — `readBackendCounts` lambda now accepts `liveActive`, adds `completedCount - probeSnapshotCompletedCount` delta when the backend is actively uploading.
+
+**Result.** Both Cloud and SMB progress bars advance smoothly and monotonically during their respective phases. No more oscillation, no more mid-phase jumps.
+
+### 9.10 Future work
 
 If users report the one-off "left side drops by 1 unexpectedly" case (Case A from §8.5 — a genuinely net-new folder appearing), we can promote Option 2 from §8.5: add a `live.refresh` hint to `/api/status` so the client can disambiguate.  Not needed for v4.1-beta1 because the state manager's `hasFileChanged` path naturally handles the dominant case.
