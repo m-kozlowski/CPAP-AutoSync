@@ -77,6 +77,15 @@ private:
     uint16_t journalLineCount;
     bool forceCompaction;
     int totalFoldersCount;  // Total DATALOG folders found (for progress tracking)
+
+    // Probe snapshot — populated by FileUploader::hasWorkToUpload().
+    // universe = DATALOG folders within MAX_DAYS on the card (stable, same semantics across backends).
+    // synced   = folders within that window that are fully in sync for THIS backend
+    //            (completed, and for recent folders also "no file has changed since upload").
+    // Both default to -1 meaning "no probe has run yet this boot" — callers must
+    // fall back to legacy (done / done+incomplete) math in that case.
+    int probeUniverse;
+    int probeSynced;
     
     static const unsigned long PENDING_FOLDER_TIMEOUT_SECONDS = 7 * 24 * 60 * 60;  // 604800 seconds
     
@@ -134,6 +143,11 @@ public:
     int getCompletedFoldersCount() const;
     int getIncompleteFoldersCount() const;
     void setTotalFoldersCount(int count);
+
+    // Probe snapshot (see private fields for semantics).  -1 until first probe.
+    void setProbeSnapshot(int universe, int synced);
+    int  getProbeUniverse() const;
+    int  getProbeSynced()   const;
     
     // Pending folder tracking for empty folders
     bool isPendingFolder(const String& folderName);

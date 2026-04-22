@@ -609,30 +609,26 @@ function renderStatus(d){
     row.style.display='';
     var done=b.done||0,total=b.total||0;
     var live=b.live||{};
-    // During a live upload the currently-uploading folder may not be reflected
-    // in `total` yet.  Two sub-cases share the `done == total` shape:
-    //   (A) net-new folder — state manager hasn't ticked total up yet.
-    //   (B) recent-only re-upload — today's folder is already in `done`
-    //       and is being refreshed to pick up appended files.
-    // Case (B) is the dominant case in Force/FRESH_ONLY sessions, and when
-    // the iteration order is "newest first" we can safely assume the live
-    // folder is one already counted in `done`.  We therefore pre-subtract
-    // it from `dispDone` (instead of synthesising a +1 slot on `total`) so
-    // the bar smoothly drops to (N-1 + frac) / N during the refresh and
-    // returns to N/N on completion, matching the user's mental model.
-    // See docs/dev/archive/74-PROGRESS-BAR.md for the full decision trail.
+    // Numbers now come from the work probe: `total` = folders within
+    // MAX_DAYS on the card (stable across both backends); `done` = folders
+    // in that window that are fully in sync for this backend.  The probe
+    // itself accounts for RECENT_FOLDER_DAYS (a refreshed folder with new
+    // content drops out of `done` automatically), so no client-side
+    // subtraction tricks are needed.  We still render fractional per-file
+    // progress during a live upload so the bar moves visibly.
     var dispTotal=total,dispDone=done,frac=0;
     if(live.active&&live.total>0){
       frac=Math.min(1,Math.max(0,live.up/live.total));
-      if(done>=total&&done>0)dispDone=done-1+frac;
-      else dispDone=done+frac;
+      dispDone=Math.min(total,done+frac);
     }
-    var inc=Math.max(0,dispTotal-done-(live.active?1:0));
+    var inc=Math.max(0,total-done);
     var pct=dispTotal>0?Math.min(100,Math.round(dispDone*100/dispTotal)):0;
     document.getElementById('d-pf-'+key).style.width=pct+'%';
     var shownDone=live.active?Math.floor(dispDone):done;
-    var st=dispTotal>0?(shownDone+' / '+dispTotal):'\u2014';
-    if(live.active)st+=' &nbsp;<span style=color:#38bdf8>uploading</span>';
+    var st;
+    if(dispTotal===0)st='<span style=color:#8f98a0>No data on card yet</span>';
+    else st=shownDone+' / '+dispTotal;
+    if(dispTotal>0&&live.active)st+=' &nbsp;<span style=color:#38bdf8>uploading</span>';
     else if(dispTotal>0&&inc>0)st+=' &nbsp;<span style=color:#ffaa44>'+inc+' left</span>';
     else if(dispTotal>0&&done>0)st+=' &nbsp;<span style=color:#44ff44>&#10003;</span>';
     document.getElementById('d-'+key+'-st').innerHTML=st;

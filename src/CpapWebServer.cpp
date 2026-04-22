@@ -940,27 +940,41 @@ void CpapWebServer::updateStatusSnapshot() {
         strncpy(wifiIp, wifiManager->getIPAddress().c_str(), sizeof(wifiIp) - 1);
     }
     // Per-backend folder counts — both backends render their own row in the UI.
-    // Pending (empty) folders are excluded from the total so the progress bar
-    // only measures real data folders.
+    //
+    // Sourcing: prefer the probe snapshot (universe = folders-in-MAX_DAYS,
+    // synced = fully-in-sync-for-this-backend) because it gives the dashboard
+    // a stable, meaningful ratio.  The probe is refreshed every session by
+    // FileUploader::hasWorkToUpload().  Before the first probe has run, fall
+    // back to the legacy state-manager math so boot-time snapshots are still
+    // coherent (completed / completed+incomplete).
+    //
+    // `pending` still reflects empty-folder bookkeeping and is reported as-is.
+    auto readBackendCounts = [](UploadStateManager* sm,
+                                int& done, int& total, int& pending,
+                                unsigned long& lastTs) {
+        if (!sm) return;
+        pending = sm->getPendingFoldersCount();
+        lastTs  = sm->getLastUploadTimestamp();
+        int u = sm->getProbeUniverse();
+        int s = sm->getProbeSynced();
+        if (u >= 0 && s >= 0) {
+            done  = s;
+            total = u;
+        } else {
+            done  = sm->getCompletedFoldersCount();
+            total = done + sm->getIncompleteFoldersCount();
+        }
+    };
+
     int cloudDone = 0, cloudTotal = 0, cloudPending = 0;
     unsigned long cloudLastTs = 0;
     bool cloudEnabled = (cloudStateManager != nullptr);
-    if (cloudStateManager) {
-        cloudDone    = cloudStateManager->getCompletedFoldersCount();
-        cloudPending = cloudStateManager->getPendingFoldersCount();
-        cloudTotal   = cloudDone + cloudStateManager->getIncompleteFoldersCount();
-        cloudLastTs  = cloudStateManager->getLastUploadTimestamp();
-    }
+    readBackendCounts(cloudStateManager, cloudDone, cloudTotal, cloudPending, cloudLastTs);
 
     int smbDone = 0, smbTotal = 0, smbPending = 0;
     unsigned long smbLastTs = 0;
     bool smbEnabled = (smbStateManager != nullptr);
-    if (smbStateManager) {
-        smbDone    = smbStateManager->getCompletedFoldersCount();
-        smbPending = smbStateManager->getPendingFoldersCount();
-        smbTotal   = smbDone + smbStateManager->getIncompleteFoldersCount();
-        smbLastTs  = smbStateManager->getLastUploadTimestamp();
-    }
+    readBackendCounts(smbStateManager, smbDone, smbTotal, smbPending, smbLastTs);
 
     // Primary (legacy fields) — prefer cloud when both exist, else whichever is present.
     int foldersDone    = cloudEnabled ? cloudDone    : smbDone;

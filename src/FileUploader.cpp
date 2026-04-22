@@ -52,49 +52,55 @@ FileUploader::~FileUploader() {
 // ============================================================================
 // Minimal work probe — streaming, no vectors, no String heap churn
 // ============================================================================
-// Checks /DATALOG for any folder with pending .edf files.
-// Returns immediately on first positive hit per backend.
-// Uses only stack-local buffers — zero heap allocation on the fast path.
-// This replaces the heavy preflightFolderHasWork() for the initial decision
-// of whether to create the upload task and connect TLS at all.
+// Single pass over /DATALOG that, for every folder in the MAX_DAYS window,
+// asks both state managers whether that folder is fully synced, needs work,
+// or is irrelevant.  Used before creating the upload task so the no-work
+// path avoids TLS allocation entirely.
+//
+// In addition to the boolean `hasCloudWork` / `hasSmbWork` decisions, the
+// probe publishes a per-backend (universe, synced) snapshot into each state
+// manager so the dashboard can render a stable "X / Y folders synced" ratio:
+//
+//   universe = folders in /DATALOG within MAX_DAYS (same across backends).
+//   synced   = of those, how many are completed AND (for recent folders)
+//              have no .edf that has changed since last upload — i.e. the
+//              RECENT_FOLDER_DAYS re-discovery pass would be a no-op.
+//
+// No short-circuit: we enumerate every in-window folder.  In the common
+// "no work" case this is identical to pre-existing behaviour (the old probe
+// already walked everything).  In the "work found" case the enumeration
+// continues rather than returning early; the extra SD hold time is tens to
+// hundreds of ms per session and is trivially small relative to the upload
+// itself, but the payoff is an always-accurate progress denominator.
+//
+// One enumeration covers both backends — previously we ran two passes.
 
 FileUploader::WorkProbeResult FileUploader::hasWorkToUpload(fs::FS &sd) {
-    WorkProbeResult result = {false, false};
-    fs::FS &stateFs = LittleFS;
+    WorkProbeResult result = {false, false, -1, -1, -1};
 
-    // Lambda: check if a folder has any .edf file (streaming, no vector)
-    auto folderHasEdf = [&](const String& folderPath) -> bool {
-        File folder = sd.open(folderPath);
-        if (!folder || !folder.isDirectory()) return false;
-        File f = folder.openNextFile();
-        while (f) {
-            if (!f.isDirectory()) {
-                const char* name = f.name();
-                size_t len = strlen(name);
-                if (len >= 4) {
-                    const char* ext = name + len - 4;
-                    if (strcasecmp(ext, ".edf") == 0) {
-                        f.close();
-                        folder.close();
-                        return true;
-                    }
-                }
-            }
-            f.close();
-            f = folder.openNextFile();
-        }
-        folder.close();
-        return false;
-    };
+    // Active backends for this probe run.
+    UploadStateManager* cloudSm = nullptr;
+    UploadStateManager* smbSm   = nullptr;
+#ifdef ENABLE_SLEEPHQ_UPLOAD
+    if (config->hasCloudEndpoint()) cloudSm = cloudStateManager;
+#endif
+#ifdef ENABLE_SMB_UPLOAD
+    if (config->hasSmbEndpoint())   smbSm   = smbStateManager;
+#endif
+    if (!cloudSm && !smbSm) {
+        LOG("[WorkProbe] No backends configured — skipping probe");
+        return result;
+    }
 
-    // Lambda: probe one backend's state manager for pending work
-    auto probeBackend = [&](UploadStateManager* sm) -> bool {
-        if (!sm) return false;
+    const bool canUploadOld = !scheduleManager || scheduleManager->canUploadOldData();
 
-        bool canUploadOld = !scheduleManager || scheduleManager->canUploadOldData();
-
-        // Calculate MAX_DAYS cutoff — same logic as scanDatalogFolders()
-        String maxDaysCutoff = "";
+    // Calculate MAX_DAYS cutoff — same logic as scanDatalogFolders().
+    // Supported MAX_DAYS range is 1-365 so we always expect a non-empty cutoff
+    // once NTP is synced; if the clock is not yet set we fall back to "no
+    // cutoff" and count every DATALOG folder on the card (self-heals on next
+    // probe after NTP succeeds).
+    String maxDaysCutoff = "";
+    {
         int maxDays = config->getMaxDays();
         if (maxDays > 0) {
             time_t now = time(nullptr);
@@ -108,99 +114,150 @@ FileUploader::WorkProbeResult FileUploader::hasWorkToUpload(fs::FS &sd) {
                 maxDaysCutoff = String(cutoffStr);
             }
         }
+    }
 
-        File root = sd.open("/DATALOG");
-        if (!root || !root.isDirectory()) return false;
-
-        File entry = root.openNextFile();
-        while (entry) {
-            if (entry.isDirectory()) {
-                // Extract folder name from path (last component)
-                const char* rawName = entry.name();
-                const char* slash = strrchr(rawName, '/');
-                const char* folderName = slash ? slash + 1 : rawName;
-
-                // Apply MAX_DAYS filter (folder names are YYYYMMDD)
-                if (!maxDaysCutoff.isEmpty() && String(folderName) < maxDaysCutoff) {
-                    entry.close();
-                    entry = root.openNextFile();
-                    continue;
-                }
-
-                bool completed = sm->isFolderCompleted(String(folderName));
-                bool recent = isRecentFolder(String(folderName));
-
-                // Skip old folders when outside upload window
-                if (!recent && !canUploadOld) {
-                    entry.close();
-                    entry = root.openNextFile();
-                    continue;
-                }
-
-                if (!completed) {
-                    // Incomplete folder — check for any .edf
-                    char path[64];
-                    snprintf(path, sizeof(path), "/DATALOG/%s", folderName);
-                    if (folderHasEdf(String(path))) {
-                        LOG_DEBUGF("[WorkProbe] WORK found: %s has .edf files", folderName);
-                        entry.close();
-                        root.close();
-                        return true;
-                    }
-                } else if (completed && recent) {
-                    // Completed+recent: could have changed files — worth checking
-                    char path[64];
-                    snprintf(path, sizeof(path), "/DATALOG/%s", folderName);
-                    // Quick check: any .edf exists (actual change detection happens in full scan)
-                    if (folderHasEdf(String(path))) {
-                        // Check if any file actually changed
-                        File folder = sd.open(String(path));
-                        if (folder && folder.isDirectory()) {
-                            File f = folder.openNextFile();
-                            while (f) {
-                                if (!f.isDirectory()) {
-                                    const char* fname = f.name();
-                                    size_t flen = strlen(fname);
-                                    if (flen >= 4 && strcasecmp(fname + flen - 4, ".edf") == 0) {
-                                        String fullPath = String(path) + "/" + (strrchr(fname, '/') ? strrchr(fname, '/') + 1 : fname);
-                                        if (sm->hasFileChanged(sd, fullPath)) {
-                                            LOG_DEBUGF("[WorkProbe] WORK found: changed file in completed+recent %s", folderName);
-                                            f.close();
-                                            folder.close();
-                                            entry.close();
-                                            root.close();
-                                            return true;
-                                        }
-                                    }
-                                }
-                                f.close();
-                                f = folder.openNextFile();
-                            }
-                            folder.close();
-                        }
-                    }
+    // Lambda: check if a folder has any .edf file (streaming, no vector)
+    auto folderHasEdf = [&](const String& folderPath) -> bool {
+        File folder = sd.open(folderPath);
+        if (!folder || !folder.isDirectory()) return false;
+        File f = folder.openNextFile();
+        while (f) {
+            if (!f.isDirectory()) {
+                const char* name = f.name();
+                size_t len = strlen(name);
+                if (len >= 4 && strcasecmp(name + len - 4, ".edf") == 0) {
+                    f.close();
+                    folder.close();
+                    return true;
                 }
             }
-            entry.close();
-            entry = root.openNextFile();
+            f.close();
+            f = folder.openNextFile();
         }
-        root.close();
+        folder.close();
         return false;
     };
 
-#ifdef ENABLE_SLEEPHQ_UPLOAD
-    if (config->hasCloudEndpoint()) {
-        result.hasCloudWork = probeBackend(cloudStateManager);
-    }
-#endif
-#ifdef ENABLE_SMB_UPLOAD
-    if (config->hasSmbEndpoint()) {
-        result.hasSmbWork = probeBackend(smbStateManager);
-    }
-#endif
+    // Lambda: does any .edf in this folder report "changed" for the given state manager?
+    // Used for the completed+recent case: even though the folder is marked done,
+    // RECENT_FOLDER_DAYS re-discovery will re-upload it if a file has grown or
+    // changed since last sync.
+    auto folderHasChangedEdf = [&](const String& folderPath, UploadStateManager* sm) -> bool {
+        if (!sm) return false;
+        File folder = sd.open(folderPath);
+        if (!folder || !folder.isDirectory()) return false;
+        File f = folder.openNextFile();
+        bool dirty = false;
+        while (f) {
+            if (!f.isDirectory()) {
+                const char* fname = f.name();
+                size_t flen = strlen(fname);
+                if (flen >= 4 && strcasecmp(fname + flen - 4, ".edf") == 0) {
+                    const char* base = strrchr(fname, '/');
+                    String fullPath = folderPath + "/" + (base ? base + 1 : fname);
+                    if (sm->hasFileChanged(sd, fullPath)) {
+                        dirty = true;
+                        f.close();
+                        break;
+                    }
+                }
+            }
+            f.close();
+            f = folder.openNextFile();
+        }
+        folder.close();
+        return dirty;
+    };
 
-    LOGF("[WorkProbe] Result: cloud=%d smb=%d (fh=%u ma=%u)",
+    // ── Single-pass enumeration of /DATALOG ────────────────────────────────
+    // Per folder in the MAX_DAYS window, consult BOTH state managers so we
+    // only pay one directory walk regardless of how many backends are on.
+
+    int universe     = 0;
+    int cloudSynced  = 0;
+    int smbSynced    = 0;
+
+    File root = sd.open("/DATALOG");
+    if (!root || !root.isDirectory()) {
+        LOG_WARN("[WorkProbe] /DATALOG not accessible");
+        return result;
+    }
+
+    for (File entry = root.openNextFile(); entry; entry = root.openNextFile()) {
+        if (!entry.isDirectory()) { entry.close(); continue; }
+
+        const char* rawName = entry.name();
+        const char* slash = strrchr(rawName, '/');
+        String folderName(slash ? slash + 1 : rawName);
+
+        // MAX_DAYS filter — folders outside the window don't count toward the
+        // universe and aren't considered for either backend.
+        if (!maxDaysCutoff.isEmpty() && folderName < maxDaysCutoff) {
+            entry.close();
+            continue;
+        }
+
+        universe++;
+
+        char path[64];
+        snprintf(path, sizeof(path), "/DATALOG/%s", folderName.c_str());
+        const String folderPath(path);
+        const bool recent  = isRecentFolder(folderName);
+
+        // Evaluate sync status for one backend.  `hasWork` is an output
+        // variable that gets OR'd; `syncedOut` is incremented when fully
+        // in sync for this backend.
+        auto evaluateBackend = [&](UploadStateManager* sm, bool& hasWork, int& syncedOut) {
+            if (!sm) return;
+            const bool completed = sm->isFolderCompleted(folderName);
+
+            if (completed) {
+                if (recent) {
+                    // Need to verify no appended/changed file since last upload.
+                    if (folderHasChangedEdf(folderPath, sm)) {
+                        hasWork = true;
+                    } else {
+                        syncedOut++;
+                    }
+                } else {
+                    // Completed and outside recent window — permanently done.
+                    syncedOut++;
+                }
+                return;
+            }
+
+            // Incomplete.  Work only counts if the folder has actual content
+            // AND this backend is allowed to upload it right now (old folders
+            // are skipped outside the upload window).
+            if (!recent && !canUploadOld) return;
+            if (folderHasEdf(folderPath)) {
+                hasWork = true;
+            }
+            // Empty incomplete folders are neither "work" nor "synced" — they
+            // sit in the pending bucket until they grow content or age out.
+        };
+
+        evaluateBackend(cloudSm, result.hasCloudWork, cloudSynced);
+        evaluateBackend(smbSm,   result.hasSmbWork,   smbSynced);
+
+        entry.close();
+    }
+    root.close();
+
+    // ── Publish snapshot ───────────────────────────────────────────────────
+    result.universe = universe;
+    if (cloudSm) {
+        result.cloudSynced = cloudSynced;
+        cloudSm->setProbeSnapshot(universe, cloudSynced);
+    }
+    if (smbSm) {
+        result.smbSynced = smbSynced;
+        smbSm->setProbeSnapshot(universe, smbSynced);
+    }
+
+    LOGF("[WorkProbe] Result: cloud=%d smb=%d | universe=%d cloudSynced=%d smbSynced=%d (fh=%u ma=%u)",
          result.hasCloudWork, result.hasSmbWork,
+         universe, cloudSynced, smbSynced,
          (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
     return result;
 }

@@ -94,7 +94,9 @@ UploadStateManager::UploadStateManager()
       journalEventCount(0),
       journalLineCount(0),
       forceCompaction(false),
-      totalFoldersCount(0) {
+      totalFoldersCount(0),
+      probeUniverse(-1),
+      probeSynced(-1) {
     clearState();
 }
 
@@ -586,6 +588,19 @@ int UploadStateManager::getIncompleteFoldersCount() const {
 
 void UploadStateManager::setTotalFoldersCount(int count) {
     totalFoldersCount = count;
+}
+
+void UploadStateManager::setProbeSnapshot(int universe, int synced) {
+    probeUniverse = universe;
+    probeSynced   = synced;
+}
+
+int UploadStateManager::getProbeUniverse() const {
+    return probeUniverse;
+}
+
+int UploadStateManager::getProbeSynced() const {
+    return probeSynced;
 }
 
 bool UploadStateManager::isPendingFolder(const String& folderName) {

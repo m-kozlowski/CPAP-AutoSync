@@ -331,3 +331,74 @@ The `done > 0` guard prevents a negative display during the first-ever upload on
 - **Heap / flash** — status buffer +512 B `.bss`; flash usage 88.8% (flat vs v4.0).
 
 Release notes: `release/RELEASE_NOTES_v4.1-beta1.md`.
+
+---
+
+## 9. Meaningful progress numbers — Option 1 shipped
+
+Follow-up to §8.5.  The `-1 done` synthesis in §8.5 was a client-side papering over a state-manager quirk: `total` collapsed to `done` whenever the last scan returned 0 folders, so `N / N ✓` became the resting display for every backend regardless of how much data actually lived on the card.  Users looking at two backends with different historical completed-counts (e.g. `11 / 11 ✓` vs `9 / 9 ✓`) had no way to tell whether they were equivalently in sync or significantly divergent.
+
+Fixed in v4.1-beta1 by:
+
+1. **Redefining the two numbers** with meanings that map directly onto a user's mental model:
+   - **Right side (`universe`)**: DATALOG folders on the SD card within the configured `MAX_DAYS` window.  Stable across both backends (same value), moves only when the CPAP writes a new day or an old one rolls off the cliff.
+   - **Left side (`synced`)**: folders from that universe that are fully in sync for this backend.  A folder counts as synced when it is completed AND — if it falls inside `RECENT_FOLDER_DAYS` — no `.edf` has changed since last upload.
+
+2. **Rewriting the work probe** (`@/opt/projects/personal/CPAP_data_uploader/src/FileUploader.cpp::hasWorkToUpload`) as a **single-pass enumeration** of `/DATALOG` that, for every folder in the `MAX_DAYS` window, consults **both** state managers and computes per-backend `hasWork`, `universe`, `synced`.  The old two-pass (one per backend) probe is gone.  The short-circuit-on-first-hit is also gone — we now always enumerate the full window — because we need the complete counts.
+
+3. **Publishing the snapshot** into each `UploadStateManager` via a new `setProbeSnapshot(universe, synced)` + `getProbeUniverse() / getProbeSynced()` API (`@/opt/projects/personal/CPAP_data_uploader/include/UploadStateManager.h:81-88, 147-150`).  In-memory only, not persisted — each boot's first probe refreshes it.
+
+4. **Reading the snapshot** in `CpapWebServer::updateStatusSnapshot` via a small lambda that prefers the probe snapshot and falls back to the legacy `done / done+incomplete` math only when no probe has run yet this boot (pre-first-session UX stays coherent).
+
+### 9.1 SD hold-time impact
+
+Measured expectation:
+
+| Case | Old probe | New probe | Delta |
+|---|---|---|---|
+| No work found | Enumerate all folders, two passes (one per backend) | Enumerate all folders, **one pass** | **Reduced** by ~50% of the enumeration cost when two backends are configured. |
+| Work found on first folder | Short-circuit immediately, two passes | Full enumeration, one pass | +50–500 ms in the worst case; typical ~100–200 ms. |
+| Work found in a completed+recent folder | Short-circuit on first `hasFileChanged=true` | Continue enumerating remaining folders to tally counts | Same bounded cost as above. |
+
+Session context: actual upload holds the SD card for 100–200+ seconds; the probe accounts for <1 s of that.  The probe's role is to decide whether to create the upload task at all — adding ~100 ms to it is immaterial next to skipping the upload entirely in the no-work case (which saves tens of seconds of SD hold time).
+
+The bonus single-pass optimisation means the **two-backend probe is now cheaper than the old single-backend probe** in the no-work case, which is the dominant case in a well-synced device.
+
+### 9.2 Edge cases handled
+
+- **No SD, or `/DATALOG` missing**: probe logs warning and returns `{hasWork=false, universe=-1, synced=-1}`; UI falls back to legacy math.
+- **Clock not yet synced**: MAX_DAYS cutoff calculation is guarded by `now > 24*3600`; if that fails we fall back to "no cutoff" and count every folder on the card.  Self-corrects on the next probe once NTP succeeds.
+- **Empty folder, never uploaded**: `folderHasEdf()` returns false for incomplete folders → not counted as work, not counted as synced.  Pending-folder bookkeeping in the state manager handles promotion separately.
+- **First boot / virgin card**: `universe=0`.  Client renders "No data on card yet" instead of a `0/0` ratio (`@/opt/projects/personal/CPAP_data_uploader/include/web_ui.h:628-630`).
+- **RECENT_FOLDER_DAYS re-discovery**: a completed-recent folder where any `.edf` has changed since last upload drops out of `synced` immediately — user sees `24/25` during re-sync, returns to `25/25` when done.  No client-side synthesis required; the state manager owns the truth.
+- **Migration**: no schema change; the probe snapshot is in-memory only.  Existing state files untouched.  Users will notice the `/N` value shift on first session after the upgrade (e.g. `/17` → `/25`) because the semantics changed.
+
+### 9.3 What the v4.1-beta1 UI looked like before vs after
+
+| Moment | Before (pre-§9) | After (§9) |
+|---|---|---|
+| All synced, two backends | `11 / 11 ✓` and `9 / 9 ✓` — different, unexplainable | `25 / 25 ✓` and `25 / 25 ✓` (or e.g. `25 / 25` vs `24 / 25` exposing a real one-folder divergence) |
+| Idle, nothing uploaded yet | `0 / 0` displayed as `— ✓` | `0 / 25` or `No data on card yet` |
+| RECENT_FOLDER_DAYS refresh of today's folder | `16 / 16 → 15 / 16 uploading → 16 / 16 ✓` via `-1 done` synthesis | `25 / 25 → 24 / 25 uploading → 25 / 25 ✓` — state manager drives the transition |
+| Force Upload in Smart quiet period (§8.3) | Same drop pattern via client synthesis | Same, but now honest: server knows the folder isn't synced |
+
+### 9.4 Why the old `-1 done` synthesis could be retired
+
+It existed purely to paper over a broken denominator.  Now that the denominator is `universe` (stable) and the numerator is `synced` (which the probe recomputes with full `hasFileChanged` knowledge), the "folder being refreshed" case is captured in the state manager itself.  Reverting the synthesis in `@/opt/projects/personal/CPAP_data_uploader/include/web_ui.h::renderBe` left a much simpler function: plain `(done + live.up/live.total) / total`.
+
+### 9.5 Code delta summary
+
+| File | Lines changed | Notes |
+|---|---|---|
+| `@/opt/projects/personal/CPAP_data_uploader/include/UploadStateManager.h` | +11 | Two new in-memory fields, three new public methods. |
+| `@/opt/projects/personal/CPAP_data_uploader/src/UploadStateManager.cpp` | +14 | Field init + getter/setter bodies. |
+| `@/opt/projects/personal/CPAP_data_uploader/include/FileUploader.h` | +10 / −3 | Extended `WorkProbeResult` with `universe`, `cloudSynced`, `smbSynced`. |
+| `@/opt/projects/personal/CPAP_data_uploader/src/FileUploader.cpp` | ~+130 / −115 | Rewrote `hasWorkToUpload()` as single-pass two-backend probe.  Docstring rewritten. |
+| `@/opt/projects/personal/CPAP_data_uploader/src/CpapWebServer.cpp` | +17 / −12 | `readBackendCounts` lambda prefers probe snapshot; legacy math is fallback. |
+| `@/opt/projects/personal/CPAP_data_uploader/include/web_ui.h` | +9 / −15 | Removed `-1 done` synthesis, added "No data on card yet". |
+
+Flash usage: 88.8% → 88.9% (`pico32-ota`, esp32doit-devkit-v1).  RAM `.bss`: +8 B per state manager instance (two `int` fields).
+
+### 9.6 Future work
+
+If users report the one-off "left side drops by 1 unexpectedly" case (Case A from §8.5 — a genuinely net-new folder appearing), we can promote Option 2 from §8.5: add a `live.refresh` hint to `/api/status` so the client can disambiguate.  Not needed for v4.1-beta1 because the state manager's `hasFileChanged` path naturally handles the dominant case.
