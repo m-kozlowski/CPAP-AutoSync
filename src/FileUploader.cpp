@@ -736,19 +736,95 @@ UploadResult FileUploader::runFullSession(SDCardManager* sdManager, int maxMinut
             smbUploader->setMaxUploadAttempts(1);
         }
 
-        // Allocate SMB buffer dynamically based on current heap state.
-        // With ma=36852 being the safe floor (due to TLS/lwIP pegging), we can
-        // comfortably allocate 8KB out of the 36KB block for faster SMB speeds.
-        uint32_t currentMa = ESP.getMaxAllocHeap();
-        size_t smbBufSize = (currentMa > 30000) ? 8192 :
-                            (currentMa > 20000) ? 4096 :
-                            (currentMa > 15000) ? 2048 : 1024;
-        LOGF("[FileUploader] SMB phase heap: fh=%u ma=%u, buffer=%u",
-             (unsigned)ESP.getFreeHeap(), (unsigned)currentMa, (unsigned)smbBufSize);
-        if (!smbUploader->allocateBuffer(smbBufSize)) {
-            LOG_ERROR("[FileUploader] Failed to allocate SMB buffer — skipping SMB phase");
+        // ── Persistent SMB session for the entire Phase 2 ────────────────────
+        // Open the SMB session once here and keep it open until all folders
+        // and mandatory files are processed. This eliminates the per-folder
+        // NEGPROT + SESSION_SETUP + TREE_CONNECT round-trip (~1–2 s each on
+        // a typical LAN, 45–90 s across a 43-folder backlog) and, equally
+        // importantly, avoids cycling the ~4–5 KB smb2_context allocation
+        // which was a significant source of heap fragmentation.
+        //
+        // Opening the session before allocating the upload buffer also lets
+        // us query the server's negotiated max_write_size and right-size the
+        // buffer, so each smb2_write carries the largest payload the server
+        // will accept (typically 1 MB on Samba/Windows, 64 KB on legacy).
+        if (!smbUploader->begin()) {
+            LOG_ERROR("[FileUploader] Failed to open persistent SMB session — skipping SMB phase");
             smbStateManager->save(stateFs);
-        } else {
+            g_smbSessionStatus.uploadActive     = false;
+            g_smbSessionStatus.filesUploaded    = 0;
+            g_smbSessionStatus.filesTotal       = 0;
+            g_smbSessionStatus.currentFolder[0] = '\0';
+            currentPhase = UploadBackend::NONE;
+            goto smb_phase_done;
+        }
+
+        // Adaptive buffer sizing + SMB2 write pipelining (Phase B+C):
+        //   policyMax  — 32 KB upper bound per write. Bigger writes rarely add
+        //                throughput because a single 32 KB write already exceeds
+        //                a full 64 KB TCP window round-trip on a LAN, and
+        //                larger allocations strain the ESP32 small-block heap.
+        //   serverMax  — server's negotiated max_write_size (0 if not reported).
+        //   heapBand   — derived from ESP.getMaxAllocHeap(); top band extended
+        //                from the old 8 KB ceiling to 32 KB when headroom allows.
+        //   depth      — number of SMB2 writes to keep in flight simultaneously.
+        //                1 = stop-and-wait (legacy). 2 = pipelined (credit-based
+        //                overlap on a healthy LAN, ~1.7–2× throughput at the
+        //                cost of a second slot in the upload buffer).
+        // Final per-slot size is min(policyMax, serverMax, heapBand).
+        // Total buffer = depth * slotSize; pipeline is enabled only when the
+        // heap has headroom for the doubled allocation.
+        uint32_t currentMa     = ESP.getMaxAllocHeap();
+        uint32_t serverMax     = smbUploader->getNegotiatedMaxWriteSize();
+        constexpr uint32_t POLICY_MAX = 32 * 1024;
+        size_t heapBand = (currentMa > 80000) ? 32768 :
+                          (currentMa > 60000) ? 16384 :
+                          (currentMa > 40000) ? 12288 :
+                          (currentMa > 30000) ? 8192  :
+                          (currentMa > 20000) ? 4096  :
+                          (currentMa > 15000) ? 2048  : 1024;
+        size_t smbBufSize = heapBand;
+        if (smbBufSize > POLICY_MAX) smbBufSize = POLICY_MAX;
+        if (serverMax > 0 && smbBufSize > serverMax) smbBufSize = serverMax;
+
+        // Pipelining requires (a) ≥ 8 KB per slot to amortise the per-write
+        // PDU overhead, (b) ≥ ~80 KB contiguous heap so the 2 × slotSize
+        // allocation succeeds with breathing room for libsmb2's internal PDU
+        // buffers, and (c) the server to speak a modern dialect with
+        // multi-credit support (anything that reports max_write_size > 64 KB).
+        int desiredDepth = 1;
+        if (smbBufSize >= 8192 && currentMa > 80000 &&
+            (serverMax == 0 || serverMax >= 65536)) {
+            desiredDepth = 2;
+        }
+
+        LOGF("[FileUploader] SMB phase heap: fh=%u ma=%u, serverMaxWrite=%u, slot=%u, depth=%d",
+             (unsigned)ESP.getFreeHeap(),
+             (unsigned)currentMa,
+             (unsigned)serverMax,
+             (unsigned)smbBufSize,
+             desiredDepth);
+
+        if (!smbUploader->allocateBuffer(smbBufSize, desiredDepth)) {
+            // Pipelined allocation failed — retry single-slot once before giving up.
+            if (desiredDepth > 1) {
+                LOG_WARN("[FileUploader] Pipelined SMB buffer alloc failed, falling back to serial");
+                desiredDepth = 1;
+            }
+            if (desiredDepth == 1 ? !smbUploader->allocateBuffer(smbBufSize, 1) : true) {
+                LOG_ERROR("[FileUploader] Failed to allocate SMB buffer — skipping SMB phase");
+                smbStateManager->save(stateFs);
+                smbUploader->end();
+                g_smbSessionStatus.uploadActive     = false;
+                g_smbSessionStatus.filesUploaded    = 0;
+                g_smbSessionStatus.filesTotal       = 0;
+                g_smbSessionStatus.currentFolder[0] = '\0';
+                currentPhase = UploadBackend::NONE;
+                goto smb_phase_done;
+            }
+        }
+        {
+
             std::vector<String> freshFolders, oldFolders;
             if (needFresh || needOld) {
                 std::vector<String> all = scanDatalogFolders(sd, smbStateManager);
@@ -821,8 +897,9 @@ UploadResult FileUploader::runFullSession(SDCardManager* sdManager, int maxMinut
 #endif
                     }
                 }
-                if (smbUploader->isConnected()) smbUploader->end();
             }
+            // ── End persistent SMB session (single teardown for whole phase) ──
+            if (smbUploader->isConnected()) smbUploader->end();
             smbStateManager->save(stateFs);
 
             // Free SMB buffer to recover heap for next session
@@ -834,6 +911,8 @@ UploadResult FileUploader::runFullSession(SDCardManager* sdManager, int maxMinut
         g_smbSessionStatus.filesTotal       = 0;
         g_smbSessionStatus.currentFolder[0] = '\0';
     }
+smb_phase_done:
+    ;
 #endif
 
     currentPhase = UploadBackend::NONE;
@@ -1300,8 +1379,11 @@ bool FileUploader::uploadDatalogFolderSmb(SDCardManager* sdManager, const String
         LOGF("[FileUploader] [SMB] Folder complete: %d files", uploadedCount);
     }
 
-    // Per-folder disconnect (not per-file — avoids socket exhaustion)
-    if (smbUploader->isConnected()) smbUploader->end();
+    // NOTE: connection is kept open — Phase 2 caller (`FileUploader::loop()`)
+    // owns the persistent session lifecycle and tears it down once at the end.
+    // Previously we disconnected here "to avoid socket exhaustion", but that
+    // cost a full NEGPROT + SESSION_SETUP + TREE_CONNECT (~1–2 s) and a
+    // ~4–5 KB smb2_context alloc/free cycle per folder.
 
     bool uploadSuccess = (uploadedCount == (int)files.size() - skippedUnchanged - skippedEmpty);
     LOGF("[FileUploader] [SMB] Folder %s: %d/%d files, %d unchanged, %d empty — success=%s",
