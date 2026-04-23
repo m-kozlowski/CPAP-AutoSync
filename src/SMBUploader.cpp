@@ -1,6 +1,7 @@
 #include "SMBUploader.h"
 #include "Logger.h"
 #include "NetworkRecovery.h"
+#include "Config.h"
 #include <esp_task_wdt.h>
 
 #ifdef ENABLE_SMB_UPLOAD
@@ -24,6 +25,7 @@ extern "C" {
 
 extern volatile unsigned long g_uploadHeartbeat;
 extern volatile bool g_abortUploadFlag;
+extern Config config;
 
 static inline void feedUploadHeartbeat() {
     esp_task_wdt_reset();
@@ -903,8 +905,8 @@ bool SMBUploader::upload(const String& localPath, const String& remotePath,
             success = false;
         }
 
-        // Preserve original file timestamps from SD card
-        if (success && !skipRemoteClose) {
+        // Preserve original file timestamps from SD card (opt-in via config)
+        if (success && !skipRemoteClose && config.getSmbPreserveTimestamps()) {
             time_t localMtime = localFile.getLastWrite();
             if (localMtime > 0) {
                 struct smb2_timeval tv;

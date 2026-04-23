@@ -77,6 +77,12 @@ If you prefer to keep your passwords as plaintext in `config.txt` (e.g., for eas
 - Example: `ENDPOINT_PASSWORD = password123`
 - Leave empty/omit for guest access
 
+**SMB_PRESERVE_TIMESTAMPS** (optional, default: false)
+- When `true`, preserves original file timestamps from the SD card on the NAS via `SMB2_SET_INFO`
+- When `false` (default), files appear on the NAS with the upload time
+- Only enable if accurate historical dates on the backup are required
+- Adds ~1–5 ms per file on a local NAS
+
 ### Schedule Settings
 
 **UPLOAD_MODE** (optional, default: "smart")
@@ -203,6 +209,7 @@ ENDPOINT_TYPE = SMB,CLOUD
 ENDPOINT = //nas.local/backups
 ENDPOINT_USER = user
 ENDPOINT_PASSWORD = pass
+SMB_PRESERVE_TIMESTAMPS = true
 
 CLOUD_CLIENT_ID = your-client-id
 CLOUD_CLIENT_SECRET = your-client-secret
@@ -253,6 +260,7 @@ ENDPOINT = //192.168.1.50/public
 ENDPOINT_TYPE = SMB
 ENDPOINT_USER = 
 ENDPOINT_PASSWORD = 
+SMB_PRESERVE_TIMESTAMPS = true
 UPLOAD_MODE = smart
 UPLOAD_START_HOUR = 8
 UPLOAD_END_HOUR = 22

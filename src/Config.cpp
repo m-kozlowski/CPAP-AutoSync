@@ -21,6 +21,7 @@ Config::Config() :
     maxDays(365),  // Default: upload only last 365 days
     recentFolderDays(2),  // Default: re-check today + yesterday
     cloudInsecureTls(false),  // Default: use root CA validation
+    smbPreserveTimestamps(false),  // Default: do not preserve SMB timestamps (speed)
     
     // Upload FSM defaults
     uploadMode("smart"),
@@ -225,6 +226,8 @@ void Config::setConfigValue(String key, String value) {
         recentFolderDays = value.toInt();
     } else if (key == "CLOUD_INSECURE_TLS") {
         cloudInsecureTls = (value.equalsIgnoreCase("true") || value.toInt() == 1);
+    } else if (key == "SMB_PRESERVE_TIMESTAMPS") {
+        smbPreserveTimestamps = (value.equalsIgnoreCase("true") || value.toInt() == 1);
     } else if (key == "UPLOAD_MODE") {
         uploadMode = value;
     } else if (key == "UPLOAD_START_HOUR") {
@@ -702,6 +705,7 @@ int Config::getCloudDeviceId() const { return cloudDeviceId; }
 int Config::getMaxDays() const { return maxDays; }
 int Config::getRecentFolderDays() const { return recentFolderDays; }
 bool Config::getCloudInsecureTls() const { return cloudInsecureTls; }
+bool Config::getSmbPreserveTimestamps() const { return smbPreserveTimestamps; }
 
 bool Config::hasCloudEndpoint() const { return _hasCloudEndpoint; }
 bool Config::hasSmbEndpoint() const { return _hasSmbEndpoint; }

@@ -63,6 +63,7 @@ private:
     int maxDays;
     int recentFolderDays;
     bool cloudInsecureTls;
+    bool smbPreserveTimestamps;
     
     // Upload FSM settings
     String uploadMode;             // "scheduled" or "smart"
@@ -159,6 +160,7 @@ public:
     int getMaxDays() const;
     int getRecentFolderDays() const;
     bool getCloudInsecureTls() const;
+    bool getSmbPreserveTimestamps() const;
     bool hasCloudEndpoint() const;
     bool hasSmbEndpoint() const;
     bool hasWebdavEndpoint() const;
