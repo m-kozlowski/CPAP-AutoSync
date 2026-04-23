@@ -143,7 +143,7 @@ size_t smbBufSize = (currentMa > 30000) ? 8192 :
 - **Credentials**: Username/password from `ENDPOINT_USER`/`ENDPOINT_PASSWORD`
 - **Timeout**: 15 seconds for SMB commands
 - **Security**: SMB2 signing required
-- **Timestamp preservation**: `SMB_PRESERVE_TIMESTAMPS` (default: `false`). When `true`, each uploaded file's `creation_time`, `last_access_time`, `last_write_time`, and `change_time` are set to the source file's SD-card `lastWrite` timestamp via `SMB2_SET_INFO` / `FILE_BASIC_INFORMATION`. Adds one extra SMB round-trip per file (~1–5 ms on a local NAS). Only enable if accurate historical dates on the backup are required.
+- **Timestamp preservation**: `SMB_PRESERVE_TIMESTAMPS` (default: `true`). When `true`, each uploaded file's `creation_time`, `last_access_time`, `last_write_time`, and `change_time` are set to the source file's SD-card `lastWrite` timestamp via `SMB2_SET_INFO` / `FILE_BASIC_INFORMATION`. Adds one extra SMB round-trip per file (~1–5 ms on a local NAS, negligible). Set to `false` if upload-time timestamps are preferred.
 
 ### Performance Tuning
 - **Buffer sizes**: 8KB/4KB/1KB based on heap availability

@@ -77,9 +77,9 @@ If you prefer to keep your passwords as plaintext in `config.txt` (e.g., for eas
 - Example: `ENDPOINT_PASSWORD = password123`
 - Leave empty/omit for guest access
 
-**SMB_PRESERVE_TIMESTAMPS** (optional, default: false)
-- When `true`, preserves original file timestamps from the SD card on the NAS via `SMB2_SET_INFO`
-- When `false` (default), files appear on the NAS with the upload time
+**SMB_PRESERVE_TIMESTAMPS** (optional, default: true)
+- When `true` (default), preserves original file timestamps from the SD card on the NAS via `SMB2_SET_INFO`
+- When `false`, files appear on the NAS with the upload time
 - Only enable if accurate historical dates on the backup are required
 - Adds ~1–5 ms per file on a local NAS
 

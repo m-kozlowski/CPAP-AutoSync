@@ -21,7 +21,7 @@ Config::Config() :
     maxDays(365),  // Default: upload only last 365 days
     recentFolderDays(2),  // Default: re-check today + yesterday
     cloudInsecureTls(false),  // Default: use root CA validation
-    smbPreserveTimestamps(false),  // Default: do not preserve SMB timestamps (speed)
+    smbPreserveTimestamps(true),  // Default: preserve SMB timestamps (zero performance impact)
     
     // Upload FSM defaults
     uploadMode("smart"),

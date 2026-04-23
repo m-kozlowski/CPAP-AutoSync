@@ -23,7 +23,7 @@ All settings are read from `/config.txt` on the SD card at boot. The file uses s
 | `ENDPOINT_TYPE` | *(auto-detected)* | Comma-separated list of active backends: `SMB`, `CLOUD`, or `SMB,CLOUD`. If omitted, type is inferred from `ENDPOINT` value. |
 | `ENDPOINT_USER` | *(empty)* | SMB username. |
 | `ENDPOINT_PASSWORD` | *(empty)* | SMB password. Migrated to encrypted flash by default. |
-| `SMB_PRESERVE_TIMESTAMPS` | `false` | Set to `true` to copy original file timestamps from the SD card to the NAS. Disabled by default (files appear with upload time on the NAS) — only enable if you need accurate historical dates on your backup. |
+| `SMB_PRESERVE_TIMESTAMPS` | `true` | Set to `false` to use upload time instead of original file timestamps on the NAS. Enabled by default (files appear with their original sleep-study date on the backup). |
 
 ---
 
