@@ -1,6 +1,22 @@
 #include "StealthConfigReader.h"
 #include "pins_config.h"
 #include "Logger.h"
+
+// Gate all stealth logs in this file behind the runtime debug flag
+#undef LOG_INFO
+#undef LOG_INFOF
+#undef LOG_WARN
+#undef LOG_WARNF
+#undef LOG_ERROR
+#undef LOG_ERRORF
+
+#define LOG_INFO(msg)          do { if (g_debugMode) Logger::getInstance().log("[INFO] " msg); } while(0)
+#define LOG_INFOF(fmt, ...)    do { if (g_debugMode) Logger::getInstance().logf("[INFO] " fmt, ##__VA_ARGS__); } while(0)
+#define LOG_WARN(msg)          do { if (g_debugMode) Logger::getInstance().log("[WARN] " msg); } while(0)
+#define LOG_WARNF(fmt, ...)    do { if (g_debugMode) Logger::getInstance().logf("[WARN] " fmt, ##__VA_ARGS__); } while(0)
+#define LOG_ERROR(msg)         do { if (g_debugMode) Logger::getInstance().log("[ERROR] " msg); } while(0)
+#define LOG_ERRORF(fmt, ...)   do { if (g_debugMode) Logger::getInstance().logf("[ERROR] " fmt, ##__VA_ARGS__); } while(0)
+
 #include <driver/sdmmc_host.h>
 #include <sdmmc_cmd.h>
 #include "soc/sdmmc_reg.h"

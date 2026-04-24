@@ -45,6 +45,7 @@ ENDPOINT = //192.168.1.100/cpap_backups
 - `ENDPOINT_TYPE` - SMB, CLOUD, WEBDAV or comma-separated combinations
 - `ENDPOINT` - Network path (e.g., `//server/share`)
 - `ENDPOINT_USER` / `ENDPOINT_PASSWORD` - SMB credentials
+- `SMB_PRESERVE_TIMESTAMPS` - Copy original file timestamps to NAS (default: `true`)
 - `CLOUD_CLIENT_ID` / `CLOUD_CLIENT_SECRET` - SleepHQ credentials
 
 ### Upload Scheduling

@@ -43,9 +43,16 @@ private:
     struct smb2_context* smb2;  // libsmb2 context
     bool connected;
     
-    // Pre-allocated upload buffer (avoids per-file malloc/free fragmentation)
+    // Pre-allocated upload buffer (avoids per-file malloc/free fragmentation).
+    // When pipelining is enabled the buffer holds `pipelineDepth` contiguous
+    // slots of `pipelineSlotSize` bytes each, so that up to `pipelineDepth`
+    // SMB2 writes can be in flight simultaneously against the same file
+    // handle. With depth = 1 the buffer is a single chunk and the upload
+    // loop uses the original stop-and-wait path.
     uint8_t* uploadBuffer;
-    size_t uploadBufferSize;
+    size_t uploadBufferSize;      // total bytes allocated = depth * slotSize
+    size_t pipelineSlotSize;      // bytes per pipeline slot (== per-write chunk)
+    int    pipelineDepth;         // number of in-flight writes (1 = serial, >=2 = pipelined)
     
     // Upload retry override (0 = use default SMB_UPLOAD_MAX_ATTEMPTS)
     int maxUploadAttempts;
@@ -136,12 +143,20 @@ public:
     
     /**
      * Pre-allocate upload buffer (must be called before first upload)
-     * Should be called BEFORE Cloud TLS initialization to get clean heap
-     * 
-     * @param size Buffer size to allocate (e.g., 8192, 4096, 2048, 1024)
+     * Should be called BEFORE Cloud TLS initialization to get clean heap.
+     *
+     * When `depth > 1`, allocates `depth * slotSize` bytes so the upload
+     * loop can keep up to `depth` SMB2 writes in flight simultaneously
+     * (SMB2 credit-based pipelining). Depth 1 preserves the original
+     * stop-and-wait behaviour.
+     *
+     * @param slotSize Per-write chunk size (e.g., 8192, 16384, 32768)
+     * @param depth Number of in-flight writes. Default 1 = no pipelining.
+     *              Depth 2 doubles peak memory usage but typically ~1.7–2×
+     *              throughput on a healthy LAN.
      * @return true if allocation successful, false otherwise
      */
-    bool allocateBuffer(size_t size);
+    bool allocateBuffer(size_t slotSize, int depth = 1);
     
     /**
      * Free the upload buffer (releases heap for other phases)
@@ -154,6 +169,18 @@ public:
      * Used to reduce retries outside scheduled hours.
      */
     void setMaxUploadAttempts(int attempts);
+
+    /**
+     * Server-negotiated maximum write PDU payload (bytes).
+     * Valid only while connected; returns 0 otherwise.
+     * Typical values: 1 MB (Samba, Windows) or 64 KB (legacy SMB servers
+     * that don't advertise SMB2_GLOBAL_CAP_LARGE_MTU).
+     *
+     * Used by callers to right-size the upload buffer after `begin()` so
+     * each `smb2_write` carries the largest payload the server will accept,
+     * cutting the number of application-layer round-trips.
+     */
+    uint32_t getNegotiatedMaxWriteSize() const;
     
     /**
      * Scan remote directory and count files (for delta scan functionality)

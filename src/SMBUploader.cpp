@@ -1,6 +1,7 @@
 #include "SMBUploader.h"
 #include "Logger.h"
 #include "NetworkRecovery.h"
+#include "Config.h"
 #include <esp_task_wdt.h>
 
 #ifdef ENABLE_SMB_UPLOAD
@@ -9,12 +10,16 @@
 #include <errno.h>
 #include <string.h>
 #include <sys/poll.h>
+#include <sys/socket.h>     // setsockopt
+#include <netinet/in.h>     // IPPROTO_TCP
+#include <netinet/tcp.h>    // TCP_NODELAY
 #include <WiFi.h>
 
 // Include libsmb2 headers
 extern "C" {
     #include "smb2/smb2.h"
     #include "smb2/libsmb2.h"
+    #include "smb2/libsmb2-raw.h"
 }
 
 // ============================================================================
@@ -23,6 +28,7 @@ extern "C" {
 
 extern volatile unsigned long g_uploadHeartbeat;
 extern volatile bool g_abortUploadFlag;
+extern Config config;
 
 static inline void feedUploadHeartbeat() {
     esp_task_wdt_reset();
@@ -168,6 +174,23 @@ static int smb2_stat_ev(struct smb2_context* smb2, const char* path,
     return cb.status;
 }
 
+static int smb2_set_basic_info_ev(struct smb2_context* smb2, struct smb2fh* fh,
+                                  const struct smb2_file_basic_info* info) {
+    struct smb2_async_cb_data cb = {0, 0, nullptr};
+    struct smb2_set_info_request req = {};
+    req.info_type = SMB2_0_INFO_FILE;
+    req.file_info_class = SMB2_FILE_BASIC_INFORMATION;
+    memcpy(req.file_id, smb2_get_file_id(fh), SMB2_FD_SIZE);
+    req.input_data = (void*)info;
+
+    struct smb2_pdu* pdu = smb2_cmd_set_info_async(smb2, &req, smb2_generic_cb, &cb);
+    if (pdu == NULL) return -1;
+    smb2_queue_pdu(smb2, pdu);
+    int rc = smb2_run_event_loop(smb2, &cb);
+    if (rc < 0) return rc;
+    return cb.status;
+}
+
 static struct smb2dir* smb2_opendir_ev(struct smb2_context* smb2,
                                        const char* path) {
     struct smb2_async_cb_data cb = {0, 0, nullptr};
@@ -180,6 +203,68 @@ static struct smb2dir* smb2_opendir_ev(struct smb2_context* smb2,
 
 // Note: smb2_readdir() and smb2_closedir() never block — no async needed.
 
+// ============================================================================
+// Pipelined write support
+//
+// Each slot tracks one in-flight smb2_pwrite_async operation. Multiple slots
+// let us keep several writes on the wire simultaneously, exploiting SMB2
+// credits so the server can start processing the second write before we've
+// received the ACK for the first. Peak memory: `depth * slotSize` bytes of
+// application payload, paid for once in SMBUploader::allocateBuffer().
+//
+// We use `smb2_pwrite_async` (with an explicit offset) rather than
+// `smb2_write_async`. The latter reads `fh->offset` at queue time and only
+// updates it in the completion callback, so back-to-back queued writes
+// without intervening replies would all reference the same offset and
+// overwrite each other.
+// ============================================================================
+
+struct smb2_pipeline_slot {
+    struct smb2_async_cb_data cb;
+    uint64_t offset;      // file offset this slot is writing to
+    uint32_t length;      // bytes queued in this slot
+    uint8_t* buf;         // pointer into the shared upload buffer
+    bool inflight;        // true between async dispatch and callback fire
+};
+
+// Run the shared event loop until at least one in-flight slot finishes.
+// Returns 0 if a slot completed (or nothing was in flight),
+//        -1 on poll/service error,
+//        -ECANCELED on abort.
+static int smb2_run_multi_slot_event_loop(struct smb2_context* smb2,
+                                          smb2_pipeline_slot* slots,
+                                          int depth) {
+    for (;;) {
+        bool anyInflight = false;
+        for (int i = 0; i < depth; ++i) {
+            if (slots[i].inflight) {
+                if (slots[i].cb.is_finished) return 0;
+                anyInflight = true;
+            }
+        }
+        if (!anyInflight) return 0;
+
+        int fd = smb2_get_fd(smb2);
+        if (fd < 0) return -1;
+
+        struct pollfd pfd;
+        memset(&pfd, 0, sizeof(pfd));
+        pfd.fd = fd;
+        pfd.events = smb2_which_events(smb2);
+
+        int ret = poll(&pfd, 1, 1000);
+        if (ret < 0) return -1;
+
+        if (pfd.revents) {
+            if (smb2_service(smb2, pfd.revents) < 0) return -1;
+        }
+
+        feedUploadHeartbeat();
+
+        if (g_abortUploadFlag) return -ECANCELED;
+    }
+}
+
 // Buffer size for file streaming (8KB to avoid fragmentation in mixed-backend mode)
 #define UPLOAD_BUFFER_SIZE 8192
 #define UPLOAD_BUFFER_FALLBACK_SIZE 4096
@@ -187,7 +272,13 @@ static struct smb2dir* smb2_opendir_ev(struct smb2_context* smb2,
 #define SMB_UPLOAD_MAX_ATTEMPTS 2
 #define SMB_WRITE_EAGAIN_RETRIES 6
 #define SMB_WRITE_EAGAIN_BASE_DELAY_MS 20
-#define SMB_WRITE_TCP_DRAIN_BYTES 16384  // Pause every 16KB to let lwIP drain TCP send buffer
+// Note: the historical `SMB_WRITE_TCP_DRAIN_BYTES` / `delay(10)` per 16 KB
+// drain was removed in the Phase A SMB speed pass. With the persistent
+// SMB session (no per-folder heap churn) and `TCP_NODELAY` set on the
+// libsmb2 socket, lwIP's own flow control handles send-buffer drain
+// without needing an artificial pause. Retained for v4.1-beta1+: if
+// EAGAIN backpressure reappears on a specific NAS, `smb2_write_ev` already
+// has a retry-with-backoff path (see `SMB_WRITE_EAGAIN_RETRIES`).
 
 static bool isRecoverableSmbWriteError(int errorCode, const char* smbError) {
     if (errorCode == ETIMEDOUT ||
@@ -266,7 +357,9 @@ static bool recoverWiFiAfterSmbTransportFailure() {
 
 SMBUploader::SMBUploader(const String& endpoint, const String& user, const String& password)
     : smbUser(user), smbPassword(password), smb2(nullptr), connected(false),
-      uploadBuffer(nullptr), uploadBufferSize(0), maxUploadAttempts(0),
+      uploadBuffer(nullptr), uploadBufferSize(0),
+      pipelineSlotSize(0), pipelineDepth(1),
+      maxUploadAttempts(0),
       lastVerifiedParentDir("") {
     parseEndpoint(endpoint);
 }
@@ -390,6 +483,24 @@ bool SMBUploader::connect() {
     g_smbConnectionActive = true;
     lastVerifiedParentDir = "";
     LOG("[SMB] Connected successfully");
+
+    // ── TCP_NODELAY: disable Nagle's algorithm on the libsmb2 socket ──
+    // libsmb2 already batches each PDU into a single writev(), so Nagle can
+    // only *delay* small PDUs (close, set_info, mkdir) by up to ~40 ms waiting
+    // for a follow-up payload that never comes. Disabling Nagle is a pure win
+    // on small-PDU workloads (10–30% faster per folder on typical mixes).
+    {
+        int fd = smb2_get_fd(smb2);
+        if (fd >= 0) {
+            int one = 1;
+            if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one)) == 0) {
+                LOG_DEBUG("[SMB] TCP_NODELAY enabled on libsmb2 socket");
+            } else {
+                LOG_WARNF("[SMB] setsockopt(TCP_NODELAY) failed: errno=%d (%s)",
+                          errno, strerror(errno));
+            }
+        }
+    }
     
     // Test if we can access the base path (if configured)
     if (!smbBasePath.isEmpty()) {
@@ -438,24 +549,44 @@ bool SMBUploader::isConnected() const {
     return connected;
 }
 
-bool SMBUploader::allocateBuffer(size_t size) {
+bool SMBUploader::allocateBuffer(size_t slotSize, int depth) {
     // Free existing buffer if already allocated
     if (uploadBuffer) {
         free(uploadBuffer);
         uploadBuffer = nullptr;
         uploadBufferSize = 0;
+        pipelineSlotSize = 0;
+        pipelineDepth = 1;
     }
-    
-    // Allocate new buffer
-    uploadBuffer = (uint8_t*)malloc(size);
+
+    if (depth < 1) depth = 1;
+    if (slotSize == 0) {
+        LOG_ERROR("[SMB] allocateBuffer: slotSize must be non-zero");
+        return false;
+    }
+
+    size_t total = slotSize * (size_t)depth;
+
+    // Allocate a single contiguous buffer holding all pipeline slots.
+    // Keeping slots contiguous avoids per-slot allocations (fragmentation)
+    // and lets the upload loop index by `uploadBuffer + i * pipelineSlotSize`.
+    uploadBuffer = (uint8_t*)malloc(total);
     if (!uploadBuffer) {
-        LOG_ERRORF("[SMB] Failed to allocate upload buffer (%u bytes)", size);
+        LOG_ERRORF("[SMB] Failed to allocate upload buffer (%u bytes total, depth=%d)",
+                   (unsigned)total, depth);
         LOG("[SMB] System may be low on memory");
         return false;
     }
-    
-    uploadBufferSize = size;
-    LOGF("[SMB] Allocated upload buffer: %u bytes", uploadBufferSize);
+
+    uploadBufferSize = total;
+    pipelineSlotSize = slotSize;
+    pipelineDepth = depth;
+    if (depth > 1) {
+        LOGF("[SMB] Allocated upload buffer: %u bytes (%d slots x %u bytes, pipelined)",
+             (unsigned)total, depth, (unsigned)slotSize);
+    } else {
+        LOGF("[SMB] Allocated upload buffer: %u bytes", (unsigned)total);
+    }
     return true;
 }
 
@@ -466,11 +597,20 @@ void SMBUploader::setMaxUploadAttempts(int attempts) {
     }
 }
 
+uint32_t SMBUploader::getNegotiatedMaxWriteSize() const {
+    if (!connected || smb2 == nullptr) {
+        return 0;
+    }
+    return smb2_get_max_write_size(smb2);
+}
+
 void SMBUploader::freeBuffer() {
     if (uploadBuffer) {
         free(uploadBuffer);
         uploadBuffer = nullptr;
         uploadBufferSize = 0;
+        pipelineSlotSize = 0;
+        pipelineDepth = 1;
         LOG("[SMB] Upload buffer freed");
     }
 }
@@ -750,6 +890,190 @@ bool SMBUploader::upload(const String& localPath, const String& remotePath,
         bool transportErrorDetected = false;
         unsigned long totalBytesRead = 0;
 
+        // ── Pipelined write path (depth >= 2) ────────────────────────────────
+        // Keeps up to `pipelineDepth` SMB2 write PDUs in flight against the
+        // same file handle, using explicit offsets (smb2_pwrite_async) so the
+        // server applies them in order regardless of reply ordering.
+        if (pipelineDepth >= 2 && pipelineSlotSize > 0 && uploadBuffer) {
+            constexpr int MAX_PIPELINE_DEPTH = 8;
+            int depth = pipelineDepth;
+            if (depth > MAX_PIPELINE_DEPTH) depth = MAX_PIPELINE_DEPTH;
+
+            smb2_pipeline_slot slots[MAX_PIPELINE_DEPTH] = {};
+            for (int i = 0; i < depth; ++i) {
+                slots[i].buf = uploadBuffer + (size_t)i * pipelineSlotSize;
+                slots[i].inflight = false;
+            }
+
+            uint64_t sendOffset = 0;     // next offset to issue
+            bool eofReached = false;
+            bool hadWriteError = false;
+            int firstErrno = 0;
+            String firstErrorText;
+
+            while ((attemptBytesTransferred < fileSize) && !hadWriteError) {
+                // ── Fill empty slots until full, EOF, or error ──
+                for (int i = 0; i < depth && !eofReached && !hadWriteError; ++i) {
+                    if (slots[i].inflight) continue;
+
+                    size_t toRead = pipelineSlotSize;
+                    size_t remaining = (size_t)(fileSize - sendOffset);
+                    if (toRead > remaining) toRead = remaining;
+                    if (toRead == 0) { eofReached = true; break; }
+
+                    size_t bytesRead = localFile.read(slots[i].buf, toRead);
+                    if (bytesRead == 0) {
+                        if (totalBytesRead < fileSize) {
+                            LOGF("[SMB] ERROR: Unexpected end of file, read %lu of %u bytes",
+                                 totalBytesRead, (unsigned int)fileSize);
+                            LOG("[SMB] SD card may have read errors");
+                            hadWriteError = true;
+                            firstErrno = EIO;
+                            firstErrorText = "SD short read";
+                        }
+                        eofReached = true;
+                        break;
+                    }
+                    totalBytesRead += bytesRead;
+
+                    slots[i].cb.is_finished = 0;
+                    slots[i].cb.status      = 0;
+                    slots[i].cb.result      = nullptr;
+                    slots[i].offset = sendOffset;
+                    slots[i].length = (uint32_t)bytesRead;
+
+                    int rc = smb2_pwrite_async(smb2, remoteFile,
+                                               slots[i].buf, (uint32_t)bytesRead,
+                                               sendOffset,
+                                               smb2_generic_cb, &slots[i].cb);
+                    if (rc < 0) {
+                        const char* err = smb2_get_error(smb2);
+                        LOGF("[SMB] ERROR: pipeline dispatch failed at offset %llu: %s (rc=%d)",
+                             (unsigned long long)sendOffset, err ? err : "unknown", rc);
+                        hadWriteError = true;
+                        firstErrno = (errno != 0 ? errno : EIO);
+                        firstErrorText = err ? err : "dispatch failure";
+                        // Don't mark slot as inflight — PDU not queued
+                        break;
+                    }
+                    slots[i].inflight = true;
+                    sendOffset += bytesRead;
+                }
+
+                // ── Wait for at least one slot to complete ──
+                bool anyInflight = false;
+                for (int i = 0; i < depth; ++i) if (slots[i].inflight) { anyInflight = true; break; }
+                if (!anyInflight) break;  // all done (EOF) or never dispatched
+
+                int loopRc = smb2_run_multi_slot_event_loop(smb2, slots, depth);
+                if (loopRc == -ECANCELED) {
+                    LOG_WARN("[SMB] Pipelined upload aborted by request");
+                    hadWriteError = true;
+                    firstErrno = ECANCELED;
+                    firstErrorText = "upload aborted";
+                } else if (loopRc < 0) {
+                    LOG_WARN("[SMB] Pipelined upload: event-loop error");
+                    hadWriteError = true;
+                    firstErrno = EIO;
+                    firstErrorText = "event loop error";
+                }
+
+                // ── Reap completed slots ──
+                for (int i = 0; i < depth; ++i) {
+                    if (!slots[i].inflight || !slots[i].cb.is_finished) continue;
+                    int status = slots[i].cb.status;
+                    slots[i].inflight = false;
+                    if (status < 0) {
+                        if (!hadWriteError) {
+                            const char* err = smb2_get_error(smb2);
+                            LOGF("[SMB] ERROR: pipelined write failed at offset %llu: status=%d err=%s",
+                                 (unsigned long long)slots[i].offset, status,
+                                 err ? err : "unknown");
+                            hadWriteError = true;
+                            firstErrno = (status == -ECANCELED) ? ECANCELED : EIO;
+                            firstErrorText = err ? err : "write failed";
+                        }
+                        continue;
+                    }
+                    if ((uint32_t)status != slots[i].length) {
+                        LOGF("[SMB] ERROR: pipelined short write at offset %llu: wrote %d / %u",
+                             (unsigned long long)slots[i].offset, status, slots[i].length);
+                        if (!hadWriteError) {
+                            hadWriteError = true;
+                            firstErrno = EIO;
+                            firstErrorText = "short write";
+                        }
+                        continue;
+                    }
+                    attemptBytesTransferred += slots[i].length;
+                    if (attemptBytesTransferred > lastBytesTransferred) {
+                        lastProgressTime = millis();
+                        lastBytesTransferred = attemptBytesTransferred;
+                    }
+                }
+
+                // Progress timeout
+                if (millis() - lastProgressTime > PROGRESS_TIMEOUT_MS) {
+                    LOGF("[SMB] ERROR: Pipelined upload stalled - no progress for %lu s",
+                         PROGRESS_TIMEOUT_MS / 1000);
+                    hadWriteError = true;
+                    firstErrno = ETIMEDOUT;
+                    firstErrorText = "stalled";
+                }
+
+                feedUploadHeartbeat();
+                taskYIELD();
+                yield();
+            }
+
+            // Drain any still-in-flight slots so the PDUs complete before we
+            // either continue to close or tear the socket down.
+            while (true) {
+                bool anyInflight = false;
+                for (int i = 0; i < depth; ++i) if (slots[i].inflight) { anyInflight = true; break; }
+                if (!anyInflight) break;
+                int drainRc = smb2_run_multi_slot_event_loop(smb2, slots, depth);
+                for (int i = 0; i < depth; ++i) {
+                    if (slots[i].inflight && slots[i].cb.is_finished) {
+                        if (slots[i].cb.status < 0 && !hadWriteError) {
+                            const char* err = smb2_get_error(smb2);
+                            hadWriteError = true;
+                            firstErrno = EIO;
+                            firstErrorText = err ? err : "drain error";
+                        } else if (slots[i].cb.status > 0 && !hadWriteError) {
+                            attemptBytesTransferred += (uint32_t)slots[i].cb.status;
+                        }
+                        slots[i].inflight = false;
+                    }
+                }
+                if (drainRc < 0) break;  // give up draining on error
+            }
+
+            if (hadWriteError) {
+                int finalErrno = firstErrno;
+                const char* errStr = firstErrorText.length() ? firstErrorText.c_str() : "pipeline error";
+                LOGF("[SMB] ERROR: Pipelined write failed at offset %lu: %s (errno=%d: %s)",
+                     attemptBytesTransferred,
+                     errStr,
+                     finalErrno,
+                     strerror(finalErrno));
+
+                bool recoverableTransportError =
+                    isRecoverableSmbWriteError(finalErrno, errStr) ||
+                    isSmbPduAllocationError(errStr);
+                if (recoverableTransportError) {
+                    transportErrorDetected = true;
+                    skipRemoteClose = true;
+                    if (attempt < effectiveMaxAttempts) {
+                        shouldRetry = true;
+                        LOG_WARN("[SMB] Recoverable transport error in pipeline, will reconnect and retry");
+                    } else {
+                        LOG_WARN("[SMB] Recoverable transport error in pipeline, retry budget exhausted");
+                    }
+                }
+                success = false;
+            }
+        } else
         while (localFile.available()) {
             size_t bytesRead = localFile.read(uploadBuffer, uploadBufferSize);
             if (bytesRead == 0) {
@@ -856,16 +1180,6 @@ bool SMBUploader::upload(const String& localPath, const String& remotePath,
             // ── POWER: Yield between chunks to allow DFS frequency scaling ──
             taskYIELD();
 
-            // ── TCP drain: pause periodically to let lwIP process ACKs ──
-            // Without this, writes fill the TCP send buffer (~32KB) faster
-            // than the stack can drain it under low-heap conditions, causing
-            // EAGAIN followed by EBADF as the socket dies from backpressure.
-            if (attemptBytesTransferred >= SMB_WRITE_TCP_DRAIN_BYTES &&
-                (attemptBytesTransferred % SMB_WRITE_TCP_DRAIN_BYTES) < uploadBufferSize) {
-                delay(10);
-                yield();
-            }
-
             // Print progress for large files (every 1MB)
             if (attemptBytesTransferred % (1024 * 1024) == 0) {
                 LOG_DEBUGF("[SMB] Progress: %lu KB / %u KB",
@@ -883,6 +1197,32 @@ bool SMBUploader::upload(const String& localPath, const String& remotePath,
                  attemptBytesTransferred, (unsigned int)fileSize);
             LOG("[SMB] Upload incomplete - file may be corrupted on remote server");
             success = false;
+        }
+
+        // Preserve original file timestamps from SD card (opt-in via config)
+        if (success && !skipRemoteClose && config.getSmbPreserveTimestamps()) {
+            time_t localMtime = localFile.getLastWrite();
+            if (localMtime > 0) {
+                struct smb2_timeval tv;
+                tv.tv_sec = localMtime;
+                tv.tv_usec = 0;
+
+                struct smb2_file_basic_info info = {};
+                info.creation_time = tv;
+                info.last_access_time = tv;
+                info.last_write_time = tv;
+                info.change_time = tv;
+                info.file_attributes = 0;  // Don't change attributes
+
+                int rc = smb2_set_basic_info_ev(smb2, remoteFile, &info);
+                if (rc < 0) {
+                    const char* err = smb2_get_error(smb2);
+                    LOG_WARNF("[SMB] Failed to preserve timestamp for %s: %s",
+                              fullRemotePath.c_str(), err ? err : "unknown");
+                } else {
+                    LOG_DEBUGF("[SMB] Preserved original timestamp for %s", fullRemotePath.c_str());
+                }
+            }
         }
 
         // Close remote file. If transport is known broken and we are about to

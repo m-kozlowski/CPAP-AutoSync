@@ -63,6 +63,7 @@ private:
     int maxDays;
     int recentFolderDays;
     bool cloudInsecureTls;
+    bool smbPreserveTimestamps;
     
     // Upload FSM settings
     String uploadMode;             // "scheduled" or "smart"
@@ -88,6 +89,10 @@ private:
     WifiTxPower wifiTxPower;
     WifiPowerSaving wifiPowerSaving;
     BrownoutDetectMode brownoutDetectMode;
+    
+    // Remote syslog (UDP)
+    String syslogHost;           // empty = disabled
+    uint16_t syslogPort;
     
     // Credential masking mode flags
     bool maskCredentials;
@@ -159,6 +164,7 @@ public:
     int getMaxDays() const;
     int getRecentFolderDays() const;
     bool getCloudInsecureTls() const;
+    bool getSmbPreserveTimestamps() const;
     bool hasCloudEndpoint() const;
     bool hasSmbEndpoint() const;
     bool hasWebdavEndpoint() const;
@@ -183,6 +189,10 @@ public:
     WifiTxPower getWifiTxPower() const;
     WifiPowerSaving getWifiPowerSaving() const;
     BrownoutDetectMode getBrownoutDetectMode() const;
+    
+    // Remote syslog getters
+    const String& getSyslogHost() const;
+    uint16_t getSyslogPort() const;
     
     // Credential masking mode getters
     bool isMaskingCredentials() const;

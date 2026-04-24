@@ -6,6 +6,10 @@
 #endif
 
 #ifndef UNIT_TEST
+#include <IPAddress.h>
+#endif
+
+#ifndef UNIT_TEST
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <FS.h>
@@ -208,6 +212,15 @@ public:
     // Static circular buffer — public for zero-copy SSE push (pushSseLogs)
     static char s_logBuffer[LOG_BUFFER_SIZE];
 
+    /**
+     * Enable UDP syslog forwarding to a remote server.
+     * Call after WiFi is connected. Pass an invalid IP to disable.
+     * @param host  IPv4 address of the syslog server
+     * @param port  UDP port (typically 514)
+     * @param hostname  Device hostname for the syslog TAG field
+     */
+    void enableSyslog(const IPAddress& host, uint16_t port, const char* hostname);
+
 protected:
     // Protected constructor for testing - allows inheritance in test code
     Logger();
@@ -273,6 +286,20 @@ protected:
     
     // Periodic persisted-log tracking
     volatile uint32_t lastDumpedBytes;  // Track bytes already flushed
+
+    // Remote UDP syslog
+    bool syslogEnabled;
+    IPAddress syslogHost;
+    uint16_t syslogPort;
+    char syslogHostname[33];  // Device hostname for TAG field
+
+    /**
+     * Send a log line to the remote syslog server via UDP.
+     * Fire-and-forget: silently drops on WiFi-down or TX queue full.
+     * @param data  The formatted log line (with level prefix)
+     * @param len   Length of data
+     */
+    void writeToSyslog(const char* data, size_t len);
 };
 
 // Runtime debug mode flag — set from config DEBUG=true after config load.

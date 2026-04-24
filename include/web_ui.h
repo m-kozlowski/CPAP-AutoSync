@@ -204,15 +204,15 @@ nav button:hover:not(.act){background:#3a5a7e}
 </div>
 <div class=cards>
 <div class=card style="grid-column:1/-1"><h2>Upload Progress</h2>
-<div class=be>
-<div class=bh><span id=d-ab-name class=bt-s>—</span><span id=d-ab-st class=v>—</span></div>
-<div class=prog><div id=d-pf-active class=pf style=width:0%></div></div>
-<div id=d-ab-det class=bd-i></div>
+<div class=be id=d-be-cloud style=display:none>
+<div class=bh><span class=bt-s style=color:#aa66ff>SleepHQ Cloud</span><span id=d-cloud-st class=v>—</span></div>
+<div class=prog><div id=d-pf-cloud class=pf style="width:0%;background:linear-gradient(90deg,#8a4fd0,#aa66ff)"></div></div>
+<div id=d-cloud-det class=bd-i></div>
 </div>
-<div class=be id=d-next-be style=display:none>
-<div class=bh><span id=d-nb-name class="bt-s" style=color:#8f98a0>Next: —</span><span id=d-nb-st class=v style="font-size:.78em;color:#8f98a0">—</span></div>
-<div class=prog><div id=d-pf-next class=pf style="width:0%;background:linear-gradient(90deg,#556070,#6a7a8a)"></div></div>
-<div id=d-nb-det class=bd-i style=color:#8f98a0></div>
+<div class=be id=d-be-smb style=display:none>
+<div class=bh><span class=bt-s style=color:#66c0f4>NAS (SMB)</span><span id=d-smb-st class=v>—</span></div>
+<div class=prog><div id=d-pf-smb class=pf style=width:0%></div></div>
+<div id=d-smb-det class=bd-i></div>
 </div>
 <div class=row style="border-top:1px solid #2a475e;padding-top:8px;margin-top:2px"><span class=k>Status</span><span id=d-fst class=v></span></div>
 </div>
@@ -459,6 +459,7 @@ function toast(msg,mode){
 }
 function fmt(ms){var s=Math.round(ms/1000);if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m '+s%60+'s';return Math.floor(s/3600)+'h '+Math.floor(s%3600/60)+'m';}
 function fmtUp(s){if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m '+s%60+'s';var h=Math.floor(s/3600);return h+'h '+Math.floor(s%3600/60)+'m';}
+function fmtAgo(ts){if(!ts)return 'never';var s=Math.round(Date.now()/1000-ts);if(s<0)s=0;if(s<60)return 'just now';if(s<3600)return Math.floor(s/60)+' min ago';if(s<86400)return Math.floor(s/3600)+' h ago';var d=Math.floor(s/86400);return d+' day'+(d>1?'s':'')+' ago';}
 function sigClass(r){if(r>=-65)return 'sig-exc';if(r>=-75)return 'sig-good';if(r>=-85)return 'sig-fair';if(r>=-95)return 'sig-weak';return 'sig-vweak';}
 function sigLabel(r){if(r>=-65)return 'Excellent';if(r>=-75)return 'Good';if(r>=-85)return 'Fair';if(r>=-95)return 'Weak';return 'Very Weak';}
 function badgeHtml(st){var s=st.toLowerCase(),c='bi';
@@ -600,33 +601,61 @@ function renderStatus(d){
   }else{set('d-wifi','Disconnected');}
   set('d-ep',cfg.endpoint_type||d.endpoint_type||'—');
   set('d-up',fmtUp(d.uptime||0));
-  var ab=d.active_backend||'NONE';
-  var abColor=ab==='SMB'?'#66c0f4':ab==='CLOUD'?'#aa66ff':ab==='DUAL'?'#44cc88':'#8f98a0';
-  var abEl=document.getElementById('d-ab-name');abEl.textContent=ab;abEl.style.color=abColor;
-  var done=d.folders_done||0,total=d.folders_total||0,pend=d.folders_pending||0;
-  var pct=total>0?Math.round(done*100/total):0;
-  document.getElementById('d-pf-active').style.width=pct+'%';
-  var inc=Math.max(0,total-done);
-  var abSt=total>0?(done+' / '+total+(pend>0?' ('+pend+' empty)':'')):'\u2014';
-  if(total>0&&inc>0)abSt+=' &nbsp;<span style=color:#ffaa44>'+inc+' left</span>';
-  else if(total>0&&inc===0&&done>0)abSt+=' &nbsp;<span style=color:#44ff44>&#10003;</span>';
-  document.getElementById('d-ab-st').innerHTML=abSt;
-  var liveDet=d.live_active?'File '+d.live_up+'/'+d.live_total+(d.live_folder?' &middot; '+d.live_folder:''):'';
-  document.getElementById('d-ab-det').innerHTML=liveDet;
-  var nb=d.next_backend||'NONE';
-  var nbEl=document.getElementById('d-next-be');
-  if(nb&&nb!=='NONE'){nbEl.style.display='';
-    var nbDone=d.next_done||0,nbTotal=d.next_total||0,nbPct=nbTotal>0?Math.round(nbDone*100/nbTotal):0;
-    document.getElementById('d-nb-name').textContent='Next: '+nb;
-    document.getElementById('d-pf-next').style.width=nbPct+'%';
-    var tsStr=d.next_ts>0?new Date(d.next_ts*1000).toLocaleDateString():'never';
-    document.getElementById('d-nb-st').innerHTML=nbDone+'/'+nbTotal+' \u00b7 last '+tsStr+' <em style="color:#666">(stale)</em>';
-    document.getElementById('d-nb-det').textContent=d.next_empty>0?d.next_empty+' empty folder(s)':'';
-  }else{nbEl.style.display='none';}
-  var fst=inc>0?'&#9888; '+inc+' folder(s) pending':(done>0?'&#10003; All synced':'Waiting for first scan');
+  var be=d.backends||{};
+  function renderBe(key,label){
+    var row=document.getElementById('d-be-'+key);
+    var b=be[key]||{};
+    if(!b.enabled){row.style.display='none';return{enabled:false,inc:0,done:0,last_ts:0};}
+    row.style.display='';
+    var done=b.done||0,total=b.total||0;
+    var live=b.live||{};
+    // Numbers now come from the work probe: `total` = folders within
+    // MAX_DAYS on the card (stable across both backends); `done` = folders
+    // in that window that are fully in sync for this backend.  The probe
+    // itself accounts for RECENT_FOLDER_DAYS (a refreshed folder with new
+    // content drops out of `done` automatically), so no client-side
+    // subtraction tricks are needed.  We still render fractional per-file
+    // progress during a live upload so the bar moves visibly.
+    var dispTotal=total,dispDone=done,frac=0;
+    if(live.active&&live.total>0){
+      frac=Math.min(1,Math.max(0,live.up/live.total));
+      dispDone=Math.min(total,done+frac);
+    }
+    var inc=Math.max(0,total-done);
+    var pct=dispTotal>0?Math.min(100,Math.round(dispDone*100/dispTotal)):0;
+    document.getElementById('d-pf-'+key).style.width=pct+'%';
+    var shownDone=live.active?Math.floor(dispDone):done;
+    var st;
+    if(dispTotal===0)st='<span style=color:#8f98a0>No data on card yet</span>';
+    else st=shownDone+' / '+dispTotal;
+    if(dispTotal>0&&live.active)st+=' &nbsp;<span style=color:#38bdf8>uploading</span>';
+    else if(dispTotal>0&&inc>0)st+=' &nbsp;<span style=color:#ffaa44>'+inc+' left</span>';
+    else if(dispTotal>0&&done>0)st+=' &nbsp;<span style=color:#44ff44>&#10003;</span>';
+    document.getElementById('d-'+key+'-st').innerHTML=st;
+    var det='';
+    if(live.active)det='Uploading '+live.up+'/'+live.total+(live.folder?' \u00b7 '+live.folder:'');
+    else if(b.last_ts>0)det='Last upload: '+fmtAgo(b.last_ts);
+    document.getElementById('d-'+key+'-det').innerHTML=det;
+    return{enabled:true,inc:inc,done:done,last_ts:b.last_ts||0};
+  }
+  var rCloud=renderBe('cloud','SleepHQ Cloud');
+  var rSmb=renderBe('smb','NAS (SMB)');
+  var anyEnabled=rCloud.enabled||rSmb.enabled;
+  var anyInc=rCloud.inc>0||rSmb.inc>0;
+  var totalFolders=(d.backends.cloud&&d.backends.cloud.total)||(d.backends.smb&&d.backends.smb.total)||0;
+  var fst;
+  if(!anyEnabled)fst='No backend configured';
+  else if(anyInc){
+    var parts=[];
+    if(rCloud.inc>0)parts.push(rCloud.inc+' on cloud');
+    if(rSmb.inc>0)parts.push(rSmb.inc+' on NAS');
+    fst='&#9888; '+parts.join(', ')+' pending';
+  }else if(!d.has_probed)fst='Waiting for first scan';
+  else if(totalFolders===0)fst='&#10003; No data on card';
+  else fst='&#10003; Up to date';
   seti('d-fst',fst);
-  document.title=(d.hostname||'CPAP')+' \u200e- CPAP Uploader';
-  set('sub','Firmware '+d.firmware+' \u00b7 '+(d.hostname||'cpap')+' \u00b7 '+fmtUp(d.uptime||0)+' uptime');
+  document.title=d.hostname+' \u200e- CPAP Uploader';
+  set('sub','Firmware '+d.firmware+' \u00b7 '+d.hostname+' \u00b7 '+fmtUp(d.uptime||0)+' uptime');
   checkMonUploadState();
   var fhV=d.free_heap||0,maV=d.max_alloc||0;
   var fh=fhV?Math.round(fhV/1024)+' KB':'\u2014';

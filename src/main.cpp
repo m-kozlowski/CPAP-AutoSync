@@ -795,6 +795,20 @@ void setup() {
         LOG("WiFi power management settings applied");
     }
 
+    // ── Remote syslog (UDP) — enable if configured ──
+    if (!config.getSyslogHost().isEmpty()) {
+        IPAddress syslogIp;
+        if (syslogIp.fromString(config.getSyslogHost())) {
+            Logger::getInstance().enableSyslog(syslogIp, config.getSyslogPort(),
+                                                config.getHostname().c_str());
+            LOGF("[Syslog] UDP syslog enabled → %s:%d",
+                 config.getSyslogHost().c_str(), config.getSyslogPort());
+        } else {
+            LOG_WARNF("[Syslog] Invalid SYSLOG_HOST: %s (must be an IPv4 address)",
+                      config.getSyslogHost().c_str());
+        }
+    }
+
     // Re-enable brownout detection if it was only relaxed for boot
     if (config.getBrownoutDetectMode() == BrownoutDetectMode::RELAXED) {
         LOG_INFO("[POWER] WiFi connection phase complete — re-enabling brownout detection");
@@ -928,9 +942,10 @@ void setup() {
             webServer->setSdManager(&sdManager);
             LOG_DEBUG("SDCardManager linked to web server for config editor");
 
-            // Give web server access to the SMB state manager so updateStatusSnapshot()
-            // can show folder counts from the active backend (SMB pass vs cloud pass).
+            // Give web server access to both backend state managers so
+            // updateStatusSnapshot() can render one progress row per backend.
             webServer->setSmbStateManager(uploader->getSmbStateManager());
+            webServer->setCloudStateManager(uploader->getCloudStateManager());
             
             // Set web server reference in uploader for responsive handling during uploads
             if (uploader) {
@@ -1216,7 +1231,30 @@ void uploadTaskFunction(void* pvParameters) {
          (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
     UploadResult result = params->uploader->runFullSession(
         params->sdManager, params->maxMinutes, params->filter, params->reducedRetries);
-    
+
+    // Step 4b: Refresh the work-probe snapshot with post-upload state while
+    // the SD is still mounted.  Without this, the dashboard progress counts
+    // stay frozen at their pre-session values until the next upload session
+    // runs a fresh probe — so a successful RECENT_FOLDER_DAYS refresh of
+    // today's folder would leave the UI stuck at "N-1 / N · 1 left" even
+    // though the folder is now fully synced.  The probe is cheap (100–200 ms
+    // of SD time for a typical card) and we've already paid the SD-mount
+    // cost.
+    //
+    // TIMEOUT is included because the timer expiring with partial progress
+    // is a normal outcome (not an error).  If we skip the probe, the
+    // progress bar reverts to the stale pre-session snapshot — e.g. SMB
+    // shows 0 / 12 even though two folders were successfully uploaded during
+    // the phase.  ERROR is still skipped: the state may be inconsistent and
+    // a fresh probe on the next cycle will sort it out.
+    if ((result == UploadResult::COMPLETE || result == UploadResult::NOTHING_TO_DO ||
+         result == UploadResult::TIMEOUT)
+        && params->sdManager->hasControl()) {
+        params->uploader->hasWorkToUpload(params->sdManager->getFS());
+        esp_task_wdt_reset();
+        g_uploadHeartbeat = millis();
+    }
+
     // Step 5: Release SD card
     if (params->sdManager->hasControl()) {
         params->sdManager->releaseControl();
@@ -1428,7 +1466,9 @@ void handleReleasing() {
     if (config.getMinimizeReboots()) {
         unsigned fh = (unsigned)ESP.getFreeHeap();
         unsigned ma = (unsigned)ESP.getMaxAllocHeap();
-        LOGF("[FSM] MINIMIZE_REBOOTS: skipping elective reboot after upload (fh=%u ma=%u)", fh, ma);
+        if (g_debugMode) {
+            LOGF("[FSM] MINIMIZE_REBOOTS: skipping elective reboot after upload (fh=%u ma=%u)", fh, ma);
+        }
         // Heap safety valve: force reboot if contiguous heap is critically low.
         // 32KB is below the ~36KB minimum needed for TLS handshake and leaves
         // insufficient margin for SMB PDU allocations + lwIP buffers.

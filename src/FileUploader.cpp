@@ -52,49 +52,55 @@ FileUploader::~FileUploader() {
 // ============================================================================
 // Minimal work probe — streaming, no vectors, no String heap churn
 // ============================================================================
-// Checks /DATALOG for any folder with pending .edf files.
-// Returns immediately on first positive hit per backend.
-// Uses only stack-local buffers — zero heap allocation on the fast path.
-// This replaces the heavy preflightFolderHasWork() for the initial decision
-// of whether to create the upload task and connect TLS at all.
+// Single pass over /DATALOG that, for every folder in the MAX_DAYS window,
+// asks both state managers whether that folder is fully synced, needs work,
+// or is irrelevant.  Used before creating the upload task so the no-work
+// path avoids TLS allocation entirely.
+//
+// In addition to the boolean `hasCloudWork` / `hasSmbWork` decisions, the
+// probe publishes a per-backend (universe, synced) snapshot into each state
+// manager so the dashboard can render a stable "X / Y folders synced" ratio:
+//
+//   universe = folders in /DATALOG within MAX_DAYS (same across backends).
+//   synced   = of those, how many are completed AND (for recent folders)
+//              have no .edf that has changed since last upload — i.e. the
+//              RECENT_FOLDER_DAYS re-discovery pass would be a no-op.
+//
+// No short-circuit: we enumerate every in-window folder.  In the common
+// "no work" case this is identical to pre-existing behaviour (the old probe
+// already walked everything).  In the "work found" case the enumeration
+// continues rather than returning early; the extra SD hold time is tens to
+// hundreds of ms per session and is trivially small relative to the upload
+// itself, but the payoff is an always-accurate progress denominator.
+//
+// One enumeration covers both backends — previously we ran two passes.
 
 FileUploader::WorkProbeResult FileUploader::hasWorkToUpload(fs::FS &sd) {
-    WorkProbeResult result = {false, false};
-    fs::FS &stateFs = LittleFS;
+    WorkProbeResult result = {false, false, -1, -1, -1};
 
-    // Lambda: check if a folder has any .edf file (streaming, no vector)
-    auto folderHasEdf = [&](const String& folderPath) -> bool {
-        File folder = sd.open(folderPath);
-        if (!folder || !folder.isDirectory()) return false;
-        File f = folder.openNextFile();
-        while (f) {
-            if (!f.isDirectory()) {
-                const char* name = f.name();
-                size_t len = strlen(name);
-                if (len >= 4) {
-                    const char* ext = name + len - 4;
-                    if (strcasecmp(ext, ".edf") == 0) {
-                        f.close();
-                        folder.close();
-                        return true;
-                    }
-                }
-            }
-            f.close();
-            f = folder.openNextFile();
-        }
-        folder.close();
-        return false;
-    };
+    // Active backends for this probe run.
+    UploadStateManager* cloudSm = nullptr;
+    UploadStateManager* smbSm   = nullptr;
+#ifdef ENABLE_SLEEPHQ_UPLOAD
+    if (config->hasCloudEndpoint()) cloudSm = cloudStateManager;
+#endif
+#ifdef ENABLE_SMB_UPLOAD
+    if (config->hasSmbEndpoint())   smbSm   = smbStateManager;
+#endif
+    if (!cloudSm && !smbSm) {
+        LOG("[WorkProbe] No backends configured — skipping probe");
+        return result;
+    }
 
-    // Lambda: probe one backend's state manager for pending work
-    auto probeBackend = [&](UploadStateManager* sm) -> bool {
-        if (!sm) return false;
+    const bool canUploadOld = !scheduleManager || scheduleManager->canUploadOldData();
 
-        bool canUploadOld = !scheduleManager || scheduleManager->canUploadOldData();
-
-        // Calculate MAX_DAYS cutoff — same logic as scanDatalogFolders()
-        String maxDaysCutoff = "";
+    // Calculate MAX_DAYS cutoff — same logic as scanDatalogFolders().
+    // Supported MAX_DAYS range is 1-365 so we always expect a non-empty cutoff
+    // once NTP is synced; if the clock is not yet set we fall back to "no
+    // cutoff" and count every DATALOG folder on the card (self-heals on next
+    // probe after NTP succeeds).
+    String maxDaysCutoff = "";
+    {
         int maxDays = config->getMaxDays();
         if (maxDays > 0) {
             time_t now = time(nullptr);
@@ -108,99 +114,183 @@ FileUploader::WorkProbeResult FileUploader::hasWorkToUpload(fs::FS &sd) {
                 maxDaysCutoff = String(cutoffStr);
             }
         }
+    }
 
-        File root = sd.open("/DATALOG");
-        if (!root || !root.isDirectory()) return false;
-
-        File entry = root.openNextFile();
-        while (entry) {
-            if (entry.isDirectory()) {
-                // Extract folder name from path (last component)
-                const char* rawName = entry.name();
-                const char* slash = strrchr(rawName, '/');
-                const char* folderName = slash ? slash + 1 : rawName;
-
-                // Apply MAX_DAYS filter (folder names are YYYYMMDD)
-                if (!maxDaysCutoff.isEmpty() && String(folderName) < maxDaysCutoff) {
-                    entry.close();
-                    entry = root.openNextFile();
-                    continue;
-                }
-
-                bool completed = sm->isFolderCompleted(String(folderName));
-                bool recent = isRecentFolder(String(folderName));
-
-                // Skip old folders when outside upload window
-                if (!recent && !canUploadOld) {
-                    entry.close();
-                    entry = root.openNextFile();
-                    continue;
-                }
-
-                if (!completed) {
-                    // Incomplete folder — check for any .edf
-                    char path[64];
-                    snprintf(path, sizeof(path), "/DATALOG/%s", folderName);
-                    if (folderHasEdf(String(path))) {
-                        LOG_DEBUGF("[WorkProbe] WORK found: %s has .edf files", folderName);
-                        entry.close();
-                        root.close();
-                        return true;
-                    }
-                } else if (completed && recent) {
-                    // Completed+recent: could have changed files — worth checking
-                    char path[64];
-                    snprintf(path, sizeof(path), "/DATALOG/%s", folderName);
-                    // Quick check: any .edf exists (actual change detection happens in full scan)
-                    if (folderHasEdf(String(path))) {
-                        // Check if any file actually changed
-                        File folder = sd.open(String(path));
-                        if (folder && folder.isDirectory()) {
-                            File f = folder.openNextFile();
-                            while (f) {
-                                if (!f.isDirectory()) {
-                                    const char* fname = f.name();
-                                    size_t flen = strlen(fname);
-                                    if (flen >= 4 && strcasecmp(fname + flen - 4, ".edf") == 0) {
-                                        String fullPath = String(path) + "/" + (strrchr(fname, '/') ? strrchr(fname, '/') + 1 : fname);
-                                        if (sm->hasFileChanged(sd, fullPath)) {
-                                            LOG_DEBUGF("[WorkProbe] WORK found: changed file in completed+recent %s", folderName);
-                                            f.close();
-                                            folder.close();
-                                            entry.close();
-                                            root.close();
-                                            return true;
-                                        }
-                                    }
-                                }
-                                f.close();
-                                f = folder.openNextFile();
-                            }
-                            folder.close();
-                        }
-                    }
+    // Lambda: check if a folder has any .edf file (streaming, no vector)
+    auto folderHasEdf = [&](const String& folderPath) -> bool {
+        File folder = sd.open(folderPath);
+        if (!folder || !folder.isDirectory()) return false;
+        File f = folder.openNextFile();
+        while (f) {
+            if (!f.isDirectory()) {
+                const char* name = f.name();
+                size_t len = strlen(name);
+                if (len >= 4 && strcasecmp(name + len - 4, ".edf") == 0) {
+                    f.close();
+                    folder.close();
+                    return true;
                 }
             }
-            entry.close();
-            entry = root.openNextFile();
+            f.close();
+            f = folder.openNextFile();
         }
-        root.close();
+        folder.close();
         return false;
     };
 
-#ifdef ENABLE_SLEEPHQ_UPLOAD
-    if (config->hasCloudEndpoint()) {
-        result.hasCloudWork = probeBackend(cloudStateManager);
-    }
-#endif
-#ifdef ENABLE_SMB_UPLOAD
-    if (config->hasSmbEndpoint()) {
-        result.hasSmbWork = probeBackend(smbStateManager);
-    }
-#endif
+    // Lambda: does any .edf in this folder report "changed" for the given state manager?
+    // Used for the completed+recent case: even though the folder is marked done,
+    // RECENT_FOLDER_DAYS re-discovery will re-upload it if a file has grown or
+    // changed since last sync.
+    auto folderHasChangedEdf = [&](const String& folderPath, UploadStateManager* sm) -> bool {
+        if (!sm) return false;
+        File folder = sd.open(folderPath);
+        if (!folder || !folder.isDirectory()) return false;
+        File f = folder.openNextFile();
+        bool dirty = false;
+        while (f) {
+            if (!f.isDirectory()) {
+                const char* fname = f.name();
+                size_t flen = strlen(fname);
+                if (flen >= 4 && strcasecmp(fname + flen - 4, ".edf") == 0) {
+                    const char* base = strrchr(fname, '/');
+                    String fullPath = folderPath + "/" + (base ? base + 1 : fname);
+                    if (sm->hasFileChanged(sd, fullPath)) {
+                        dirty = true;
+                        f.close();
+                        break;
+                    }
+                }
+            }
+            f.close();
+            f = folder.openNextFile();
+        }
+        folder.close();
+        return dirty;
+    };
 
-    LOGF("[WorkProbe] Result: cloud=%d smb=%d (fh=%u ma=%u)",
+    // ── Single-pass enumeration of /DATALOG ────────────────────────────────
+    // Per folder in the MAX_DAYS window, consult BOTH state managers so we
+    // only pay one directory walk regardless of how many backends are on.
+
+    int universe     = 0;
+    int cloudSynced  = 0;
+    int smbSynced    = 0;
+
+    File root = sd.open("/DATALOG");
+    if (!root || !root.isDirectory()) {
+        LOG_WARN("[WorkProbe] /DATALOG not accessible");
+        return result;
+    }
+
+    for (File entry = root.openNextFile(); entry; entry = root.openNextFile()) {
+        if (!entry.isDirectory()) { entry.close(); continue; }
+
+        const char* rawName = entry.name();
+        const char* slash = strrchr(rawName, '/');
+        String folderName(slash ? slash + 1 : rawName);
+
+        // MAX_DAYS filter — folders outside the window don't count toward the
+        // universe and aren't considered for either backend.
+        if (!maxDaysCutoff.isEmpty() && folderName < maxDaysCutoff) {
+            entry.close();
+            continue;
+        }
+
+        char path[64];
+        snprintf(path, sizeof(path), "/DATALOG/%s", folderName.c_str());
+        const String folderPath(path);
+        const bool recent = isRecentFolder(folderName);
+
+        // Look up completion state once per backend (memory-only lookup, cheap).
+        const bool cloudCompleted = cloudSm && cloudSm->isFolderCompleted(folderName);
+        const bool smbCompleted   = smbSm   && smbSm->isFolderCompleted(folderName);
+        const bool anyCompleted   = cloudCompleted || smbCompleted;
+
+        // Lazy `.edf` presence check — one SD read at most per folder, skipped
+        // entirely when a backend already knows this folder is completed.
+        bool edfChecked = false;
+        bool hasEdf = false;
+        auto checkEdf = [&]() -> bool {
+            if (!edfChecked) { hasEdf = folderHasEdf(folderPath); edfChecked = true; }
+            return hasEdf;
+        };
+
+        // ── Universe filter ─────────────────────────────────────────────────
+        // A folder counts toward the shared denominator only when it is
+        // visible to the user as "real data": either it has .edf content now,
+        // or at least one backend has successfully uploaded it before (even
+        // if the files have since been pruned).  Empty, never-uploaded stubs
+        // — e.g. a DATALOG/YYYYMMDD directory the CPAP has pre-created for
+        // tonight's session but not yet written to — are skipped so they
+        // don't produce a phantom "1 left" that can't be acted on.
+        if (!anyCompleted && !checkEdf()) {
+            entry.close();
+            continue;
+        }
+
+        universe++;
+
+        // Evaluate sync status for one backend.  `hasWork` is an output
+        // variable that gets OR'd; `syncedOut` is incremented when fully
+        // in sync for this backend.
+        auto evaluateBackend = [&](UploadStateManager* sm, bool completed,
+                                    bool& hasWork, int& syncedOut) {
+            if (!sm) return;
+
+            if (completed) {
+                if (recent) {
+                    // Verify no appended/changed file since last upload.
+                    if (folderHasChangedEdf(folderPath, sm)) {
+                        hasWork = true;
+                    } else {
+                        syncedOut++;
+                    }
+                } else {
+                    // Completed and outside recent window — permanently done.
+                    syncedOut++;
+                }
+                return;
+            }
+
+            // Incomplete for this backend.  Work only counts if this backend
+            // is allowed to upload the folder right now (old folders are
+            // skipped outside the upload window).  In that window-closed
+            // case the folder still legitimately belongs in the universe —
+            // the other backend may have completed it, or it has content
+            // waiting for the next window — so a "1 left" display is
+            // correct even though this probe run reports no work.
+            if (!recent && !canUploadOld) return;
+            if (checkEdf()) {
+                hasWork = true;
+            }
+            // Empty incomplete folders are neither work nor synced here;
+            // they were filtered out of the universe above unless the other
+            // backend had completed them, which is a meaningful divergence
+            // worth surfacing to the user.
+        };
+
+        evaluateBackend(cloudSm, cloudCompleted, result.hasCloudWork, cloudSynced);
+        evaluateBackend(smbSm,   smbCompleted,   result.hasSmbWork,   smbSynced);
+
+        entry.close();
+    }
+    root.close();
+
+    // ── Publish snapshot ───────────────────────────────────────────────────
+    result.universe = universe;
+    if (cloudSm) {
+        result.cloudSynced = cloudSynced;
+        cloudSm->setProbeSnapshot(universe, cloudSynced);
+    }
+    if (smbSm) {
+        result.smbSynced = smbSynced;
+        smbSm->setProbeSnapshot(universe, smbSynced);
+    }
+
+    LOGF("[WorkProbe] Result: cloud=%d smb=%d | universe=%d cloudSynced=%d smbSynced=%d (fh=%u ma=%u)",
          result.hasCloudWork, result.hasSmbWork,
+         universe, cloudSynced, smbSynced,
          (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
     return result;
 }
@@ -255,13 +345,15 @@ bool FileUploader::begin() {
         return false;
     }
 
-    // Populate GUI backend status
-    const char* mode = hasBothBackends() ? "DUAL" :
-                       hasCloudBackend() ? "CLOUD" :
+    // Populate GUI backend status — legacy single-name label.
+    // The new per-backend UI no longer uses a "DUAL" sentinel; each backend
+    // renders its own row from the `backends` block in /api/status.  This
+    // name is kept for the header (e.g. "CLOUD" during phase 1, "SMB" during
+    // phase 2) and for any external consumers of the legacy field.
+    const char* mode = hasCloudBackend() ? "CLOUD" :
                        hasSmbBackend()   ? "SMB"   : "NONE";
     strncpy(g_activeBackendStatus.name, mode, sizeof(g_activeBackendStatus.name) - 1);
     g_activeBackendStatus.valid = anyBackendCreated;
-    // Inactive backend display — not used in dual mode
     strncpy(g_inactiveBackendStatus.name, "NONE", sizeof(g_inactiveBackendStatus.name) - 1);
     g_inactiveBackendStatus.valid = false;
 
@@ -592,6 +684,21 @@ UploadResult FileUploader::runFullSession(SDCardManager* sdManager, int maxMinut
         g_cloudSessionStatus.filesTotal       = 0;
         g_cloudSessionStatus.currentFolder[0] = '\0';
 
+        // Mid-session snapshot refresh — publish fresh per-backend counts
+        // now that the Cloud phase is done, so the dashboard Cloud row
+        // updates immediately instead of waiting for the (potentially
+        // multi-minute, possibly failing) SMB phase to finish.  SD card
+        // is still mounted; the probe adds ~100–200 ms and reuses the
+        // same logic that produced the pre-session snapshot, so partial
+        // Cloud success (some folders synced, others left for retry) is
+        // reported correctly.  The SMB row's snapshot also gets
+        // refreshed, which is desirable — any folder Cloud completed is
+        // still "not synced" for SMB until SMB uploads it too.
+        if (smbWork) {
+            LOG("[FileUploader] Post-cloud snapshot refresh (pre-SMB)");
+            hasWorkToUpload(sd);
+        }
+
         // Reset timer flag for SMB phase — cloud budget expiry shouldn't block SMB
         timerExpired = false;
     }
@@ -629,19 +736,95 @@ UploadResult FileUploader::runFullSession(SDCardManager* sdManager, int maxMinut
             smbUploader->setMaxUploadAttempts(1);
         }
 
-        // Allocate SMB buffer dynamically based on current heap state.
-        // With ma=36852 being the safe floor (due to TLS/lwIP pegging), we can
-        // comfortably allocate 8KB out of the 36KB block for faster SMB speeds.
-        uint32_t currentMa = ESP.getMaxAllocHeap();
-        size_t smbBufSize = (currentMa > 30000) ? 8192 :
-                            (currentMa > 20000) ? 4096 :
-                            (currentMa > 15000) ? 2048 : 1024;
-        LOGF("[FileUploader] SMB phase heap: fh=%u ma=%u, buffer=%u",
-             (unsigned)ESP.getFreeHeap(), (unsigned)currentMa, (unsigned)smbBufSize);
-        if (!smbUploader->allocateBuffer(smbBufSize)) {
-            LOG_ERROR("[FileUploader] Failed to allocate SMB buffer — skipping SMB phase");
+        // ── Persistent SMB session for the entire Phase 2 ────────────────────
+        // Open the SMB session once here and keep it open until all folders
+        // and mandatory files are processed. This eliminates the per-folder
+        // NEGPROT + SESSION_SETUP + TREE_CONNECT round-trip (~1–2 s each on
+        // a typical LAN, 45–90 s across a 43-folder backlog) and, equally
+        // importantly, avoids cycling the ~4–5 KB smb2_context allocation
+        // which was a significant source of heap fragmentation.
+        //
+        // Opening the session before allocating the upload buffer also lets
+        // us query the server's negotiated max_write_size and right-size the
+        // buffer, so each smb2_write carries the largest payload the server
+        // will accept (typically 1 MB on Samba/Windows, 64 KB on legacy).
+        if (!smbUploader->begin()) {
+            LOG_ERROR("[FileUploader] Failed to open persistent SMB session — skipping SMB phase");
             smbStateManager->save(stateFs);
-        } else {
+            g_smbSessionStatus.uploadActive     = false;
+            g_smbSessionStatus.filesUploaded    = 0;
+            g_smbSessionStatus.filesTotal       = 0;
+            g_smbSessionStatus.currentFolder[0] = '\0';
+            currentPhase = UploadBackend::NONE;
+            goto smb_phase_done;
+        }
+
+        // Adaptive buffer sizing + SMB2 write pipelining (Phase B+C):
+        //   policyMax  — 32 KB upper bound per write. Bigger writes rarely add
+        //                throughput because a single 32 KB write already exceeds
+        //                a full 64 KB TCP window round-trip on a LAN, and
+        //                larger allocations strain the ESP32 small-block heap.
+        //   serverMax  — server's negotiated max_write_size (0 if not reported).
+        //   heapBand   — derived from ESP.getMaxAllocHeap(); top band extended
+        //                from the old 8 KB ceiling to 32 KB when headroom allows.
+        //   depth      — number of SMB2 writes to keep in flight simultaneously.
+        //                1 = stop-and-wait (legacy). 2 = pipelined (credit-based
+        //                overlap on a healthy LAN, ~1.7–2× throughput at the
+        //                cost of a second slot in the upload buffer).
+        // Final per-slot size is min(policyMax, serverMax, heapBand).
+        // Total buffer = depth * slotSize; pipeline is enabled only when the
+        // heap has headroom for the doubled allocation.
+        uint32_t currentMa     = ESP.getMaxAllocHeap();
+        uint32_t serverMax     = smbUploader->getNegotiatedMaxWriteSize();
+        constexpr uint32_t POLICY_MAX = 32 * 1024;
+        size_t heapBand = (currentMa > 80000) ? 32768 :
+                          (currentMa > 60000) ? 16384 :
+                          (currentMa > 40000) ? 12288 :
+                          (currentMa > 30000) ? 8192  :
+                          (currentMa > 20000) ? 4096  :
+                          (currentMa > 15000) ? 2048  : 1024;
+        size_t smbBufSize = heapBand;
+        if (smbBufSize > POLICY_MAX) smbBufSize = POLICY_MAX;
+        if (serverMax > 0 && smbBufSize > serverMax) smbBufSize = serverMax;
+
+        // Pipelining requires (a) ≥ 8 KB per slot to amortise the per-write
+        // PDU overhead, (b) ≥ ~80 KB contiguous heap so the 2 × slotSize
+        // allocation succeeds with breathing room for libsmb2's internal PDU
+        // buffers, and (c) the server to speak a modern dialect with
+        // multi-credit support (anything that reports max_write_size > 64 KB).
+        int desiredDepth = 1;
+        if (smbBufSize >= 8192 && currentMa > 80000 &&
+            (serverMax == 0 || serverMax >= 65536)) {
+            desiredDepth = 2;
+        }
+
+        LOGF("[FileUploader] SMB phase heap: fh=%u ma=%u, serverMaxWrite=%u, slot=%u, depth=%d",
+             (unsigned)ESP.getFreeHeap(),
+             (unsigned)currentMa,
+             (unsigned)serverMax,
+             (unsigned)smbBufSize,
+             desiredDepth);
+
+        if (!smbUploader->allocateBuffer(smbBufSize, desiredDepth)) {
+            // Pipelined allocation failed — retry single-slot once before giving up.
+            if (desiredDepth > 1) {
+                LOG_WARN("[FileUploader] Pipelined SMB buffer alloc failed, falling back to serial");
+                desiredDepth = 1;
+            }
+            if (desiredDepth == 1 ? !smbUploader->allocateBuffer(smbBufSize, 1) : true) {
+                LOG_ERROR("[FileUploader] Failed to allocate SMB buffer — skipping SMB phase");
+                smbStateManager->save(stateFs);
+                smbUploader->end();
+                g_smbSessionStatus.uploadActive     = false;
+                g_smbSessionStatus.filesUploaded    = 0;
+                g_smbSessionStatus.filesTotal       = 0;
+                g_smbSessionStatus.currentFolder[0] = '\0';
+                currentPhase = UploadBackend::NONE;
+                goto smb_phase_done;
+            }
+        }
+        {
+
             std::vector<String> freshFolders, oldFolders;
             if (needFresh || needOld) {
                 std::vector<String> all = scanDatalogFolders(sd, smbStateManager);
@@ -714,8 +897,9 @@ UploadResult FileUploader::runFullSession(SDCardManager* sdManager, int maxMinut
 #endif
                     }
                 }
-                if (smbUploader->isConnected()) smbUploader->end();
             }
+            // ── End persistent SMB session (single teardown for whole phase) ──
+            if (smbUploader->isConnected()) smbUploader->end();
             smbStateManager->save(stateFs);
 
             // Free SMB buffer to recover heap for next session
@@ -727,11 +911,15 @@ UploadResult FileUploader::runFullSession(SDCardManager* sdManager, int maxMinut
         g_smbSessionStatus.filesTotal       = 0;
         g_smbSessionStatus.currentFolder[0] = '\0';
     }
+smb_phase_done:
+    ;
 #endif
 
     currentPhase = UploadBackend::NONE;
-    // Restore GUI status to show configured mode
-    const char* mode = dual ? "DUAL" : hasCloudBackend() ? "CLOUD" : "SMB";
+    // Restore GUI status to show configured primary backend (legacy label).
+    // The per-backend UI reads the `backends` block directly; this name is
+    // only consumed by the legacy header and external clients.
+    const char* mode = hasCloudBackend() ? "CLOUD" : hasSmbBackend() ? "SMB" : "NONE";
     strncpy(g_activeBackendStatus.name, mode, sizeof(g_activeBackendStatus.name) - 1);
 
     // ── Determine result ──────────────────────────────────────────────────────
@@ -749,9 +937,16 @@ UploadResult FileUploader::runFullSession(SDCardManager* sdManager, int maxMinut
 
     if (!hasIncompleteFolders() && !sessionHadFailure) {
         time_t endNow; time(&endNow);
-        UploadStateManager* sm = primaryStateManager();
-        if (sm) sm->setLastUploadTimestamp((unsigned long)endNow);
-        if (scheduleManager) scheduleManager->markDayCompleted();
+        // Update the last-upload timestamp on every configured backend.
+        // hasIncompleteFolders() checks both backends, so reaching here means
+        // both have no pending work — each backend legitimately finished
+        // this session.  Previously only the primary (cloud) got stamped,
+        // which left the NAS (SMB) row showing a stale "Last upload: N days
+        // ago" in the dashboard even after a successful phased session.
+        if (cloudStateManager) cloudStateManager->setLastUploadTimestamp((unsigned long)endNow);
+        if (smbStateManager)   smbStateManager->setLastUploadTimestamp((unsigned long)endNow);
+        if (scheduleManager)   scheduleManager->setLastUploadTimestamp((unsigned long)endNow);
+        if (scheduleManager)   scheduleManager->markDayCompleted();
         LOG("[FileUploader] All folders complete — session done");
         return UploadResult::COMPLETE;
     }
@@ -1184,8 +1379,11 @@ bool FileUploader::uploadDatalogFolderSmb(SDCardManager* sdManager, const String
         LOGF("[FileUploader] [SMB] Folder complete: %d files", uploadedCount);
     }
 
-    // Per-folder disconnect (not per-file — avoids socket exhaustion)
-    if (smbUploader->isConnected()) smbUploader->end();
+    // NOTE: connection is kept open — Phase 2 caller (`FileUploader::loop()`)
+    // owns the persistent session lifecycle and tears it down once at the end.
+    // Previously we disconnected here "to avoid socket exhaustion", but that
+    // cost a full NEGPROT + SESSION_SETUP + TREE_CONNECT (~1–2 s) and a
+    // ~4–5 KB smb2_context alloc/free cycle per folder.
 
     bool uploadSuccess = (uploadedCount == (int)files.size() - skippedUnchanged - skippedEmpty);
     LOGF("[FileUploader] [SMB] Folder %s: %d/%d files, %d unchanged, %d empty — success=%s",

@@ -14,6 +14,7 @@ Config::Config() :
     saveLogs(false),  // Default: do not persist logs (debugging only)
     debugMode(false),    // Default: suppress verbose pre-flight and heap stats
     isValid(false),
+    hostname("cpap"),    // Default hostname
     
     // Cloud upload defaults
     cloudBaseUrl("https://sleephq.com"),
@@ -21,6 +22,7 @@ Config::Config() :
     maxDays(365),  // Default: upload only last 365 days
     recentFolderDays(2),  // Default: re-check today + yesterday
     cloudInsecureTls(false),  // Default: use root CA validation
+    smbPreserveTimestamps(true),  // Default: preserve SMB timestamps (zero performance impact)
     
     // Upload FSM defaults
     uploadMode("smart"),
@@ -28,7 +30,7 @@ Config::Config() :
     uploadEndHour(21),
     inactivitySeconds(62),
     exclusiveAccessMinutes(5),
-    cooldownMinutes(10),
+    cooldownMinutes(5),
     enable1BitSdMode(false),  // Default to safer 4-bit mode
     stealthRestore(true),      // Default: restore card state after upload (helps AS10)
     minimizeReboots(true),
@@ -47,7 +49,8 @@ Config::Config() :
     cpuSpeedMhz(80),  // Default: 80MHz (minimum for WiFi, saves ~30-40mA)
     wifiTxPower(WifiTxPower::POWER_MID),  // Default: 5.0dBm (typical bedroom placement, reduces peak current)
     wifiPowerSaving(WifiPowerSaving::SAVE_MID),  // Default: MIN_MODEM (preserves mDNS)
-    brownoutDetectMode(BrownoutDetectMode::ENABLED)  // Default: brownout detection enabled
+    brownoutDetectMode(BrownoutDetectMode::ENABLED),  // Default: brownout detection enabled
+    syslogPort(514)  // Default: standard syslog port
 {}
 
 Config::~Config() {
@@ -184,7 +187,7 @@ void Config::setConfigValue(String key, String value) {
     } else if (key == "WIFI_PASSWORD") {
         wifiPassword = value;
     } else if (key == "HOSTNAME") {
-        hostname = value;
+        hostname = value.isEmpty() ? "cpap" : value;
     } else if (key == "NTP_SERVER") {
         ntpServer = value;
     } else if (key == "SCHEDULE") {
@@ -225,6 +228,8 @@ void Config::setConfigValue(String key, String value) {
         recentFolderDays = value.toInt();
     } else if (key == "CLOUD_INSECURE_TLS") {
         cloudInsecureTls = (value.equalsIgnoreCase("true") || value.toInt() == 1);
+    } else if (key == "SMB_PRESERVE_TIMESTAMPS") {
+        smbPreserveTimestamps = (value.equalsIgnoreCase("true") || value.toInt() == 1);
     } else if (key == "UPLOAD_MODE") {
         uploadMode = value;
     } else if (key == "UPLOAD_START_HOUR") {
@@ -265,6 +270,10 @@ void Config::setConfigValue(String key, String value) {
         } else {
             brownoutDetectMode = BrownoutDetectMode::ENABLED;
         }
+    } else if (key == "SYSLOG_HOST") {
+        syslogHost = value;
+    } else if (key == "SYSLOG_PORT") {
+        syslogPort = (uint16_t)value.toInt();
     } else {
         LOG_WARNF("Unknown config key: %s", key.c_str());
     }
@@ -693,6 +702,10 @@ void Config::loadDefaults() {
 bool Config::isMaskingCredentials() const { return maskCredentials; }
 bool Config::areCredentialsInFlash() const { return credentialsInFlash; }
 
+// Remote syslog getters
+const String& Config::getSyslogHost() const { return syslogHost; }
+uint16_t Config::getSyslogPort() const { return syslogPort; }
+
 // Cloud upload getters
 const String& Config::getCloudClientId() const { return cloudClientId; }
 const String& Config::getCloudClientSecret() const { return cloudClientSecret; }
@@ -702,6 +715,7 @@ int Config::getCloudDeviceId() const { return cloudDeviceId; }
 int Config::getMaxDays() const { return maxDays; }
 int Config::getRecentFolderDays() const { return recentFolderDays; }
 bool Config::getCloudInsecureTls() const { return cloudInsecureTls; }
+bool Config::getSmbPreserveTimestamps() const { return smbPreserveTimestamps; }
 
 bool Config::hasCloudEndpoint() const { return _hasCloudEndpoint; }
 bool Config::hasSmbEndpoint() const { return _hasSmbEndpoint; }
