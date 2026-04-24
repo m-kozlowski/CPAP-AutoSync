@@ -795,6 +795,20 @@ void setup() {
         LOG("WiFi power management settings applied");
     }
 
+    // ── Remote syslog (UDP) — enable if configured ──
+    if (!config.getSyslogHost().isEmpty()) {
+        IPAddress syslogIp;
+        if (syslogIp.fromString(config.getSyslogHost())) {
+            Logger::getInstance().enableSyslog(syslogIp, config.getSyslogPort(),
+                                                config.getHostname().c_str());
+            LOGF("[Syslog] UDP syslog enabled → %s:%d",
+                 config.getSyslogHost().c_str(), config.getSyslogPort());
+        } else {
+            LOG_WARNF("[Syslog] Invalid SYSLOG_HOST: %s (must be an IPv4 address)",
+                      config.getSyslogHost().c_str());
+        }
+    }
+
     // Re-enable brownout detection if it was only relaxed for boot
     if (config.getBrownoutDetectMode() == BrownoutDetectMode::RELAXED) {
         LOG_INFO("[POWER] WiFi connection phase complete — re-enabling brownout detection");

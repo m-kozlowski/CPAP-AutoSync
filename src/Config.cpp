@@ -29,7 +29,7 @@ Config::Config() :
     uploadEndHour(21),
     inactivitySeconds(62),
     exclusiveAccessMinutes(5),
-    cooldownMinutes(10),
+    cooldownMinutes(5),
     enable1BitSdMode(false),  // Default to safer 4-bit mode
     stealthRestore(true),      // Default: restore card state after upload (helps AS10)
     minimizeReboots(true),
@@ -48,7 +48,8 @@ Config::Config() :
     cpuSpeedMhz(80),  // Default: 80MHz (minimum for WiFi, saves ~30-40mA)
     wifiTxPower(WifiTxPower::POWER_MID),  // Default: 5.0dBm (typical bedroom placement, reduces peak current)
     wifiPowerSaving(WifiPowerSaving::SAVE_MID),  // Default: MIN_MODEM (preserves mDNS)
-    brownoutDetectMode(BrownoutDetectMode::ENABLED)  // Default: brownout detection enabled
+    brownoutDetectMode(BrownoutDetectMode::ENABLED),  // Default: brownout detection enabled
+    syslogPort(514)  // Default: standard syslog port
 {}
 
 Config::~Config() {
@@ -268,6 +269,10 @@ void Config::setConfigValue(String key, String value) {
         } else {
             brownoutDetectMode = BrownoutDetectMode::ENABLED;
         }
+    } else if (key == "SYSLOG_HOST") {
+        syslogHost = value;
+    } else if (key == "SYSLOG_PORT") {
+        syslogPort = (uint16_t)value.toInt();
     } else {
         LOG_WARNF("Unknown config key: %s", key.c_str());
     }
@@ -695,6 +700,10 @@ void Config::loadDefaults() {
 // Credential storage mode getters
 bool Config::isMaskingCredentials() const { return maskCredentials; }
 bool Config::areCredentialsInFlash() const { return credentialsInFlash; }
+
+// Remote syslog getters
+const String& Config::getSyslogHost() const { return syslogHost; }
+uint16_t Config::getSyslogPort() const { return syslogPort; }
 
 // Cloud upload getters
 const String& Config::getCloudClientId() const { return cloudClientId; }

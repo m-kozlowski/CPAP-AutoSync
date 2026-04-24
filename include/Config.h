@@ -90,6 +90,10 @@ private:
     WifiPowerSaving wifiPowerSaving;
     BrownoutDetectMode brownoutDetectMode;
     
+    // Remote syslog (UDP)
+    String syslogHost;           // empty = disabled
+    uint16_t syslogPort;
+    
     // Credential masking mode flags
     bool maskCredentials;
     bool credentialsInFlash;
@@ -185,6 +189,10 @@ public:
     WifiTxPower getWifiTxPower() const;
     WifiPowerSaving getWifiPowerSaving() const;
     BrownoutDetectMode getBrownoutDetectMode() const;
+    
+    // Remote syslog getters
+    const String& getSyslogHost() const;
+    uint16_t getSyslogPort() const;
     
     // Credential masking mode getters
     bool isMaskingCredentials() const;

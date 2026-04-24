@@ -35,6 +35,14 @@ Previously, pressing **Force Upload** during Smart mode's quiet period (before `
 ### 🚫 No other behaviour changes to uploads
 Upload scheduling, smart-mode quiet period (for automated uploads), SD-card access, SMB/cloud transport, and state tracking are otherwise identical to v4.0.
 
+### 📡 Remote Syslog (UDP)
+Advanced users can now stream all device logs to a remote syslog server (e.g. rsyslog, syslog-ng, Graylog, Papertrail) for persistent off-device collection, fleet monitoring, and webhook triggers.
+
+- **Configuration**: Add `SYSLOG_HOST=<ip>` (and optionally `SYSLOG_PORT=<port>`) to `config.txt`. Feature is disabled when `SYSLOG_HOST` is empty.
+- **Protocol**: UDP, fire-and-forget (RFC 3164, facility `local0`). Zero heap allocation — uses a static `WiFiUDP` instance and stack-only formatting.
+- **What is sent**: Exactly the same log stream that appears in Serial and the web dashboard. `[INFO]`→severity 6, `[WARN]`→4, `[ERROR]`→3.
+- **Limitations**: Syslog begins after WiFi connects. Pre-WiFi boot logs are captured locally (circular buffer + LittleFS) but not sent remotely. If WiFi is down, messages are silently dropped.
+
 ---
 
 ## Changelog (since v4.0)
@@ -46,6 +54,8 @@ Upload scheduling, smart-mode quiet period (for automated uploads), SD-card acce
 - **Internals**: Stealth mode SD initialization and card-state restoration logs (Phase 1-4) are now gated behind the runtime `DEBUG=true` config flag to reduce log spam.
 - **Buffer**: `WEB_STATUS_BUF_SIZE` grown from 1024 → 1536 to fit the new per-backend block.
 - **Docs/Internals**: `MINIMIZE_REBOOTS` removed from the user configuration reference and architecture guide; now commented as an undocumented developer-only diagnostic flag. Its associated `skipping elective reboot` log entry has also been demoted to `DEBUG=true` to reduce log spam in standard operation.
+- **Config**: Changed default `COOLDOWN_MINUTES` from 10 to 5.
+- **Feature**: Added optional UDP syslog support (`SYSLOG_HOST`, `SYSLOG_PORT` config keys). Streams all log lines to a remote syslog server in RFC 3164 format. Zero heap allocation, ~500 bytes flash. See `docs/dev/archive/76-SYSLOG.md` for design rationale.
 - **Fix**: Force Upload in Smart-mode quiet period now runs a recent-data-only session instead of silently no-op'ing. Same semantics as Force Upload in Scheduled mode outside the window.
 - **Fix**: SMB "Last upload" timestamp is now updated on every successful phased session. Previously only the primary (cloud) backend got stamped, so the NAS row kept showing a stale "N days ago" even right after a successful upload.
 - **Fix**: Per-backend progress bar now fills smoothly during an active upload. Previously it sat frozen at `N / N ✓` while the `Uploading k/m · <folder>` detail ticked underneath, because the state manager counts the currently-uploading folder as "already done" whenever it's a refresh of a recent folder (the dominant case in Force / FRESH_ONLY sessions). Full decision trail in `docs/dev/archive/74-PROGRESS-BAR.md` §8.5.

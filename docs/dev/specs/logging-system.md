@@ -8,7 +8,8 @@ The Logging System (`Logger.cpp/.h`) provides structured logging capabilities fo
 ### Log Destinations
 - **Serial output**: Primary logging to USB serial (always enabled)
 - **Circular buffer**: 8 KB static BSS array for web interface (not heap-allocated)
-- **LittleFS storage**: Optional persisted logging (`/syslog.A.txt` / `/syslog.B.txt`, 64 KB each)
+- **LittleFS storage**: Optional persisted logging (`/syslog.0.txt` … `/syslog.3.txt`, 32 KB each)
+- **Remote UDP syslog**: Optional fire-and-forget forwarding to a remote syslog server (RFC 3164, facility `local0`). Enabled via `SYSLOG_HOST` config key. Zero heap allocation.
 - **Pre-reboot dump**: `/last_reboot_log.txt` on LittleFS — written unconditionally before every `esp_restart()`
 - **SD card emergency dump**: `/uploader_error.txt` on SD card — written on boot-time failures (config error, WiFi failure) where the user has no network access
 - **SSE live stream**: `/api/logs/stream` endpoint pushes new log lines to the browser in real-time via Server-Sent Events, with throttled push cadence during active uploads
@@ -57,6 +58,8 @@ private:
 ### Log Settings
 - **LOG_LEVEL**: Minimum log level to output (default: INFO)
 - **PERSISTENT_LOGS**: Enable persisted internal logging (default: false). Aliases: `SAVE_LOGS`, `LOG_TO_SD_CARD`
+- **SYSLOG_HOST**: IPv4 address of a remote syslog server. When set, all log lines are forwarded via UDP (default: empty = disabled)
+- **SYSLOG_PORT**: UDP port for remote syslog (default: 514)
 - **SERIAL_BAUD**: Serial baud rate (default: 115200)
 - **LOG_BUFFER_SIZE**: Circular buffer size (default: 8192 bytes, compile-time via `-DLOG_BUFFER_SIZE=N`)
 
@@ -232,6 +235,28 @@ When the device cannot establish WiFi (config failure, wrong credentials, hardwa
 - **PERSISTENT_LOGS**: Optional persisted file-based logging (aliases: `SAVE_LOGS`, `LOG_TO_SD_CARD`)
 - **Serial output**: Always enabled for debugging
 - **Buffer size**: 8 KB static array (configurable at compile time via `LOG_BUFFER_SIZE`)
+- **Remote syslog**: Optional UDP forwarding to `SYSLOG_HOST:SYSLOG_PORT` (RFC 3164, facility `local0`)
+
+## Remote UDP Syslog
+
+When `SYSLOG_HOST` is set to a valid IPv4 address in `config.txt`, the Logger forwards every log line to the specified syslog server via UDP (RFC 3164).
+
+### Configuration
+```ini
+SYSLOG_HOST = 192.168.1.100
+SYSLOG_PORT = 514          # optional, default 514
+```
+
+### Behaviour
+- **Protocol**: UDP, fire-and-forget. No connection state, no retries, no TLS.
+- **Format**: `<PRI>HOSTNAME cpap: [TIMESTAMP] [LEVEL] message`
+- **Facility**: `local0` (16), hardcoded.
+- **Severity mapping**: `[INFO]` → 6 (Informational), `[WARN]` → 4 (Warning), `[ERROR]` → 3 (Error).
+- **Heap impact**: Zero. Uses a static `WiFiUDP` instance (BSS) and stack-only formatting.
+- **WiFi-down**: `endPacket()` returns 0 immediately — no blocking, no queue.
+- **Boot timing**: Syslog begins after WiFi connects. Pre-WiFi boot logs are not sent remotely.
+- **Thread safety**: `writeToSyslog()` is called from `Logger::log()` which is mutex-protected.
+- **What is sent**: Everything that flows through `Logger::log()` — same stream as Serial and the circular buffer. `LOG_DEBUG` calls compiled out in production are excluded.
 
 ## Performance Considerations
 

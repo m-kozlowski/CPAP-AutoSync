@@ -55,7 +55,6 @@ Only required when `ENDPOINT_TYPE` includes `CLOUD`.
 | `TZ_STRING` | *(empty)* | POSIX TZ string for automatic DST handling. When set, this takes precedence over `GMT_OFFSET_HOURS`. Examples: `EST5EDT,M3.2.0,M11.1.0` (US Eastern), `CET-1CEST,M3.5.0,M10.5.0/3` (EU Central), `AEST-10AEDT,M10.1.0,M4.1.0/3` (Australia Eastern), `JST-9` (Japan, no DST). See [POSIX TZ format](https://www.gnu.org/software/libc/manual/html_node/TZ-Variable.html) for full syntax. |
 | `TZ_NAME` | *(empty)* | IANA timezone name written by the Setup Wizard (e.g. `Australia/Melbourne`). Used only by the web UI to pre-select the correct timezone in the dropdown — the firmware ignores this key and always uses `TZ_STRING`. You do not need to set this manually; it is managed automatically when saving through the Setup Wizard. |
 | `GMT_OFFSET_HOURS` | `0` | Timezone offset from UTC in whole hours (e.g. `11` for AEDT, `-5` for EST). Used for NTP time and upload window calculation. |
-| `NTP_SERVER` | `pool.ntp.org` | NTP server hostname for time synchronisation. Change if your network blocks the default NTP pool or you prefer a local/regional server (e.g. `time.google.com`, `time.cloudflare.com`). |
 
 > **Tip**: In `scheduled` mode the device holds the SD card only during the upload window, giving the CPAP machine uncontested access at all other times — the safest configuration for avoiding SD card errors.
 
@@ -67,7 +66,7 @@ Only required when `ENDPOINT_TYPE` includes `CLOUD`.
 |---|---|---|---|
 | `INACTIVITY_SECONDS` | `62` | 10–3600 | Seconds of SD bus silence required before the device attempts to take SD card control. Increase if your CPAP accesses the card frequently during warm-up. |
 | `EXCLUSIVE_ACCESS_MINUTES` | `5` | 1–30 | Maximum minutes the device holds exclusive SD card control per upload session. The session ends early if all work is done. |
-| `COOLDOWN_MINUTES` | `10` | 1–60 | Minutes to wait (SD card released) between upload cycles before starting the next inactivity check. |
+| `COOLDOWN_MINUTES` | `5` | 1–60 | Minutes to wait (SD card released) between upload cycles before starting the next inactivity check. |
 <!-- MINIMIZE_REBOOTS is an internal / developer-only flag. It controls whether
      the FSM performs an elective soft-reboot after each upload session. The
      default (`true`) skips the reboot and reuses the runtime; a heap safety
@@ -120,6 +119,19 @@ Power defaults are optimised for AirSense 11 compatibility (low peak current). M
 
 ---
 
+## 10. Remote Syslog (UDP)
+
+Optional. Streams all device log lines to a remote syslog server (e.g. rsyslog, syslog-ng, Graylog, Papertrail) via UDP. Useful for persistent off-device log collection, fleet monitoring, and webhook triggers. Syslog is fire-and-forget — if WiFi is down or the server is unreachable, messages are silently dropped (the local circular buffer and LittleFS rotation remain the durable stores).
+
+| Key | Default | Description |
+|---|---|---|
+| `SYSLOG_HOST` | *(empty)* | IPv4 address of the syslog server (e.g. `192.168.1.100`). Feature is disabled when empty. Must be an IP address, not a hostname (avoids DNS resolution overhead). |
+| `SYSLOG_PORT` | `514` | UDP port to send syslog messages to. Only change if your server listens on a non-standard port. |
+
+> **Note:** Syslog output begins after WiFi is connected. Pre-WiFi boot logs are not sent remotely but are captured in the local circular buffer and flushed to LittleFS if `PERSISTENT_LOGS=true`. Log lines are sent in RFC 3164 (BSD syslog) format using facility `local0` with severity mapped from the firmware's `[INFO]`/`[WARN]`/`[ERROR]` prefixes. The device hostname (from the `HOSTNAME` config key) is used as the syslog TAG.
+
+---
+
 ## Removed / Legacy Keys
 
 The following keys are **no longer used** by the firmware. They will generate a `WARN: Unknown config key` log message if present in `config.txt`.
@@ -155,7 +167,7 @@ If `MASK_CREDENTIALS` is `false` and `config.txt` contains `***STORED_IN_FLASH**
 
 ---
 
-## 10. Initial Setup (Web Wizard)
+## 11. Initial Setup (Web Wizard)
 
 If no valid WiFi configuration is found on the SD card (i.e. first boot or "Reset State" triggered), the device enters **SoftAP Mode**:
 
