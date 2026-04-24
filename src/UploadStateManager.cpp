@@ -97,7 +97,8 @@ UploadStateManager::UploadStateManager()
       totalFoldersCount(0),
       probeUniverse(-1),
       probeSynced(-1),
-      probeSnapshotCompletedCount(-1) {
+      probeSnapshotCompletedCount(-1),
+      hasProbed(false) {
     clearState();
 }
 
@@ -596,6 +597,7 @@ void UploadStateManager::setProbeSnapshot(int universe, int synced) {
     probeUniverse = universe;
     probeSynced   = synced;
     probeSnapshotCompletedCount = completedCount;
+    hasProbed     = true;
 }
 
 int UploadStateManager::getProbeUniverse() const {
@@ -608,6 +610,10 @@ int UploadStateManager::getProbeSynced() const {
 
 int UploadStateManager::getProbeSnapshotCompletedCount() const {
     return probeSnapshotCompletedCount;
+}
+
+bool UploadStateManager::hasBeenProbed() const {
+    return hasProbed;
 }
 
 bool UploadStateManager::isPendingFolder(const String& folderName) {

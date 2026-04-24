@@ -1079,6 +1079,7 @@ void CpapWebServer::updateStatusSnapshot() {
         ",\"in_window\":%s,\"smart_quiet\":%s,\"smart_config_invalid\":%s"
         ",\"cpu0\":%u,\"cpu1\":%u"
         ",\"pcnt_capable\":%s"
+        ",\"has_probed\":%s"
         ",\"tz_offset_minutes\":%d"
         ",\"recent_tabs\":\"%s\""
         ",\"hostname\":\"%s\""
@@ -1100,6 +1101,7 @@ void CpapWebServer::updateStatusSnapshot() {
         (config && config->isSmartConfigInvalid()) ? "true" : "false",
         (unsigned)g_cpuLoad0, (unsigned)g_cpuLoad1,
         g_pcntCapable ? "true" : "false",
+        stateManager ? (stateManager->hasBeenProbed() ? "true" : "false") : "false",
         tzOffsetMinutes,
         recentTabs,
         config ? config->getHostname().c_str() : "cpap",

@@ -642,7 +642,7 @@ function renderStatus(d){
   var rSmb=renderBe('smb','NAS (SMB)');
   var anyEnabled=rCloud.enabled||rSmb.enabled;
   var anyInc=rCloud.inc>0||rSmb.inc>0;
-  var anyDone=rCloud.last_ts>0||rSmb.last_ts>0;
+  var totalFolders=(d.backends.cloud&&d.backends.cloud.total)||(d.backends.smb&&d.backends.smb.total)||0;
   var fst;
   if(!anyEnabled)fst='No backend configured';
   else if(anyInc){
@@ -650,11 +650,12 @@ function renderStatus(d){
     if(rCloud.inc>0)parts.push(rCloud.inc+' on cloud');
     if(rSmb.inc>0)parts.push(rSmb.inc+' on NAS');
     fst='&#9888; '+parts.join(', ')+' pending';
-  }else if(anyDone)fst='&#10003; Up to date';
-  else fst='Waiting for first scan';
+  }else if(!d.has_probed)fst='Waiting for first scan';
+  else if(totalFolders===0)fst='&#10003; No data on card';
+  else fst='&#10003; Up to date';
   seti('d-fst',fst);
-  document.title=(d.hostname||'CPAP')+' \u200e- CPAP Uploader';
-  set('sub','Firmware '+d.firmware+' \u00b7 '+(d.hostname||'cpap')+' \u00b7 '+fmtUp(d.uptime||0)+' uptime');
+  document.title=d.hostname+' \u200e- CPAP Uploader';
+  set('sub','Firmware '+d.firmware+' \u00b7 '+d.hostname+' \u00b7 '+fmtUp(d.uptime||0)+' uptime');
   checkMonUploadState();
   var fhV=d.free_heap||0,maV=d.max_alloc||0;
   var fh=fhV?Math.round(fhV/1024)+' KB':'\u2014';

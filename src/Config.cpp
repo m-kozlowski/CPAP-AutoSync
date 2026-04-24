@@ -14,6 +14,7 @@ Config::Config() :
     saveLogs(false),  // Default: do not persist logs (debugging only)
     debugMode(false),    // Default: suppress verbose pre-flight and heap stats
     isValid(false),
+    hostname("cpap"),    // Default hostname
     
     // Cloud upload defaults
     cloudBaseUrl("https://sleephq.com"),
@@ -186,7 +187,7 @@ void Config::setConfigValue(String key, String value) {
     } else if (key == "WIFI_PASSWORD") {
         wifiPassword = value;
     } else if (key == "HOSTNAME") {
-        hostname = value;
+        hostname = value.isEmpty() ? "cpap" : value;
     } else if (key == "NTP_SERVER") {
         ntpServer = value;
     } else if (key == "SCHEDULE") {

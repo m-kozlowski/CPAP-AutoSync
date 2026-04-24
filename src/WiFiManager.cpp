@@ -372,12 +372,7 @@ bool WiFiManager::startMDNS(const String& hostname) {
         return false;
     }
 
-    String name = hostname;
-    if (name.isEmpty()) {
-        name = "cpap"; // Default hostname
-    }
-
-    LOGF("Starting mDNS responder with hostname: %s.local", name.c_str());
+    LOGF("Starting mDNS responder with hostname: %s.local", hostname.c_str());
 
     // Ensure stale responder state from prior reconnects is released first.
     if (mdnsStarted) {
@@ -386,7 +381,7 @@ bool WiFiManager::startMDNS(const String& hostname) {
         delay(10);
     }
     
-    if (MDNS.begin(name.c_str())) {
+    if (MDNS.begin(hostname.c_str())) {
         LOG("mDNS responder started successfully");
         // Advertise web server service
         MDNS.addService("http", "tcp", 80);
