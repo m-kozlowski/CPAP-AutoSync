@@ -1452,7 +1452,9 @@ void handleReleasing() {
     if (config.getMinimizeReboots()) {
         unsigned fh = (unsigned)ESP.getFreeHeap();
         unsigned ma = (unsigned)ESP.getMaxAllocHeap();
-        LOGF("[FSM] MINIMIZE_REBOOTS: skipping elective reboot after upload (fh=%u ma=%u)", fh, ma);
+        if (g_debugMode) {
+            LOGF("[FSM] MINIMIZE_REBOOTS: skipping elective reboot after upload (fh=%u ma=%u)", fh, ma);
+        }
         // Heap safety valve: force reboot if contiguous heap is critically low.
         // 32KB is below the ~36KB minimum needed for TLS handshake and leaves
         // insufficient margin for SMB PDU allocations + lwIP buffers.
