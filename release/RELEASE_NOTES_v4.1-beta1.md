@@ -41,7 +41,7 @@ Upload scheduling, smart-mode quiet period (for automated uploads), SD-card acce
 
 - **Web UI**: Rewrote the Upload Progress card as per-backend rows; dropped `DUAL` label, `(N empty)` counter, and the stale `Next:` block.
 - **Web UI**: Renamed `"All synced"` to `"Up to date"`; made the aggregate status line backend-aware.
-- **API**: Added `backends.{cloud,smb}` object to `/api/status`; removed obsolete `next_*` fields. Plumbed `setCloudStateManager()` alongside the existing `setSmbStateManager()` so the status snapshot reads both state managers directly.
+- **API**: Added `backends.{cloud,smb}` object to `/api/status`. Removed obsolete top-level fields `folders_*`, `live_*`, `active_backend`, `wifi_ip`, and `next_*` to shrink the JSON payload, as the Web UI has fully migrated to the nested backend object. Plumbed `setCloudStateManager()` alongside the existing `setSmbStateManager()` so the status snapshot reads both state managers directly.
 - **Internals**: `g_activeBackendStatus.name` no longer emits `"DUAL"`; set to `CLOUD` or `SMB` at rest and to the currently-running phase mid-session.
 - **Internals**: Stealth mode SD initialization and card-state restoration logs (Phase 1-4) are now gated behind the runtime `DEBUG=true` config flag to reduce log spam.
 - **Buffer**: `WEB_STATUS_BUF_SIZE` grown from 1024 → 1536 to fit the new per-backend block.

@@ -933,11 +933,9 @@ void CpapWebServer::updateStatusSnapshot() {
     unsigned long inStateSec = (millis() - stateEnteredAt) / 1000;
     const char* st = getStateName(currentState);
     int rssi = 0; bool wifiConn = false;
-    char wifiIp[20] = "";
     if (wifiManager && wifiManager->isConnected()) {
         wifiConn = true;
         rssi = wifiManager->getSignalStrength();
-        strncpy(wifiIp, wifiManager->getIPAddress().c_str(), sizeof(wifiIp) - 1);
     }
     // Per-backend folder counts — both backends render their own row in the UI.
     //
@@ -994,10 +992,6 @@ void CpapWebServer::updateStatusSnapshot() {
     unsigned long smbLastTs = 0;
     bool smbEnabled = (smbStateManager != nullptr);
 
-    // Primary (legacy fields) — prefer cloud when both exist, else whichever is present.
-    int foldersDone    = cloudEnabled ? cloudDone    : smbDone;
-    int foldersTotal   = cloudEnabled ? cloudTotal   : smbTotal;
-    int foldersPending = cloudEnabled ? cloudPending : smbPending;
     long nextUp = -1; bool timeSynced = false; bool inWindow = false; bool smartQuiet = false;
     if (scheduleManager) {
         nextUp = scheduleManager->getSecondsUntilNextUpload();
@@ -1043,20 +1037,9 @@ void CpapWebServer::updateStatusSnapshot() {
         smbLiveActive = true;
     }
 
-    // Legacy live_* fields — prefer whichever backend is currently active.
-    const char* liveFolder = cloudLiveActive ? cloudLiveFolder : smbLiveActive ? smbLiveFolder : "";
-    int  liveUp    = cloudLiveActive ? cloudLiveUp    : smbLiveActive ? smbLiveUp    : 0;
-    int  liveTotal = cloudLiveActive ? cloudLiveTotal : smbLiveActive ? smbLiveTotal : 0;
-    bool liveActive = cloudLiveActive || smbLiveActive;
-
     // Now that live flags are known, compute per-backend counts.
     readBackendCounts(cloudStateManager, cloudDone, cloudTotal, cloudPending, cloudLastTs, cloudLiveActive);
     readBackendCounts(smbStateManager,   smbDone,   smbTotal,   smbPending,   smbLastTs,   smbLiveActive);
-
-    // Recompute legacy primary fields now that the counts are populated.
-    foldersDone    = cloudEnabled ? cloudDone    : smbDone;
-    foldersTotal   = cloudEnabled ? cloudTotal   : smbTotal;
-    foldersPending = cloudEnabled ? cloudPending : smbPending;
 
     char recentTabs[128];
     buildRecentTabsField(recentTabs, sizeof(recentTabs), nowMs);
@@ -1085,8 +1068,7 @@ void CpapWebServer::updateStatusSnapshot() {
         "{\"state\":\"%s\",\"in_state_sec\":%lu,\"uptime\":%lu"
         ",\"time\":\"%s\",\"time_synced\":%s"
         ",\"free_heap\":%u,\"max_alloc\":%u"
-        ",\"wifi\":%s,\"rssi\":%d,\"wifi_ip\":\"%s\""
-        ",\"active_backend\":\"%s\",\"folders_done\":%d,\"folders_total\":%d,\"folders_pending\":%d"
+        ",\"wifi\":%s,\"rssi\":%d"
         ",\"backends\":{"
             "\"cloud\":{\"enabled\":%s,\"done\":%d,\"total\":%d,\"pending\":%d,\"last_ts\":%lu"
                 ",\"live\":{\"active\":%s,\"folder\":\"%s\",\"up\":%d,\"total\":%d}}"
@@ -1095,7 +1077,6 @@ void CpapWebServer::updateStatusSnapshot() {
         "}"
         ",\"next_upload\":%ld"
         ",\"in_window\":%s,\"smart_quiet\":%s,\"smart_config_invalid\":%s"
-        ",\"live_active\":%s,\"live_folder\":\"%s\",\"live_up\":%d,\"live_total\":%d"
         ",\"cpu0\":%u,\"cpu1\":%u"
         ",\"pcnt_capable\":%s"
         ",\"tz_offset_minutes\":%d"
@@ -1106,8 +1087,7 @@ void CpapWebServer::updateStatusSnapshot() {
         st, inStateSec, upSec,
         timeBuf, timeSynced ? "true" : "false",
         (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap(),
-        wifiConn ? "true" : "false", rssi, wifiIp,
-        g_activeBackendStatus.name, foldersDone, foldersTotal, foldersPending,
+        wifiConn ? "true" : "false", rssi,
         cloudEnabled ? "true" : "false", cloudDone, cloudTotal, cloudPending,
             (unsigned long)cloudLastTs,
             cloudLiveActive ? "true" : "false", cloudLiveFolder, cloudLiveUp, cloudLiveTotal,
@@ -1118,7 +1098,6 @@ void CpapWebServer::updateStatusSnapshot() {
         inWindow ? "true" : "false",
         smartQuiet ? "true" : "false",
         (config && config->isSmartConfigInvalid()) ? "true" : "false",
-        liveActive ? "true" : "false", liveFolder, liveUp, liveTotal,
         (unsigned)g_cpuLoad0, (unsigned)g_cpuLoad1,
         g_pcntCapable ? "true" : "false",
         tzOffsetMinutes,
