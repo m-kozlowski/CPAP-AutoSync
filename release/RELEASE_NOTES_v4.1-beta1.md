@@ -25,7 +25,7 @@ The `MINIMIZE_REBOOTS` config key was originally meaningful back when each uploa
 - The key and its default (`true`) are **unchanged** — your existing configs continue to work with no behaviour change.
 - It has been **removed from the user configuration reference** and is no longer documented as a tuning parameter. Treat it as a developer-only diagnostic toggle.
 
-### � Fixed: Force Upload now honours its name in Smart mode
+### 🛠️ Fixed: Force Upload now honours its name in Smart mode
 Previously, pressing **Force Upload** during Smart mode's quiet period (before `SMART_START_HOUR`) silently no-op'd with `No data category eligible, releasing`. The dashboard already advertised this as "forces an upload of recent data now" and the Danger Zone already carried the SD-access warning — only the web trigger handler was not following through.
 
 - Force Upload in **Smart mode quiet period** now runs a normal phased upload session restricted to recent data (`FRESH_ONLY`), same semantics as Force Upload already had in **Scheduled mode outside the upload window**.
