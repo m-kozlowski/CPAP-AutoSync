@@ -43,6 +43,7 @@ Upload scheduling, smart-mode quiet period (for automated uploads), SD-card acce
 - **Web UI**: Renamed `"All synced"` to `"Up to date"`; made the aggregate status line backend-aware.
 - **API**: Added `backends.{cloud,smb}` object to `/api/status`; removed obsolete `next_*` fields. Plumbed `setCloudStateManager()` alongside the existing `setSmbStateManager()` so the status snapshot reads both state managers directly.
 - **Internals**: `g_activeBackendStatus.name` no longer emits `"DUAL"`; set to `CLOUD` or `SMB` at rest and to the currently-running phase mid-session.
+- **Internals**: Stealth mode SD initialization and card-state restoration logs (Phase 1-4) are now gated behind the runtime `DEBUG=true` config flag to reduce log spam.
 - **Buffer**: `WEB_STATUS_BUF_SIZE` grown from 1024 → 1536 to fit the new per-backend block.
 - **Docs**: `MINIMIZE_REBOOTS` removed from the user configuration reference and architecture guide; now commented as developer-only.
 - **Fix**: Force Upload in Smart-mode quiet period now runs a recent-data-only session instead of silently no-op'ing. Same semantics as Force Upload in Scheduled mode outside the window.
