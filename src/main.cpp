@@ -1410,9 +1410,14 @@ void handleUploading() {
         
         switch (result) {
             case UploadResult::COMPLETE:
-                LOG("[FSM] All folders complete \u2014 suppressing retries until new bus activity");
                 g_nothingToUpload = true;
-                g_noWorkSuppressed = true;
+                if (uploader->hasIncompleteFolders()) {
+                    LOG("[FSM] Session complete but backends still have incomplete folders \u2014 will retry");
+                    g_noWorkSuppressed = false;
+                } else {
+                    LOG("[FSM] All folders complete \u2014 suppressing retries until new bus activity");
+                    g_noWorkSuppressed = true;
+                }
                 transitionTo(UploadState::COMPLETE);
                 break;
             case UploadResult::TIMEOUT:
@@ -1424,9 +1429,14 @@ void handleUploading() {
                 transitionTo(UploadState::RELEASING);
                 break;
             case UploadResult::NOTHING_TO_DO:
-                LOG("[FSM] Nothing to upload — suppressing retries until new bus activity");
                 g_nothingToUpload = true;
-                g_noWorkSuppressed = true;  // Don't retry until PCNT detects new CPAP activity
+                if (uploader->hasIncompleteFolders()) {
+                    LOG("[FSM] Work probe found no actionable work but folders remain incomplete — will retry");
+                    g_noWorkSuppressed = false;
+                } else {
+                    LOG("[FSM] Nothing to upload — suppressing retries until new bus activity");
+                    g_noWorkSuppressed = true;
+                }
                 transitionTo(UploadState::RELEASING);
                 break;
         }
