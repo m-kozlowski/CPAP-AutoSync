@@ -217,13 +217,13 @@ bool WiFiManager::connectStation(const String& ssid, const String& password, con
     LOGF("Connecting to WiFi: %s", ssid.c_str());
     LOGF("SSID length: %d characters", ssid.length());
 
-    WiFi.mode(WIFI_STA);
-    
     if (!hostname.isEmpty()) {
         WiFi.setHostname(hostname.c_str());
         LOGF("DHCP Hostname set to: %s", hostname.c_str());
     }
     
+    WiFi.mode(WIFI_STA);
+
     // ── Power optimization: disable 802.11b (DSSS) ──
     // 802.11b uses up to 370 mA peak TX. Restricting to 802.11g/n (OFDM)
     // caps peak TX current to ~205-250 mA. All modern routers support g/n.
