@@ -1805,7 +1805,11 @@ void loop() {
         }
     } else if (!g_apSetupMode && !wifiManager.isConnected() && !uploadTaskRunning) {
         unsigned long currentTime = millis();
-        if (currentTime - lastWifiReconnectAttempt >= wifiManager.getReconnectIntervalMs()) {
+        bool intervalElapsed = (currentTime - lastWifiReconnectAttempt >= wifiManager.getReconnectIntervalMs());
+        // PCNT-aware bus-idle gate: defer the RF burst if the CPAP is currently using the SD bus
+        // No-op on non-pcnt capable devices
+        bool busBusy = g_pcntCapable && !trafficMonitor.isIdleFor(2000);
+        if (intervalElapsed && !busBusy) {
             LOG_WARN("WiFi disconnected, attempting to reconnect...");
 
             if (!config.valid() || config.getWifiSSID().isEmpty()) {
