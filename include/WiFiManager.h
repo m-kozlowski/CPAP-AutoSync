@@ -75,12 +75,14 @@ private:
     static constexpr uint32_t CONNECT_PHASE_TIMEOUT_MS = 15000;
 
     static volatile uint8_t _lastDisconnectReason;  // Captured in event handler for retry logic
+    static volatile bool _hintRefreshPending; // flag consumed in pollConnect to refresh hint for current AP
     static void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info);
 
     void enterPhase(ConnectPhase newPhase);
     void enterPmfRetry();
     void terminateConnect(ConnectPhase result);  // CONNECTED or FAILED
     void logConnectFailure();
+    void refreshHintForCurrentConnection();
 
     void prepareSingleCandidate(uint8_t configSlot);
     void kickScan();

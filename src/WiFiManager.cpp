@@ -12,6 +12,7 @@
 extern NetworkHints networkHints; // defined in main.cpp
 
 volatile uint8_t WiFiManager::_lastDisconnectReason = 0;
+volatile bool    WiFiManager::_hintRefreshPending  = false;
 
 WiFiManager::WiFiManager()
     : connected(false), mdnsStarted(false), apMode(false),
@@ -195,6 +196,9 @@ void WiFiManager::onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
             
         case ARDUINO_EVENT_WIFI_STA_GOT_IP:
             LOG_INFOF("WiFi Event: Got IP address: %s", WiFi.localIP().toString().c_str());
+            // Fires on every (re)association regardless of who initiated it
+            // pollConnect() consumes the flag and refreshes hint record for the current AP.
+            _hintRefreshPending = true;
             break;
             
         case ARDUINO_EVENT_WIFI_STA_LOST_IP:
@@ -254,6 +258,9 @@ void WiFiManager::terminateConnect(ConnectPhase result) {
                 }
             }
         }
+        // STA_GOT_IP also fires for this connect; consume the pending flag
+        // so pollConnect doesn't upsert a second time on the next tick.
+        _hintRefreshPending = false;
     } else {
         connected = false;
         if (_consecutiveFailures < 0xFF) _consecutiveFailures++;
@@ -281,6 +288,35 @@ void WiFiManager::logConnectFailure() {
         case WL_CONNECTION_LOST:LOG_ERROR("WiFi failure: Connection lost"); break;
         case WL_DISCONNECTED:   LOG_ERROR("WiFi failure: Disconnected"); break;
         default:                LOGF("WiFi failure: Unknown status %d", WiFi.status()); break;
+    }
+}
+
+// Update the NetworkHints record for the AP we are currently associated with.
+// The PMF flag is preserved from the existing hint since we don't have authoritative information about it in this path.
+void WiFiManager::refreshHintForCurrentConnection() {
+    if (!_pendingConfig || WiFi.status() != WL_CONNECTED) return;
+    String currentSsid = WiFi.SSID();
+    const uint8_t* bssid = WiFi.BSSID();
+    uint8_t channel = (uint8_t)WiFi.channel();
+    if (currentSsid.isEmpty() || !bssid || channel == 0) return;
+
+    // Find configured slot for current SSID; ignore if not in config.
+    int cfgCount = _pendingConfig->getWifiNetworkCount();
+    bool inConfig = false;
+    for (int slot = 0; slot < cfgCount; slot++) {
+        if (currentSsid == _pendingConfig->getWifiSSID(slot)) { inConfig = true; break; }
+    }
+    if (!inConfig) return;
+
+    // Preserve existing PMF flag if a hint already exists for this AP.
+    bool pmfDisable = false;
+    const SavedNetworkHint* existing = networkHints.find(currentSsid.c_str(), bssid);
+    if (existing) pmfDisable = (existing->pmf_disable != 0);
+
+    if (networkHints.upsert(currentSsid.c_str(), bssid, channel, pmfDisable)) {
+        networkHints.save();
+        LOG_DEBUGF("WiFi: hint refreshed for '%s' ch=%u (post-event)",
+                   currentSsid.c_str(), channel);
     }
 }
 
@@ -540,6 +576,10 @@ bool WiFiManager::beginConnect(const Config& cfg) {
 void WiFiManager::pollConnect() {
     // Roaming maintenance while connected.
     if (_connectPhase == ConnectPhase::CONNECTED) {
+        if (_hintRefreshPending) {
+            _hintRefreshPending = false;
+            refreshHintForCurrentConnection();
+        }
         roamingTick();
         return;
     }
