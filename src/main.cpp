@@ -60,11 +60,14 @@ bool g_mdnsTimedOut = false;
 // ============================================================================
 // Global Objects
 // ============================================================================
+#include "NetworkHints.h"
+
 Config config;
 SDCardManager sdManager;
 WiFiManager wifiManager;
 FileUploader* uploader = nullptr;
 TrafficMonitor trafficMonitor;
+NetworkHints networkHints;
 
 #ifdef ENABLE_OTA_UPDATES
 OTAManager otaManager;
@@ -727,6 +730,9 @@ void setup() {
 
     // Setup WiFi event handlers for logging
     wifiManager.setupEventHandlers();
+
+    // Load cached per-AP connection hints (BSSID, channel, PMF flag) from NVS.
+    networkHints.begin();
 
     // Defer TX power cap — applied inside connectStation() after WiFi.mode(WIFI_STA)
     // to avoid "Neither AP or STA has been started" warning.
