@@ -59,6 +59,7 @@ private:
     uint8_t      _candidateRetries;
     const Config* _pendingConfig;
     String       _pendingHostname;
+    bool         _pendingPmfDisable;
 
     static constexpr uint32_t CONNECT_PHASE_TIMEOUT_MS = 15000;
 

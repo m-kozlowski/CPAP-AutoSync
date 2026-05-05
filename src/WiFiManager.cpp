@@ -2,10 +2,14 @@
 #include "Logger.h"
 #include "Config.h"  // For power management enums
 #include "SDCardManager.h"
+#include "NetworkHints.h"
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <esp_wifi.h>
 #include <esp_sntp.h>
+#include <time.h>
+
+extern NetworkHints networkHints; // defined in main.cpp
 
 volatile uint8_t WiFiManager::_lastDisconnectReason = 0;
 
@@ -15,7 +19,8 @@ WiFiManager::WiFiManager()
       _connectPhase(ConnectPhase::IDLE), _phaseStartMs(0),
       _consecutiveFailures(0),
       _candidateCount(0), _candidateIndex(0), _candidateRetries(0),
-      _pendingConfig(nullptr) {}
+      _pendingConfig(nullptr),
+      _pendingPmfDisable(false) {}
 
 void WiFiManager::startAP() {
     LOG("Starting AP Mode (CPAP-AutoSync) for configuration");
@@ -229,6 +234,24 @@ void WiFiManager::terminateConnect(ConnectPhase result) {
         _consecutiveFailures = 0;
         LOG("WiFi connected");
         LOGF("IP address: %s", WiFi.localIP().toString().c_str());
+
+        // Persist a hint for the AP we just connected to. WiFi.BSSID() and
+        // WiFi.channel() are authoritative now (the candidate's values may
+        // have been zero on the single-SSID direct path).
+        if (_pendingConfig && _candidateIndex < _candidateCount) {
+            uint8_t configSlot = _candidates[_candidateIndex].configSlot;
+            const String& ssid = _pendingConfig->getWifiSSID(configSlot);
+            const uint8_t* bssid = WiFi.BSSID();
+            uint8_t channel = (uint8_t)WiFi.channel();
+            if (bssid && channel > 0 && !ssid.isEmpty()) {
+                if (networkHints.upsert(ssid.c_str(), bssid, channel, _pendingPmfDisable)) {
+                    networkHints.save();
+                    LOGF("WiFi: hint saved for '%s' ch=%u%s",
+                         ssid.c_str(), channel,
+                         _pendingPmfDisable ? " (PMF disabled)" : "");
+                }
+            }
+        }
     } else {
         connected = false;
         if (_consecutiveFailures < 0xFF) _consecutiveFailures++;
@@ -271,6 +294,7 @@ void WiFiManager::enterPmfRetry() {
     esp_wifi_set_config(WIFI_IF_STA, &wifi_conf);
     esp_wifi_disconnect();
     esp_wifi_connect();
+    _pendingPmfDisable = true;
     enterPhase(ConnectPhase::PMF_RETRY);
 }
 
@@ -288,6 +312,26 @@ void WiFiManager::prepareSingleCandidate(uint8_t configSlot) {
     memset(_candidates[0].bssid, 0, 6);
     _candidates[0].channel = 0;
     _candidates[0].rssi    = 0;
+
+   // Single-SSID path: no scan to source a BSSID/channel from. Try to find
+   // a hint for this SSID (any BSSID; pick the most recently used) so we can
+   // skip the radio's own scan during association.
+   if (_pendingConfig) {
+       const String& ssid = _pendingConfig->getWifiSSID(configSlot);
+       const SavedNetworkHint* best = nullptr;
+       for (int i = 0; i < networkHints.count(); i++) {
+           const SavedNetworkHint* h = networkHints.at(i);
+           if (h && strcmp(h->ssid, ssid.c_str()) == 0) {
+               if (!best || h->last_used_secs > best->last_used_secs) best = h;
+           }
+       }
+       if (best) {
+           memcpy(_candidates[0].bssid, best->bssid, 6);
+           _candidates[0].channel = best->channel;
+           LOGF("WiFi: using cached hint for '%s' (ch=%u)", ssid.c_str(), best->channel);
+       }
+   }
+
     _candidateCount   = 1;
     _candidateIndex   = 0;
     _candidateRetries = 0;
@@ -370,6 +414,19 @@ bool WiFiManager::startCurrentCandidate() {
     _pendingPassword = _pendingConfig->getWifiPassword(c.configSlot);
     _lastDisconnectReason = 0;
 
+    // Look up persisted hint for this exact (ssid, bssid). Used to pre-set the
+    // PMF-disable flag on routers we already know reject 802.11w
+    _pendingPmfDisable = false;
+    bool hasBssid = (c.bssid[0] | c.bssid[1] | c.bssid[2] |
+                     c.bssid[3] | c.bssid[4] | c.bssid[5]) != 0;
+    if (hasBssid) {
+        const SavedNetworkHint* hint = networkHints.find(_pendingSsid.c_str(), c.bssid);
+        if (hint && hint->pmf_disable) {
+            _pendingPmfDisable = true;
+            LOGF("WiFi: hint says PMF disabled for '%s'", _pendingSsid.c_str());
+        }
+    }
+
     bool hasHint = (c.channel > 0);
     if (hasHint) {
         LOGF("WiFi: connecting to '%s' (ch=%u, RSSI %d dBm)",
@@ -378,6 +435,22 @@ bool WiFiManager::startCurrentCandidate() {
     } else {
         LOGF("WiFi: connecting to '%s'", _pendingSsid.c_str());
         WiFi.begin(_pendingSsid.c_str(), _pendingPassword.c_str());
+    }
+
+    // If we already know this AP needs PMF disabled, override the default
+    // (capable=true) configuration immediately. WiFi.begin() set the SSID/pass
+    // via esp_wifi_set_config; we override pmf_cfg and reconnect, course-
+    // correcting the in-flight association before it has a chance to fail
+    // with reason 208.
+    if (_pendingPmfDisable) {
+        wifi_config_t wifi_conf;
+        if (esp_wifi_get_config(WIFI_IF_STA, &wifi_conf) == ESP_OK) {
+            wifi_conf.sta.pmf_cfg.capable  = false;
+            wifi_conf.sta.pmf_cfg.required = false;
+            esp_wifi_set_config(WIFI_IF_STA, &wifi_conf);
+            esp_wifi_disconnect();
+            esp_wifi_connect();
+        }
     }
 
     // Apply deferred TX power AFTER WiFi.begin() — WiFi.mode(WIFI_STA) is async
