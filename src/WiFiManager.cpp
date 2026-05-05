@@ -13,6 +13,7 @@ extern NetworkHints networkHints; // defined in main.cpp
 
 volatile uint8_t WiFiManager::_lastDisconnectReason = 0;
 volatile bool    WiFiManager::_hintRefreshPending  = false;
+volatile uint8_t WiFiManager::_apClientCount       = 0;
 
 WiFiManager::WiFiManager()
     : connected(false), mdnsStarted(false), apMode(false),
@@ -22,7 +23,8 @@ WiFiManager::WiFiManager()
       _candidateCount(0), _candidateIndex(0), _candidateRetries(0),
       _pendingConfig(nullptr),
       _pendingPmfDisable(false),
-      _lastRoamCheckMs(0), _lowRssiCount(0), _roamSuspended(false) {}
+      _lastRoamCheckMs(0), _lowRssiCount(0), _roamSuspended(false),
+      _apTeardownEligibleSinceMs(0) {}
 
 void WiFiManager::startAP() {
     LOG("Starting AP Mode (CPAP-AutoSync) for configuration");
@@ -196,15 +198,33 @@ void WiFiManager::onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
             
         case ARDUINO_EVENT_WIFI_STA_GOT_IP:
             LOG_INFOF("WiFi Event: Got IP address: %s", WiFi.localIP().toString().c_str());
-            // Fires on every (re)association regardless of who initiated it
-            // pollConnect() consumes the flag and refreshes hint record for the current AP.
+            // Fires on every (re)association regardless of who initiated it,
+            // including NetworkRecovery's tryCoordinatedWifiCycle and any
+            // supplicant-driven roam.  pollConnect() consumes the flag and
+            // refreshes the NetworkHints record for the current AP.
             _hintRefreshPending = true;
             break;
             
         case ARDUINO_EVENT_WIFI_STA_LOST_IP:
             LOG_WARN("WiFi Event: Lost IP address");
             break;
-            
+
+        case ARDUINO_EVENT_WIFI_AP_STACONNECTED: {
+            uint8_t n = _apClientCount;
+            if (n < 0xFF) _apClientCount = n + 1;
+            LOG_INFOF("WiFi Event: AP client connected (total: %u)",
+                      (unsigned)_apClientCount);
+            break;
+        }
+
+        case ARDUINO_EVENT_WIFI_AP_STADISCONNECTED: {
+            uint8_t n = _apClientCount;
+            if (n > 0) _apClientCount = n - 1;
+            LOG_INFOF("WiFi Event: AP client disconnected (remaining: %u)",
+                      (unsigned)_apClientCount);
+            break;
+        }
+
         default:
             LOG_DEBUGF("WiFi Event: Unhandled event %d", event);
             break;
@@ -292,7 +312,10 @@ void WiFiManager::logConnectFailure() {
 }
 
 // Update the NetworkHints record for the AP we are currently associated with.
-// The PMF flag is preserved from the existing hint since we don't have authoritative information about it in this path.
+// Called from pollConnect when STA_GOT_IP fired without going through our own
+// terminateConnect (i.e. NetworkRecovery's tryCoordinatedWifiCycle, or a
+// supplicant-driven roam).  The PMF flag is preserved from the existing hint
+// since we don't have authoritative information about it in this path.
 void WiFiManager::refreshHintForCurrentConnection() {
     if (!_pendingConfig || WiFi.status() != WL_CONNECTED) return;
     String currentSsid = WiFi.SSID();
@@ -491,7 +514,7 @@ bool WiFiManager::startCurrentCandidate() {
         }
     }
 
-    // Apply deferred TX power AFTER WiFi.begin() — WiFi.mode(WIFI_STA) is async
+    // Apply deferred TX power AFTER WiFi.begin() - WiFi.mode(WIFI_STA) is async
     // and the STA isn't fully started until the STA_START event fires. begin()
     // blocks until STA is active, so setTxPower() works reliably here.
     // This caps TX power during the association/DHCP phase.
@@ -687,6 +710,8 @@ void WiFiManager::roamingTick() {
     if (!_pendingConfig || _pendingConfig->getWifiNetworkCount() < 2) return;
     if (_roamSuspended) return;
     if (WiFi.status() != WL_CONNECTED) return;
+    // Don't scan while a user is connected to the captive AP
+    if (_apClientCount > 0) return;
 
     uint32_t now = millis();
     if (now - _lastRoamCheckMs < ROAM_CHECK_INTERVAL_MS) return;
@@ -704,6 +729,36 @@ void WiFiManager::roamingTick() {
         _lowRssiCount = 0;
         kickRoamScan();
     }
+}
+
+// Stable-quiet AP teardown
+//
+// Boot-fallback path: when the boot connectStation() failed and apMode was
+// raised, the main loop continues to retry STA in the background.  Once STA
+// gets back, we want to tear the AP down again so the radio drops back to
+// pure STA (lower idle current, no broadcast beacons). But only after a
+// stable window in which (a) STA stays continuously CONNECTED and (b) no
+// client is talking to the AP, otherwise we'd kick a user mid-config or
+// drop the AP only to bring it back if STA flaps right after.
+bool WiFiManager::shouldTearDownAP() {
+    if (!apMode) {
+        _apTeardownEligibleSinceMs = 0;
+        return false;
+    }
+    bool staConnected  = (_connectPhase == ConnectPhase::CONNECTED &&
+                          WiFi.status() == WL_CONNECTED);
+    bool clientsActive = (_apClientCount > 0);
+    if (!staConnected || clientsActive) {
+        _apTeardownEligibleSinceMs = 0;
+        return false;
+    }
+    if (_apTeardownEligibleSinceMs == 0) {
+        _apTeardownEligibleSinceMs = millis();
+        LOGF("[AP] STA back online with no AP clients - starting %u s teardown timer",
+             (unsigned)(AP_TEARDOWN_QUIET_MS / 1000));
+        return false;
+    }
+    return (millis() - _apTeardownEligibleSinceMs) >= AP_TEARDOWN_QUIET_MS;
 }
 
 void WiFiManager::kickRoamScan() {
@@ -766,9 +821,10 @@ void WiFiManager::processRoamScanResults() {
         _candidates[j + 1] = tmp;
     }
 
-    // Locate the currently-associated AP within the list. If it's not there, stay
-    // a partial scan is not a sound basis for disconnecting. When found, the cascade
-    // already includes us as the natural final fallback in RSSI order.
+    // Locate the currently-associated AP within the list.  If it's not there
+    // (scan didn't see ourselves - rare), stay: a partial scan is not a sound
+    // basis for disconnecting.  When found, the cascade already includes us
+    // as the natural final fallback in RSSI order.
     const uint8_t* currentBssid = WiFi.BSSID();
     int currentIdx = -1;
     if (currentBssid) {

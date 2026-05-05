@@ -1789,11 +1789,11 @@ void loop() {
     // GUARD: Do NOT attempt reconnection while upload task is running on Core 0.
     // The upload task manages its own WiFi recovery via tryCoordinatedWifiCycle().
     // Concurrent reconnection from both cores corrupts the lwIP state machine.
-    // GUARD: Skip when in AP setup mode. beginConnect() uses WIFI_AP_STA
-    // when apMode is true (so a retry would not disrupt the AP), but the
-    // current UX intent is "user is configuring, stop retrying old creds".
+    // While in boot-fallback AP mode we keep retrying in the background so the
+    // device can self-heal once the router comes back, but skip the retry while
+    // an AP client is connected (user is mid-config; don't disrupt the radio).
     // Tracks whether the new-attempt block below relaxed brownout detection
-    // for the in-flight attempt. Roam scans don't relax brownout, so we must
+    // for the in-flight attempt.  Roam scans don't relax brownout, so we must
     // not re-enable it (or log "reconnect complete") when a roam-stay decision
     // exits ROAM_SCAN -> CONNECTED.
     static bool brownoutRelaxedThisAttempt = false;
@@ -1813,7 +1813,8 @@ void loop() {
     }
 
     if (!wifiManager.isConnectInProgress() &&
-        !g_apSetupMode && !wifiManager.isConnected() && !uploadTaskRunning) {
+        !wifiManager.isConnected() && !uploadTaskRunning &&
+        wifiManager.getApClientCount() == 0) {
         unsigned long currentTime = millis();
         bool intervalElapsed = (currentTime - lastWifiReconnectAttempt >= wifiManager.getReconnectIntervalMs());
         // PCNT-aware bus-idle gate: defer the RF burst if the CPAP is currently using the SD bus
@@ -1840,6 +1841,20 @@ void loop() {
 
         // Initialize web server regardless of connection success
         // It will either serve normal UI or AP setup UIFSM while WiFi is down
+    }
+
+    // Stable-quiet AP teardown
+    // If we booted into AP-fallback (failed STA at boot) and STA has since
+    // recovered, drop the AP back down so the radio runs in plain STA again.
+    // We reboot rather than tearing down in place: the AP-mode boot path
+    // skipped uploader/scheduler init, so a clean reboot through the normal
+    // STA path is the simplest way to bring the device fully online.
+    if (g_apSetupMode && wifiManager.shouldTearDownAP()) {
+        LOG_INFO("[AP] STA reconnected stably for 2 min, no AP clients - rebooting to exit AP mode");
+        setRebootReason("AP fallback teardown after STA recovery");
+        Logger::getInstance().flushBeforeReboot();
+        delay(300);
+        esp_restart();
     }
 
     // ── NTP sync retry ──

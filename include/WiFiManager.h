@@ -75,8 +75,18 @@ private:
     static constexpr uint32_t CONNECT_PHASE_TIMEOUT_MS = 15000;
 
     static volatile uint8_t _lastDisconnectReason;  // Captured in event handler for retry logic
-    static volatile bool _hintRefreshPending; // flag consumed in pollConnect to refresh hint for current AP
+    // STA_GOT_IP fires for every (re)association, including ones we did not
+    // initiate via beginConnect (e.g. NetworkRecovery::tryCoordinatedWifiCycle,
+    // or a supplicant-driven roam).  Pending flag is consumed in pollConnect
+    // to refresh the NetworkHints record for the current AP.
+    static volatile bool _hintRefreshPending;
+    // softAP client count used to gate background STA reconnect attempts
+    static volatile uint8_t _apClientCount;
     static void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info);
+
+    // Stable-quiet teardown of the boot-fallback AP after STA recovers
+    uint32_t _apTeardownEligibleSinceMs;
+    static constexpr uint32_t AP_TEARDOWN_QUIET_MS = 120000;  // 2 minutes
 
     void enterPhase(ConnectPhase newPhase);
     void enterPmfRetry();
@@ -124,6 +134,14 @@ public:
     void startAP();
     void processDNS();
     bool isAPMode() const { return apMode; }
+
+    // softAP client tracking. While > 0, the caller (main loop) should skip
+    // background STA reconnect attempts so the user isn't kicked off mid-config.
+    uint8_t getApClientCount() const { return _apClientCount; }
+
+    // Returns true once the boot-fallback AP can be safely torn down: STA has been
+    // CONNECTED for AP_TEARDOWN_QUIET_MS, no AP clients connected during that window
+    bool shouldTearDownAP();
     
     bool isConnected() const;
     void disconnect();
