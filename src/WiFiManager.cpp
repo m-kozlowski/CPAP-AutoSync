@@ -686,70 +686,87 @@ void WiFiManager::processRoamScanResults() {
         return;
     }
 
-    // Find the strongest visible AP that matches a configured SSID (any BSSID).
-    int8_t  bestRssi  = -127;
-    int     bestIdx   = -1;
-    uint8_t bestSlot  = 0xFF;
+    // Build the full ranked candidate list - same logic as processScanResults
+    // but used here to decide "stay vs switch" and (on switch) to drive
+    // best-first iteration through onCurrentCandidateFailed.
     int cfgCount = _pendingConfig->getWifiNetworkCount();
-    for (int i = 0; i < n; i++) {
+    _candidateCount = 0;
+    for (int i = 0; i < n && _candidateCount < MAX_CANDIDATES; i++) {
         String visibleSsid = WiFi.SSID(i);
         for (int slot = 0; slot < cfgCount; slot++) {
             if (visibleSsid != _pendingConfig->getWifiSSID(slot)) continue;
-            int rssi = WiFi.RSSI(i);
-            if (rssi > bestRssi) {
-                bestRssi = (int8_t)rssi;
-                bestIdx  = i;
-                bestSlot = (uint8_t)slot;
-            }
+            Candidate& c = _candidates[_candidateCount];
+            c.configSlot = (uint8_t)slot;
+            const uint8_t* bssid = WiFi.BSSID(i);
+            if (bssid) memcpy(c.bssid, bssid, 6);
+            else       memset(c.bssid, 0, 6);
+            c.channel = (uint8_t)WiFi.channel(i);
+            c.rssi    = (int8_t)WiFi.RSSI(i);
+            _candidateCount++;
             break;
         }
     }
 
-    if (bestIdx < 0) {
+    WiFi.scanDelete();
+
+    if (_candidateCount == 0) {
         LOG_WARN("WiFi roam scan: no known networks visible");
-        WiFi.scanDelete();
         _connectPhase = ConnectPhase::CONNECTED;
         return;
     }
 
-    // Hysteresis check: only switch if the candidate beats current by margin.
-    int8_t currentRssi = (int8_t)WiFi.RSSI();
+    // Sort candidates by RSSI desc (insertion sort).
+    for (int i = 1; i < _candidateCount; i++) {
+        Candidate tmp = _candidates[i];
+        int j = i - 1;
+        while (j >= 0 && _candidates[j].rssi < tmp.rssi) {
+            _candidates[j + 1] = _candidates[j];
+            j--;
+        }
+        _candidates[j + 1] = tmp;
+    }
+
+    // Locate the currently-associated AP within the list. If it's not there, stay
+    // a partial scan is not a sound basis for disconnecting. When found, the cascade
+    // already includes us as the natural final fallback in RSSI order.
     const uint8_t* currentBssid = WiFi.BSSID();
-    const uint8_t* candidateBssid = WiFi.BSSID(bestIdx);
-    bool sameAp = (currentBssid && candidateBssid &&
-                   memcmp(currentBssid, candidateBssid, 6) == 0);
+    int currentIdx = -1;
+    if (currentBssid) {
+        for (int i = 0; i < _candidateCount; i++) {
+            if (memcmp(_candidates[i].bssid, currentBssid, 6) == 0) {
+                currentIdx = i;
+                break;
+            }
+        }
+    }
+    if (currentIdx < 0) {
+        LOG_WARN("WiFi roam scan: current AP missing from scan results - staying");
+        _connectPhase = ConnectPhase::CONNECTED;
+        return;
+    }
 
-    if (sameAp) {
+    int8_t currentRssi = _candidates[currentIdx].rssi;
+    Candidate& best = _candidates[0];
+
+    if (currentIdx == 0) {
         LOG_INFO("WiFi roam: best candidate is current AP - staying");
-        WiFi.scanDelete();
         _connectPhase = ConnectPhase::CONNECTED;
         return;
     }
-
-    if (bestRssi < currentRssi + ROAM_HYSTERESIS_DB) {
+    if (best.rssi < currentRssi + ROAM_HYSTERESIS_DB) {
         LOGF("WiFi roam: candidate %d dBm vs current %d dBm (need >=%d delta) - staying",
-             bestRssi, currentRssi, ROAM_HYSTERESIS_DB);
-        WiFi.scanDelete();
+             best.rssi, currentRssi, ROAM_HYSTERESIS_DB);
         _connectPhase = ConnectPhase::CONNECTED;
         return;
     }
 
-    LOGF("WiFi roam: switching to '%s' %d dBm (was %d dBm)",
-         _pendingConfig->getWifiSSID(bestSlot).c_str(), bestRssi, currentRssi);
+    LOGF("WiFi roam: switching to '%s' %d dBm (was %d dBm); %u candidate(s) ranked",
+         _pendingConfig->getWifiSSID(best.configSlot).c_str(),
+         best.rssi, currentRssi, _candidateCount);
 
-    // Build a single-candidate list pointing at the new AP, disconnect, and
-    // reuse the standard candidate-start machinery to (re)connect.
-    Candidate& c = _candidates[0];
-    c.configSlot = bestSlot;
-    if (candidateBssid) memcpy(c.bssid, candidateBssid, 6);
-    else                memset(c.bssid, 0, 6);
-    c.channel = (uint8_t)WiFi.channel(bestIdx);
-    c.rssi    = bestRssi;
-    _candidateCount   = 1;
     _candidateIndex   = 0;
     _candidateRetries = 0;
 
-    WiFi.scanDelete();
     WiFi.disconnect(false);  // disconnect from current AP, keep STA up
     delay(100);
     startCurrentCandidate();
