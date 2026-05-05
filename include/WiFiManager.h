@@ -36,6 +36,7 @@ private:
     uint32_t     _phaseStartMs;
     String       _pendingSsid;
     String       _pendingPassword;
+    uint8_t      _consecutiveFailures;
 
     static constexpr uint32_t CONNECT_PHASE_TIMEOUT_MS = 15000;
 
@@ -63,6 +64,12 @@ public:
     void pollConnect();
     bool isConnectInProgress() const;
     ConnectPhase getConnectPhase() const { return _connectPhase; }
+
+    // Recommended interval before the next reconnect attempt, in ms.
+    // Schedule (consecutive FAILED count -> interval): 0->30s, 1->60s,
+    // 2->2min, 3+->5min. Reset to 30s after a CONNECTED.
+    uint32_t getReconnectIntervalMs() const;
+    uint8_t  getConsecutiveFailures() const { return _consecutiveFailures; }
     void startAP();
     void processDNS();
     bool isAPMode() const { return apMode; }

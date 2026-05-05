@@ -1805,7 +1805,7 @@ void loop() {
         }
     } else if (!g_apSetupMode && !wifiManager.isConnected() && !uploadTaskRunning) {
         unsigned long currentTime = millis();
-        if (currentTime - lastWifiReconnectAttempt >= 30000) {
+        if (currentTime - lastWifiReconnectAttempt >= wifiManager.getReconnectIntervalMs()) {
             LOG_WARN("WiFi disconnected, attempting to reconnect...");
 
             if (!config.valid() || config.getWifiSSID().isEmpty()) {

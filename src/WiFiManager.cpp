@@ -12,7 +12,8 @@ volatile uint8_t WiFiManager::_lastDisconnectReason = 0;
 WiFiManager::WiFiManager()
     : connected(false), mdnsStarted(false), apMode(false),
       _pendingTxPower(0), _hasPendingTxPower(false),
-      _connectPhase(ConnectPhase::IDLE), _phaseStartMs(0) {}
+      _connectPhase(ConnectPhase::IDLE), _phaseStartMs(0),
+      _consecutiveFailures(0) {}
 
 void WiFiManager::startAP() {
     LOG("Starting AP Mode (CPAP-AutoSync) for configuration");
@@ -222,12 +223,25 @@ void WiFiManager::terminateConnect(ConnectPhase result) {
     _phaseStartMs = millis();
     if (result == ConnectPhase::CONNECTED) {
         connected = true;
+        _consecutiveFailures = 0;
         LOG("WiFi connected");
         LOGF("IP address: %s", WiFi.localIP().toString().c_str());
     } else {
         connected = false;
+        if (_consecutiveFailures < 0xFF) _consecutiveFailures++;
         logConnectFailure();
+        LOGF("WiFi reconnect backoff: next attempt in %lu ms (failure #%u)",
+             (unsigned long)getReconnectIntervalMs(), (unsigned)_consecutiveFailures);
         Logger::getInstance().dumpSavedLogs("wifi_connection_failed");
+    }
+}
+
+uint32_t WiFiManager::getReconnectIntervalMs() const {
+    switch (_consecutiveFailures) {
+        case 0:  return  30 * 1000UL;
+        case 1:  return  60 * 1000UL;
+        case 2:  return 120 * 1000UL;
+        default: return 300 * 1000UL;  // capped at 5 min
     }
 }
 
