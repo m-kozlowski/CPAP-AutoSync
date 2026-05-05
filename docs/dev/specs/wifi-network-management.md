@@ -31,8 +31,9 @@ bool recoverConnection() {
 ## Configuration
 
 ### Network Settings
-- **SSID**: From `WIFI_SSID` configuration
-- **Password**: From `WIFI_PASSWORD` configuration (securely stored)
+- **SSIDs**: Up to 4 configurable via `WIFI_SSID_1..4` (with `WIFI_SSID` as an alias for slot 1)
+- **Passwords**: `WIFI_PASSWORD_1..4` (with `WIFI_PASSWORD` as an alias for slot 1) - securely stored per slot in NVS when masking is enabled
+- **Roaming**: Implicit when more than one network is configured
 - **Hostname**: From `HOSTNAME` configuration (default: "cpap")
 - **Power management**: Configurable TX power and saving modes
 
