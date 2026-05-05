@@ -249,7 +249,12 @@ bool WiFiManager::connectStation(const String& ssid, const String& password, con
 
     _lastDisconnectReason = 0;
     int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+    while (attempts < 30) {
+        wl_status_t status = WiFi.status();
+        if (status == WL_CONNECTED) break;
+        // Radio gave up - no point waiting the full timeout.
+        // The PMF retry path still runs if the disconnect reason warrants it.
+        if (status == WL_NO_SSID_AVAIL || status == WL_CONNECT_FAILED) break;
         delay(500);
         LOG_DEBUG(".");
         attempts++;
@@ -271,7 +276,10 @@ bool WiFiManager::connectStation(const String& ssid, const String& password, con
             esp_wifi_disconnect();
             esp_wifi_connect();
             attempts = 0;
-            while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+            while (attempts < 30) {
+                wl_status_t status = WiFi.status();
+                if (status == WL_CONNECTED) break;
+                if (status == WL_NO_SSID_AVAIL || status == WL_CONNECT_FAILED) break;
                 delay(500);
                 LOG_DEBUG(".");
                 attempts++;
