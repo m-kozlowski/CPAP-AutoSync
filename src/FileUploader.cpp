@@ -943,8 +943,14 @@ smb_phase_done:
         // this session.  Previously only the primary (cloud) got stamped,
         // which left the NAS (SMB) row showing a stale "Last upload: N days
         // ago" in the dashboard even after a successful phased session.
-        if (cloudStateManager) cloudStateManager->setLastUploadTimestamp((unsigned long)endNow);
-        if (smbStateManager)   smbStateManager->setLastUploadTimestamp((unsigned long)endNow);
+        if (cloudStateManager) {
+            cloudStateManager->setLastUploadTimestamp((unsigned long)endNow);
+            cloudStateManager->save(stateFs);
+        }
+        if (smbStateManager) {
+            smbStateManager->setLastUploadTimestamp((unsigned long)endNow);
+            smbStateManager->save(stateFs);
+        }
         if (scheduleManager)   scheduleManager->setLastUploadTimestamp((unsigned long)endNow);
         if (scheduleManager)   scheduleManager->markDayCompleted();
         LOG("[FileUploader] All folders complete — session done");
