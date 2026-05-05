@@ -1247,12 +1247,46 @@ void uploadTaskFunction(void* pvParameters) {
     // shows 0 / 12 even though two folders were successfully uploaded during
     // the phase.  ERROR is still skipped: the state may be inconsistent and
     // a fresh probe on the next cycle will sort it out.
+    FileUploader::WorkProbeResult postWorkResult = {false, false, -1, -1, -1};
+    bool postProbeRan = false;
     if ((result == UploadResult::COMPLETE || result == UploadResult::NOTHING_TO_DO ||
          result == UploadResult::TIMEOUT)
         && params->sdManager->hasControl()) {
-        params->uploader->hasWorkToUpload(params->sdManager->getFS());
+        postWorkResult = params->uploader->hasWorkToUpload(params->sdManager->getFS());
+        postProbeRan = true;
         esp_task_wdt_reset();
         g_uploadHeartbeat = millis();
+    }
+
+    if (postProbeRan && result != UploadResult::ERROR) {
+        time_t completedAt = time(nullptr);
+        if (completedAt >= 1000000000) {
+            UploadStateManager* cloudSm = params->uploader->getCloudStateManager();
+            UploadStateManager* smbSm = params->uploader->getSmbStateManager();
+            bool cloudComplete = !cloudSm || (!postWorkResult.hasCloudWork &&
+                                             postWorkResult.universe >= 0 &&
+                                             postWorkResult.cloudSynced == postWorkResult.universe);
+            bool smbComplete = !smbSm || (!postWorkResult.hasSmbWork &&
+                                         postWorkResult.universe >= 0 &&
+                                         postWorkResult.smbSynced == postWorkResult.universe);
+
+            if (cloudSm && cloudComplete) {
+                cloudSm->setLastUploadTimestamp((unsigned long)completedAt);
+                cloudSm->save(LittleFS);
+            }
+            if (smbSm && smbComplete) {
+                smbSm->setLastUploadTimestamp((unsigned long)completedAt);
+                smbSm->save(LittleFS);
+            }
+            if (cloudComplete && smbComplete) {
+                ScheduleManager* schedule = params->uploader->getScheduleManager();
+                if (schedule) {
+                    schedule->setLastUploadTimestamp((unsigned long)completedAt);
+                    schedule->markDayCompleted();
+                }
+                result = UploadResult::COMPLETE;
+            }
+        }
     }
 
     // Step 5: Release SD card
