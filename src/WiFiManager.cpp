@@ -20,7 +20,8 @@ WiFiManager::WiFiManager()
       _consecutiveFailures(0),
       _candidateCount(0), _candidateIndex(0), _candidateRetries(0),
       _pendingConfig(nullptr),
-      _pendingPmfDisable(false) {}
+      _pendingPmfDisable(false),
+      _lastRoamCheckMs(0), _lowRssiCount(0), _roamSuspended(false) {}
 
 void WiFiManager::startAP() {
     LOG("Starting AP Mode (CPAP-AutoSync) for configuration");
@@ -223,7 +224,8 @@ void WiFiManager::enterPhase(ConnectPhase newPhase) {
 bool WiFiManager::isConnectInProgress() const {
     return _connectPhase == ConnectPhase::SCANNING  ||
            _connectPhase == ConnectPhase::CONNECTING ||
-           _connectPhase == ConnectPhase::PMF_RETRY;
+           _connectPhase == ConnectPhase::PMF_RETRY  ||
+           _connectPhase == ConnectPhase::ROAM_SCAN;
 }
 
 void WiFiManager::terminateConnect(ConnectPhase result) {
@@ -313,24 +315,24 @@ void WiFiManager::prepareSingleCandidate(uint8_t configSlot) {
     _candidates[0].channel = 0;
     _candidates[0].rssi    = 0;
 
-   // Single-SSID path: no scan to source a BSSID/channel from. Try to find
-   // a hint for this SSID (any BSSID; pick the most recently used) so we can
-   // skip the radio's own scan during association.
-   if (_pendingConfig) {
-       const String& ssid = _pendingConfig->getWifiSSID(configSlot);
-       const SavedNetworkHint* best = nullptr;
-       for (int i = 0; i < networkHints.count(); i++) {
-           const SavedNetworkHint* h = networkHints.at(i);
-           if (h && strcmp(h->ssid, ssid.c_str()) == 0) {
-               if (!best || h->last_used_secs > best->last_used_secs) best = h;
-           }
-       }
-       if (best) {
-           memcpy(_candidates[0].bssid, best->bssid, 6);
-           _candidates[0].channel = best->channel;
-           LOGF("WiFi: using cached hint for '%s' (ch=%u)", ssid.c_str(), best->channel);
-       }
-   }
+    // Single-SSID path: no scan to source a BSSID/channel from. Try to find
+    // a hint for this SSID (any BSSID; pick the most recently used) so we can
+    // skip the radio's own scan during association.
+    if (_pendingConfig) {
+        const String& ssid = _pendingConfig->getWifiSSID(configSlot);
+        const SavedNetworkHint* best = nullptr;
+        for (int i = 0; i < networkHints.count(); i++) {
+            const SavedNetworkHint* h = networkHints.at(i);
+            if (h && strcmp(h->ssid, ssid.c_str()) == 0) {
+                if (!best || h->last_used_secs > best->last_used_secs) best = h;
+            }
+        }
+        if (best) {
+            memcpy(_candidates[0].bssid, best->bssid, 6);
+            _candidates[0].channel = best->channel;
+            LOGF("WiFi: using cached hint for '%s' (ch=%u)", ssid.c_str(), best->channel);
+        }
+    }
 
     _candidateCount   = 1;
     _candidateIndex   = 0;
@@ -536,7 +538,34 @@ bool WiFiManager::beginConnect(const Config& cfg) {
 }
 
 void WiFiManager::pollConnect() {
+    // Roaming maintenance while connected.
+    if (_connectPhase == ConnectPhase::CONNECTED) {
+        roamingTick();
+        return;
+    }
+
     if (!isConnectInProgress()) return;
+
+    if (_connectPhase == ConnectPhase::ROAM_SCAN) {
+        int rc = WiFi.scanComplete();
+        if (rc >= 0) {
+            processRoamScanResults();
+            return;
+        }
+        if (rc == WIFI_SCAN_FAILED) {
+            LOG_WARN("WiFi roam scan failed - staying connected");
+            WiFi.scanDelete();
+            _connectPhase = ConnectPhase::CONNECTED;
+            return;
+        }
+        if (millis() - _phaseStartMs >= SCAN_TIMEOUT_MS) {
+            LOG_WARN("WiFi roam scan timeout - staying connected");
+            WiFi.scanDelete();
+            _connectPhase = ConnectPhase::CONNECTED;
+            return;
+        }
+        return;  // scan still running
+    }
 
     if (_connectPhase == ConnectPhase::SCANNING) {
         int rc = WiFi.scanComplete();
@@ -590,6 +619,140 @@ bool WiFiManager::connectStation(const Config& cfg) {
         if (isConnectInProgress()) delay(50);
     }
     return _connectPhase == ConnectPhase::CONNECTED;
+}
+
+// Roaming with hysteresis
+//
+// While CONNECTED, sample RSSI every ROAM_CHECK_INTERVAL_MS. If RSSI stays
+// below ROAM_RSSI_THRESHOLD for ROAM_LOW_RSSI_COUNT consecutive samples,
+// trigger ROAM_SCAN to look for a stronger AP. Switch only if the best
+// alternative beats the current connection's RSSI by ROAM_HYSTERESIS_DB.
+// Suspended during upload sessions to avoid mid-TLS / mid-SMB disruption.
+
+void WiFiManager::suspendRoaming() {
+    _roamSuspended = true;
+    LOG_DEBUG("WiFi: roaming suspended");
+}
+
+void WiFiManager::resumeRoaming() {
+    _roamSuspended = false;
+    _lowRssiCount = 0;
+    _lastRoamCheckMs = millis();  // restart RSSI sampling window
+    LOG_DEBUG("WiFi: roaming resumed");
+}
+
+void WiFiManager::roamingTick() {
+    // Roaming requires multiple configured networks, an active connection,
+    // and not being suspended (i.e. not mid-upload).
+    if (!_pendingConfig || _pendingConfig->getWifiNetworkCount() < 2) return;
+    if (_roamSuspended) return;
+    if (WiFi.status() != WL_CONNECTED) return;
+
+    uint32_t now = millis();
+    if (now - _lastRoamCheckMs < ROAM_CHECK_INTERVAL_MS) return;
+    _lastRoamCheckMs = now;
+
+    int rssi = WiFi.RSSI();
+    if (rssi >= ROAM_RSSI_THRESHOLD) {
+        _lowRssiCount = 0;
+        return;
+    }
+
+    _lowRssiCount++;
+    LOGF("WiFi: low RSSI %d dBm (%u/%u)", rssi, _lowRssiCount, ROAM_LOW_RSSI_COUNT);
+    if (_lowRssiCount >= ROAM_LOW_RSSI_COUNT) {
+        _lowRssiCount = 0;
+        kickRoamScan();
+    }
+}
+
+void WiFiManager::kickRoamScan() {
+    LOG_INFO("WiFi: triggering roam scan");
+    int rc = WiFi.scanNetworks(true /*async*/, false /*show_hidden*/);
+    if (rc < 0 && rc != WIFI_SCAN_RUNNING) {
+        LOG_ERRORF("WiFi roam scan kick failed: %d", rc);
+        return;  // stay CONNECTED
+    }
+    enterPhase(ConnectPhase::ROAM_SCAN);
+}
+
+void WiFiManager::processRoamScanResults() {
+    int n = WiFi.scanComplete();
+    if (n < 0) {
+        LOG_WARN("WiFi roam scan: no results");
+        WiFi.scanDelete();
+        // Stay connected to current AP.
+        _connectPhase = ConnectPhase::CONNECTED;
+        return;
+    }
+
+    // Find the strongest visible AP that matches a configured SSID (any BSSID).
+    int8_t  bestRssi  = -127;
+    int     bestIdx   = -1;
+    uint8_t bestSlot  = 0xFF;
+    int cfgCount = _pendingConfig->getWifiNetworkCount();
+    for (int i = 0; i < n; i++) {
+        String visibleSsid = WiFi.SSID(i);
+        for (int slot = 0; slot < cfgCount; slot++) {
+            if (visibleSsid != _pendingConfig->getWifiSSID(slot)) continue;
+            int rssi = WiFi.RSSI(i);
+            if (rssi > bestRssi) {
+                bestRssi = (int8_t)rssi;
+                bestIdx  = i;
+                bestSlot = (uint8_t)slot;
+            }
+            break;
+        }
+    }
+
+    if (bestIdx < 0) {
+        LOG_WARN("WiFi roam scan: no known networks visible");
+        WiFi.scanDelete();
+        _connectPhase = ConnectPhase::CONNECTED;
+        return;
+    }
+
+    // Hysteresis check: only switch if the candidate beats current by margin.
+    int8_t currentRssi = (int8_t)WiFi.RSSI();
+    const uint8_t* currentBssid = WiFi.BSSID();
+    const uint8_t* candidateBssid = WiFi.BSSID(bestIdx);
+    bool sameAp = (currentBssid && candidateBssid &&
+                   memcmp(currentBssid, candidateBssid, 6) == 0);
+
+    if (sameAp) {
+        LOG_INFO("WiFi roam: best candidate is current AP - staying");
+        WiFi.scanDelete();
+        _connectPhase = ConnectPhase::CONNECTED;
+        return;
+    }
+
+    if (bestRssi < currentRssi + ROAM_HYSTERESIS_DB) {
+        LOGF("WiFi roam: candidate %d dBm vs current %d dBm (need >=%d delta) - staying",
+             bestRssi, currentRssi, ROAM_HYSTERESIS_DB);
+        WiFi.scanDelete();
+        _connectPhase = ConnectPhase::CONNECTED;
+        return;
+    }
+
+    LOGF("WiFi roam: switching to '%s' %d dBm (was %d dBm)",
+         _pendingConfig->getWifiSSID(bestSlot).c_str(), bestRssi, currentRssi);
+
+    // Build a single-candidate list pointing at the new AP, disconnect, and
+    // reuse the standard candidate-start machinery to (re)connect.
+    Candidate& c = _candidates[0];
+    c.configSlot = bestSlot;
+    if (candidateBssid) memcpy(c.bssid, candidateBssid, 6);
+    else                memset(c.bssid, 0, 6);
+    c.channel = (uint8_t)WiFi.channel(bestIdx);
+    c.rssi    = bestRssi;
+    _candidateCount   = 1;
+    _candidateIndex   = 0;
+    _candidateRetries = 0;
+
+    WiFi.scanDelete();
+    WiFi.disconnect(false);  // disconnect from current AP, keep STA up
+    delay(100);
+    startCurrentCandidate();
 }
 
 bool WiFiManager::isConnected() const { 

@@ -1381,7 +1381,8 @@ void handleUploading() {
         
         uploadTaskComplete = false;
         uploadTaskRunning = true;
-        
+        wifiManager.suspendRoaming();  // no roam scans / AP switches mid-upload
+
         // Relax task watchdog during upload — TLS handshake (5-15s of CPU-intensive
         // crypto) starves IDLE0 on Core 0. Instead of removing IDLE0 from monitoring
         // (which causes "task not found" error spam because IDLE0 still calls
@@ -1415,6 +1416,7 @@ void handleUploading() {
                        ESP.getFreeHeap(),
                        ESP.getMaxAllocHeap());
             uploadTaskRunning = false;
+            wifiManager.resumeRoaming();
             delete params;
             // Restore normal watchdog timeout (task creation failed)
             {
@@ -1436,6 +1438,7 @@ void handleUploading() {
     } else if (uploadTaskComplete) {
         // ── Task finished: read result and transition ──
         uploadTaskRunning = false;
+        wifiManager.resumeRoaming();
         uploadTaskHandle = nullptr;
         g_abortUploadFlag = false;  // Clear abort flag — task has stopped
         
@@ -1738,6 +1741,7 @@ void loop() {
             LOG_WARN("[FSM] Killing active upload task for state reset");
             vTaskDelete(uploadTaskHandle);
             uploadTaskRunning = false;
+            wifiManager.resumeRoaming();
             uploadTaskHandle = nullptr;
         }
         
@@ -1788,22 +1792,23 @@ void loop() {
     // GUARD: Skip when in AP setup mode. beginConnect() uses WIFI_AP_STA
     // when apMode is true (so a retry would not disrupt the AP), but the
     // current UX intent is "user is configuring, stop retrying old creds".
-    // TODO: revisit: backoff schedule + whether STA should keep
-    // retrying in AP mode for self-healing on transient outages.
-    if (wifiManager.isConnectInProgress()) {
-        wifiManager.pollConnect();
-        if (!wifiManager.isConnectInProgress()) {
-            // Just terminated this tick - re-enable brownout detection if relaxed.
-            if (config.getBrownoutDetectMode() == BrownoutDetectMode::RELAXED) {
-                LOG_INFO("[POWER] WiFi reconnect complete - re-enabling brownout detection");
-                SET_PERI_REG_MASK(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_ENA);
-            }
-            if (wifiManager.getConnectPhase() == WiFiManager::ConnectPhase::CONNECTED) {
-                LOG_DEBUG("WiFi reconnected successfully");
-            }
-            // FAILED case logs inside terminateConnect via logConnectFailure().
+    bool wasInProgress = wifiManager.isConnectInProgress();
+    wifiManager.pollConnect();
+    if (wasInProgress && !wifiManager.isConnectInProgress()) {
+        // Just terminated a connect attempt this tick - re-enable brownout
+        // detection if relaxed.
+        if (config.getBrownoutDetectMode() == BrownoutDetectMode::RELAXED) {
+            LOG_INFO("[POWER] WiFi reconnect complete - re-enabling brownout detection");
+            SET_PERI_REG_MASK(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_ENA);
         }
-    } else if (!g_apSetupMode && !wifiManager.isConnected() && !uploadTaskRunning) {
+        if (wifiManager.getConnectPhase() == WiFiManager::ConnectPhase::CONNECTED) {
+            LOG_DEBUG("WiFi reconnected successfully");
+        }
+        // FAILED case logs inside terminateConnect via logConnectFailure().
+    }
+
+    if (!wifiManager.isConnectInProgress() &&
+        !g_apSetupMode && !wifiManager.isConnected() && !uploadTaskRunning) {
         unsigned long currentTime = millis();
         bool intervalElapsed = (currentTime - lastWifiReconnectAttempt >= wifiManager.getReconnectIntervalMs());
         // PCNT-aware bus-idle gate: defer the RF burst if the CPAP is currently using the SD bus

@@ -20,6 +20,7 @@ public:
         CONNECTING, // WiFi.begin() called with PMF enabled (default), awaiting result
         PMF_RETRY,  // PMF disabled after reason-208 disconnect, awaiting result
         CONNECTED,  // success, terminal
+        ROAM_SCAN,  // scan triggered by RSSI degradation while connected
         FAILED      // failure, terminal (timeout, no AP, auth fail...)
     };
 
@@ -61,6 +62,16 @@ private:
     String       _pendingHostname;
     bool         _pendingPmfDisable;
 
+    // Roaming state (active only when 2+ networks configured).
+    uint32_t     _lastRoamCheckMs;
+    uint8_t      _lowRssiCount;
+    bool         _roamSuspended;
+
+    static constexpr uint32_t ROAM_CHECK_INTERVAL_MS = 60000;
+    static constexpr int8_t   ROAM_RSSI_THRESHOLD    = -73;
+    static constexpr uint8_t  ROAM_LOW_RSSI_COUNT    = 3;
+    static constexpr int8_t   ROAM_HYSTERESIS_DB     = 8;
+
     static constexpr uint32_t CONNECT_PHASE_TIMEOUT_MS = 15000;
 
     static volatile uint8_t _lastDisconnectReason;  // Captured in event handler for retry logic
@@ -76,6 +87,10 @@ private:
     void processScanResults();
     bool startCurrentCandidate();
     void onCurrentCandidateFailed();
+
+    void roamingTick();
+    void kickRoamScan();
+    void processRoamScanResults();
 
 public:
     WiFiManager();
@@ -98,6 +113,12 @@ public:
     // 2->2min, 3+->5min. Reset to 30s after a CONNECTED.
     uint32_t getReconnectIntervalMs() const;
     uint8_t  getConsecutiveFailures() const { return _consecutiveFailures; }
+
+    // Roaming control. Suspend during upload sessions to avoid disconnecting
+    // mid-TLS or mid-SMB. Resume after the session ends.
+    void suspendRoaming();
+    void resumeRoaming();
+    bool isRoamingSuspended() const { return _roamSuspended; }
     void startAP();
     void processDNS();
     bool isAPMode() const { return apMode; }
