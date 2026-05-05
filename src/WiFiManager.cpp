@@ -9,7 +9,10 @@
 
 volatile uint8_t WiFiManager::_lastDisconnectReason = 0;
 
-WiFiManager::WiFiManager() : connected(false), mdnsStarted(false), apMode(false), _pendingTxPower(0), _hasPendingTxPower(false) {}
+WiFiManager::WiFiManager()
+    : connected(false), mdnsStarted(false), apMode(false),
+      _pendingTxPower(0), _hasPendingTxPower(false),
+      _connectPhase(ConnectPhase::IDLE), _phaseStartMs(0) {}
 
 void WiFiManager::startAP() {
     LOG("Starting AP Mode (CPAP-AutoSync) for configuration");
@@ -195,48 +198,113 @@ void WiFiManager::onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
     }
 }
 
-bool WiFiManager::connectStation(const String& ssid, const String& password, const String& hostname) {
-    // Validate SSID before attempting connection
+// Connection state machine
+//
+// beginConnect() validates args, sets WIFI mode (STA, or AP_STA if a softAP
+// is already running), kicks off WiFi.begin(), and transitions to CONNECTING.
+// pollConnect() advances the state machine on each call from the main loop:
+// reads WiFi.status() and the last disconnect reason, handles the PMF retry
+// sub-state, and transitions to CONNECTED or FAILED on terminal results.
+// connectStation() is a synchronous wrapper used by the boot path.
+
+void WiFiManager::enterPhase(ConnectPhase newPhase) {
+    _connectPhase = newPhase;
+    _phaseStartMs = millis();
+}
+
+bool WiFiManager::isConnectInProgress() const {
+    return _connectPhase == ConnectPhase::CONNECTING ||
+           _connectPhase == ConnectPhase::PMF_RETRY;
+}
+
+void WiFiManager::terminateConnect(ConnectPhase result) {
+    _connectPhase = result;
+    _phaseStartMs = millis();
+    if (result == ConnectPhase::CONNECTED) {
+        connected = true;
+        LOG("WiFi connected");
+        LOGF("IP address: %s", WiFi.localIP().toString().c_str());
+    } else {
+        connected = false;
+        logConnectFailure();
+        Logger::getInstance().dumpSavedLogs("wifi_connection_failed");
+    }
+}
+
+void WiFiManager::logConnectFailure() {
+    LOGF("WiFi connection failed, status: %d", WiFi.status());
+    switch (WiFi.status()) {
+        case WL_NO_SSID_AVAIL:  LOG_ERROR("WiFi failure: SSID not found"); break;
+        case WL_CONNECT_FAILED: LOG_ERROR("WiFi failure: Connection failed (wrong password?)"); break;
+        case WL_CONNECTION_LOST:LOG_ERROR("WiFi failure: Connection lost"); break;
+        case WL_DISCONNECTED:   LOG_ERROR("WiFi failure: Disconnected"); break;
+        default:                LOGF("WiFi failure: Unknown status %d", WiFi.status()); break;
+    }
+}
+
+void WiFiManager::enterPmfRetry() {
+    LOG_WARN("PMF association comeback timeout (reason 208) - retrying with PMF disabled");
+    wifi_config_t wifi_conf;
+    if (esp_wifi_get_config(WIFI_IF_STA, &wifi_conf) != ESP_OK) {
+        terminateConnect(ConnectPhase::FAILED);
+        return;
+    }
+    wifi_conf.sta.pmf_cfg.capable  = false;
+    wifi_conf.sta.pmf_cfg.required = false;
+    esp_wifi_set_config(WIFI_IF_STA, &wifi_conf);
+    esp_wifi_disconnect();
+    esp_wifi_connect();
+    enterPhase(ConnectPhase::PMF_RETRY);
+}
+
+bool WiFiManager::beginConnect(const String& ssid, const String& password, const String& hostname) {
+    if (isConnectInProgress()) {
+        LOG_WARN("beginConnect() called while attempt already in progress");
+        return false;
+    }
     if (ssid.isEmpty()) {
         LOG_ERROR("Cannot connect to WiFi: SSID is empty");
         Logger::getInstance().dumpSavedLogs("wifi_config_error");
         return false;
     }
-    
     if (ssid.length() > 32) {
         LOG_ERROR("Cannot connect to WiFi: SSID exceeds 32 character limit");
         LOGF("SSID length: %d characters", ssid.length());
         Logger::getInstance().dumpSavedLogs("wifi_config_error");
         return false;
     }
-    
     if (password.isEmpty()) {
         LOG_WARN("WiFi password is empty - attempting open network connection");
     }
-    
+
     LOGF("Connecting to WiFi: %s", ssid.c_str());
-    LOGF("SSID length: %d characters", ssid.length());
 
     if (!hostname.isEmpty()) {
         WiFi.setHostname(hostname.c_str());
         LOGF("DHCP Hostname set to: %s", hostname.c_str());
     }
-    
-    WiFi.mode(WIFI_STA);
+
+    // AP+STA coexistence: if a softAP is already running, switch to AP_STA mode
+    // so the AP keeps broadcasting while STA scans/connects. Otherwise plain STA.
+    WiFi.mode(apMode ? WIFI_AP_STA : WIFI_STA);
 
     // ── Power optimization: disable 802.11b (DSSS) ──
     // 802.11b uses up to 370 mA peak TX. Restricting to 802.11g/n (OFDM)
     // caps peak TX current to ~205-250 mA. All modern routers support g/n.
     esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
     LOG_DEBUG("WiFi protocol restricted to 802.11g/n (802.11b disabled)");
-    
+
     // Enable DHCP NTP server capture before connecting.
     // This passively stores any NTP servers the router advertises;
     // ScheduleManager decides whether to use them based on config priority.
     esp_sntp_servermode_dhcp(true);
 
+    _pendingSsid     = ssid;
+    _pendingPassword = password;
+    _lastDisconnectReason = 0;
+
     WiFi.begin(ssid.c_str(), password.c_str());
-    
+
     // Apply deferred TX power AFTER WiFi.begin() — WiFi.mode(WIFI_STA) is async
     // and the STA isn't fully started until the STA_START event fires. begin()
     // blocks until STA is active, so setTxPower() works reliably here.
@@ -247,82 +315,53 @@ bool WiFiManager::connectStation(const String& ssid, const String& password, con
         _hasPendingTxPower = false;
     }
 
-    _lastDisconnectReason = 0;
-    int attempts = 0;
-    while (attempts < 30) {
-        wl_status_t status = WiFi.status();
-        if (status == WL_CONNECTED) break;
-        // Radio gave up - no point waiting the full timeout.
-        // The PMF retry path still runs if the disconnect reason warrants it.
-        if (status == WL_NO_SSID_AVAIL || status == WL_CONNECT_FAILED) break;
-        delay(500);
-        LOG_DEBUG(".");
-        attempts++;
+    enterPhase(ConnectPhase::CONNECTING);
+    return true;
+}
+
+void WiFiManager::pollConnect() {
+    if (!isConnectInProgress()) return;
+
+    wl_status_t status = WiFi.status();
+    uint32_t elapsed = millis() - _phaseStartMs;
+
+    if (status == WL_CONNECTED) {
+        terminateConnect(ConnectPhase::CONNECTED);
+        return;
     }
 
-    // ── PMF fallback: reason 208 (ASSOC_COMEBACK_TIME_TOO_LONG) ──
-    // ESP-IDF 5.x sets PMF (Protected Management Frames / 802.11w) capable=true
-    // by default. Some WiFi 6 / WPA3-transitional routers send an association
-    // comeback time that exceeds the ESP-IDF threshold, causing reason 208.
-    // This didn't exist in ESP-IDF 4.x. Retry with PMF disabled.
-    if (WiFi.status() != WL_CONNECTED &&
-        _lastDisconnectReason == WIFI_REASON_ASSOC_COMEBACK_TIME_TOO_LONG) {
-        LOG_WARN("PMF association comeback timeout (reason 208) — retrying with PMF disabled");
-        wifi_config_t wifi_conf;
-        if (esp_wifi_get_config(WIFI_IF_STA, &wifi_conf) == ESP_OK) {
-            wifi_conf.sta.pmf_cfg.capable = false;
-            wifi_conf.sta.pmf_cfg.required = false;
-            esp_wifi_set_config(WIFI_IF_STA, &wifi_conf);
-            esp_wifi_disconnect();
-            esp_wifi_connect();
-            attempts = 0;
-            while (attempts < 30) {
-                wl_status_t status = WiFi.status();
-                if (status == WL_CONNECTED) break;
-                if (status == WL_NO_SSID_AVAIL || status == WL_CONNECT_FAILED) break;
-                delay(500);
-                LOG_DEBUG(".");
-                attempts++;
-            }
-            if (WiFi.status() == WL_CONNECTED) {
-                LOG_WARN("Connected after disabling PMF — router may not fully support 802.11w");
-            }
-        }
+    // Terminal radio states: SSID not in range / auth failure.  No point waiting.
+    if (status == WL_NO_SSID_AVAIL || status == WL_CONNECT_FAILED) {
+        // Reason 208 only fires when the AP is reachable but rejects PMF.
+        // If we got here with NO_SSID_AVAIL or CONNECT_FAILED, PMF retry won't help.
+        terminateConnect(ConnectPhase::FAILED);
+        return;
     }
 
-    if (WiFi.status() == WL_CONNECTED) {
-        LOG("\nWiFi connected");
-        LOGF("IP address: %s", WiFi.localIP().toString().c_str());
-        connected = true;
-        return true;
-    } else {
-        LOG("\nWiFi connection failed");
-        LOGF("WiFi status: %d", WiFi.status());
-        
-        // Log detailed failure reason
-        switch (WiFi.status()) {
-            case WL_NO_SSID_AVAIL:
-                LOG_ERROR("WiFi failure: SSID not found");
-                break;
-            case WL_CONNECT_FAILED:
-                LOG_ERROR("WiFi failure: Connection failed (wrong password?)");
-                break;
-            case WL_CONNECTION_LOST:
-                LOG_ERROR("WiFi failure: Connection lost");
-                break;
-            case WL_DISCONNECTED:
-                LOG_ERROR("WiFi failure: Disconnected");
-                break;
-            default:
-                LOGF("WiFi failure: Unknown status %d", WiFi.status());
-                break;
+    // Phase timeout reached.
+    if (elapsed >= CONNECT_PHASE_TIMEOUT_MS) {
+        if (_connectPhase == ConnectPhase::CONNECTING &&
+            _lastDisconnectReason == WIFI_REASON_ASSOC_COMEBACK_TIME_TOO_LONG) {
+            // Switch to PMF retry sub-state.  Don't terminate yet.
+            enterPmfRetry();
+            return;
         }
-        
-        // Persist logs for critical connection failures
-        Logger::getInstance().dumpSavedLogs("wifi_connection_failed");
-        connected = false;
+        terminateConnect(ConnectPhase::FAILED);
+        return;
+    }
+
+    // Still in progress - nothing to do this tick.
+}
+
+bool WiFiManager::connectStation(const String& ssid, const String& password, const String& hostname) {
+    if (!beginConnect(ssid, password, hostname)) {
         return false;
     }
+    while (isConnectInProgress()) {
+        pollConnect();
+        if (isConnectInProgress()) delay(50);
+    }
+    return _connectPhase == ConnectPhase::CONNECTED;
 }
 
 bool WiFiManager::isConnected() const { 

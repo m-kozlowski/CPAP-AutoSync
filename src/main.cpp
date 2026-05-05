@@ -1780,47 +1780,47 @@ void loop() {
         stopMonitoringRequested = true;
     }
 #endif
-    
+
     // ── WiFi reconnection (non-blocking with 30 second retry interval) ──
     // GUARD: Do NOT attempt reconnection while upload task is running on Core 0.
     // The upload task manages its own WiFi recovery via tryCoordinatedWifiCycle().
     // Concurrent reconnection from both cores corrupts the lwIP state machine.
-    // GUARD: Do NOT reconnect in AP setup mode — the radio is intentionally in
-    // WIFI_AP and calling connectStation() would tear down the AP broadcast.
-    if (!g_apSetupMode && !wifiManager.isConnected() && !uploadTaskRunning) {
+    // GUARD: Skip when in AP setup mode. beginConnect() uses WIFI_AP_STA
+    // when apMode is true (so a retry would not disrupt the AP), but the
+    // current UX intent is "user is configuring, stop retrying old creds".
+    // TODO: revisit: backoff schedule + whether STA should keep
+    // retrying in AP mode for self-healing on transient outages.
+    if (wifiManager.isConnectInProgress()) {
+        wifiManager.pollConnect();
+        if (!wifiManager.isConnectInProgress()) {
+            // Just terminated this tick - re-enable brownout detection if relaxed.
+            if (config.getBrownoutDetectMode() == BrownoutDetectMode::RELAXED) {
+                LOG_INFO("[POWER] WiFi reconnect complete - re-enabling brownout detection");
+                SET_PERI_REG_MASK(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_ENA);
+            }
+            if (wifiManager.getConnectPhase() == WiFiManager::ConnectPhase::CONNECTED) {
+                LOG_DEBUG("WiFi reconnected successfully");
+            }
+            // FAILED case logs inside terminateConnect via logConnectFailure().
+        }
+    } else if (!g_apSetupMode && !wifiManager.isConnected() && !uploadTaskRunning) {
         unsigned long currentTime = millis();
         if (currentTime - lastWifiReconnectAttempt >= 30000) {
             LOG_WARN("WiFi disconnected, attempting to reconnect...");
-            
+
             if (!config.valid() || config.getWifiSSID().isEmpty()) {
                 LOG_ERROR("Cannot reconnect to WiFi: Invalid configuration");
                 lastWifiReconnectAttempt = currentTime;
                 return;
             }
-            
-            // ── POWER: Relax brownout detection before reconnecting ──
+
             if (config.getBrownoutDetectMode() == BrownoutDetectMode::RELAXED) {
                 LOG_INFO("[POWER] Relaxing brownout detection for WiFi reconnect");
                 CLEAR_PERI_REG_MASK(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_ENA);
             }
-            
-            if (!wifiManager.connectStation(config.getWifiSSID(), config.getWifiPassword(), config.getHostname())) {
-                LOG_ERROR("Failed to reconnect to WiFi");
-                lastWifiReconnectAttempt = currentTime;
-                
-                // Re-enable if we failed early
-                if (config.getBrownoutDetectMode() == BrownoutDetectMode::RELAXED) {
-                    SET_PERI_REG_MASK(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_ENA);
-                }
-                return;
-            }
-            LOG_DEBUG("WiFi reconnected successfully");
-            
-            // Re-enable brownout detection after a successful reconnect attempt.
-            if (config.getBrownoutDetectMode() == BrownoutDetectMode::RELAXED) {
-                LOG_INFO("[POWER] WiFi reconnect complete — re-enabling brownout detection");
-                SET_PERI_REG_MASK(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_ENA);
-            }
+
+            wifiManager.beginConnect(config.getWifiSSID(), config.getWifiPassword(), config.getHostname());
+            lastWifiReconnectAttempt = currentTime;  // count from attempt start
         }
 
         // Initialize web server regardless of connection success
