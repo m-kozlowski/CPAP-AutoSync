@@ -13,7 +13,9 @@ WiFiManager::WiFiManager()
     : connected(false), mdnsStarted(false), apMode(false),
       _pendingTxPower(0), _hasPendingTxPower(false),
       _connectPhase(ConnectPhase::IDLE), _phaseStartMs(0),
-      _consecutiveFailures(0) {}
+      _consecutiveFailures(0),
+      _candidateCount(0), _candidateIndex(0), _candidateRetries(0),
+      _pendingConfig(nullptr) {}
 
 void WiFiManager::startAP() {
     LOG("Starting AP Mode (CPAP-AutoSync) for configuration");
@@ -214,7 +216,8 @@ void WiFiManager::enterPhase(ConnectPhase newPhase) {
 }
 
 bool WiFiManager::isConnectInProgress() const {
-    return _connectPhase == ConnectPhase::CONNECTING ||
+    return _connectPhase == ConnectPhase::SCANNING  ||
+           _connectPhase == ConnectPhase::CONNECTING ||
            _connectPhase == ConnectPhase::PMF_RETRY;
 }
 
@@ -260,7 +263,7 @@ void WiFiManager::enterPmfRetry() {
     LOG_WARN("PMF association comeback timeout (reason 208) - retrying with PMF disabled");
     wifi_config_t wifi_conf;
     if (esp_wifi_get_config(WIFI_IF_STA, &wifi_conf) != ESP_OK) {
-        terminateConnect(ConnectPhase::FAILED);
+        onCurrentCandidateFailed();
         return;
     }
     wifi_conf.sta.pmf_cfg.capable  = false;
@@ -271,28 +274,158 @@ void WiFiManager::enterPmfRetry() {
     enterPhase(ConnectPhase::PMF_RETRY);
 }
 
-bool WiFiManager::beginConnect(const String& ssid, const String& password, const String& hostname) {
+// Multi-SSID candidate pipeline
+//
+// beginConnect(Config&) prepares common radio state once, then either
+// (1 network) builds a single candidate with no BSSID hint and connects, or
+// (2+ networks) kicks an async scan; pollConnect() processes scan completion,
+// builds candidate list (visible APs intersected with configured SSIDs,
+// sorted by RSSI), and tries each candidate in turn with up to
+// CANDIDATE_MAX_RETRIES retries before falling back to the next.
+
+void WiFiManager::prepareSingleCandidate(uint8_t configSlot) {
+    _candidates[0].configSlot = configSlot;
+    memset(_candidates[0].bssid, 0, 6);
+    _candidates[0].channel = 0;
+    _candidates[0].rssi    = 0;
+    _candidateCount   = 1;
+    _candidateIndex   = 0;
+    _candidateRetries = 0;
+}
+
+void WiFiManager::kickScan() {
+    LOGF("WiFi: scanning for %d configured network(s)...", _pendingConfig->getWifiNetworkCount());
+    int rc = WiFi.scanNetworks(true /*async*/, false /*show_hidden*/);
+    if (rc < 0 && rc != WIFI_SCAN_RUNNING) {
+        LOG_ERRORF("WiFi scan kick failed: %d", rc);
+        terminateConnect(ConnectPhase::FAILED);
+        return;
+    }
+    enterPhase(ConnectPhase::SCANNING);
+}
+
+void WiFiManager::processScanResults() {
+    int n = WiFi.scanComplete();
+    if (n < 0) {
+        LOG_WARNF("processScanResults() called with rc=%d", n);
+        WiFi.scanDelete();
+        terminateConnect(ConnectPhase::FAILED);
+        return;
+    }
+
+    int cfgCount = _pendingConfig->getWifiNetworkCount();
+    _candidateCount = 0;
+
+    for (int i = 0; i < n && _candidateCount < MAX_CANDIDATES; i++) {
+        String visibleSsid = WiFi.SSID(i);
+        for (int slot = 0; slot < cfgCount; slot++) {
+            if (visibleSsid != _pendingConfig->getWifiSSID(slot)) continue;
+            Candidate& c = _candidates[_candidateCount];
+            c.configSlot = (uint8_t)slot;
+            const uint8_t* bssid = WiFi.BSSID(i);
+            if (bssid) memcpy(c.bssid, bssid, 6);
+            else       memset(c.bssid, 0, 6);
+            c.channel = (uint8_t)WiFi.channel(i);
+            c.rssi    = (int8_t)WiFi.RSSI(i);
+            _candidateCount++;
+            break;  // one scan result matches at most one configured slot
+        }
+    }
+
+    WiFi.scanDelete();
+    LOGF("WiFi scan: %d known of %d visible", _candidateCount, n);
+
+    if (_candidateCount == 0) {
+        terminateConnect(ConnectPhase::FAILED);
+        return;
+    }
+
+    // Sort candidates by RSSI desc (insertion sort - tiny array)
+    for (int i = 1; i < _candidateCount; i++) {
+        Candidate tmp = _candidates[i];
+        int j = i - 1;
+        while (j >= 0 && _candidates[j].rssi < tmp.rssi) {
+            _candidates[j + 1] = _candidates[j];
+            j--;
+        }
+        _candidates[j + 1] = tmp;
+    }
+
+    LOGF("WiFi: best candidate '%s' %d dBm",
+         _pendingConfig->getWifiSSID(_candidates[0].configSlot).c_str(),
+         _candidates[0].rssi);
+
+    _candidateIndex   = 0;
+    _candidateRetries = 0;
+    startCurrentCandidate();
+}
+
+bool WiFiManager::startCurrentCandidate() {
+    if (_candidateIndex >= _candidateCount || !_pendingConfig) {
+        terminateConnect(ConnectPhase::FAILED);
+        return false;
+    }
+    Candidate& c = _candidates[_candidateIndex];
+    _pendingSsid     = _pendingConfig->getWifiSSID(c.configSlot);
+    _pendingPassword = _pendingConfig->getWifiPassword(c.configSlot);
+    _lastDisconnectReason = 0;
+
+    bool hasHint = (c.channel > 0);
+    if (hasHint) {
+        LOGF("WiFi: connecting to '%s' (ch=%u, RSSI %d dBm)",
+             _pendingSsid.c_str(), c.channel, c.rssi);
+        WiFi.begin(_pendingSsid.c_str(), _pendingPassword.c_str(), c.channel, c.bssid);
+    } else {
+        LOGF("WiFi: connecting to '%s'", _pendingSsid.c_str());
+        WiFi.begin(_pendingSsid.c_str(), _pendingPassword.c_str());
+    }
+
+    // Apply deferred TX power AFTER WiFi.begin() — WiFi.mode(WIFI_STA) is async
+    // and the STA isn't fully started until the STA_START event fires. begin()
+    // blocks until STA is active, so setTxPower() works reliably here.
+    // This caps TX power during the association/DHCP phase.
+    if (_hasPendingTxPower) {
+        WiFi.setTxPower((wifi_power_t)_pendingTxPower);
+        LOG_DEBUGF("WiFi TX power applied: %d (deferred from applyTxPowerEarly)", (int)_pendingTxPower);
+        _hasPendingTxPower = false;
+    }
+
+    enterPhase(ConnectPhase::CONNECTING);
+    return true;
+}
+
+void WiFiManager::onCurrentCandidateFailed() {
+    if (_candidateRetries < CANDIDATE_MAX_RETRIES) {
+        _candidateRetries++;
+        LOGF("WiFi: retry %u/%u on current candidate", _candidateRetries, CANDIDATE_MAX_RETRIES);
+        startCurrentCandidate();
+        return;
+    }
+    _candidateIndex++;
+    _candidateRetries = 0;
+    if (_candidateIndex < _candidateCount) {
+        LOGF("WiFi: trying next candidate (%u/%u)", _candidateIndex + 1, _candidateCount);
+        startCurrentCandidate();
+        return;
+    }
+    terminateConnect(ConnectPhase::FAILED);
+}
+
+bool WiFiManager::beginConnect(const Config& cfg) {
     if (isConnectInProgress()) {
         LOG_WARN("beginConnect() called while attempt already in progress");
         return false;
     }
-    if (ssid.isEmpty()) {
-        LOG_ERROR("Cannot connect to WiFi: SSID is empty");
+    int n = cfg.getWifiNetworkCount();
+    if (n <= 0) {
+        LOG_ERROR("Cannot connect to WiFi: no networks configured");
         Logger::getInstance().dumpSavedLogs("wifi_config_error");
         return false;
     }
-    if (ssid.length() > 32) {
-        LOG_ERROR("Cannot connect to WiFi: SSID exceeds 32 character limit");
-        LOGF("SSID length: %d characters", ssid.length());
-        Logger::getInstance().dumpSavedLogs("wifi_config_error");
-        return false;
-    }
-    if (password.isEmpty()) {
-        LOG_WARN("WiFi password is empty - attempting open network connection");
-    }
 
-    LOGF("Connecting to WiFi: %s", ssid.c_str());
+    LOGF("WiFi: %d configured network(s)", n);
 
+    const String& hostname = cfg.getHostname();
     if (!hostname.isEmpty()) {
         WiFi.setHostname(hostname.c_str());
         LOGF("DHCP Hostname set to: %s", hostname.c_str());
@@ -313,29 +446,47 @@ bool WiFiManager::beginConnect(const String& ssid, const String& password, const
     // ScheduleManager decides whether to use them based on config priority.
     esp_sntp_servermode_dhcp(true);
 
-    _pendingSsid     = ssid;
-    _pendingPassword = password;
-    _lastDisconnectReason = 0;
+    _pendingConfig    = &cfg;
+    _pendingHostname  = cfg.getHostname();
+    _candidateCount   = 0;
+    _candidateIndex   = 0;
+    _candidateRetries = 0;
 
-    WiFi.begin(ssid.c_str(), password.c_str());
-
-    // Apply deferred TX power AFTER WiFi.begin() — WiFi.mode(WIFI_STA) is async
-    // and the STA isn't fully started until the STA_START event fires. begin()
-    // blocks until STA is active, so setTxPower() works reliably here.
-    // This caps TX power during the association/DHCP phase.
-    if (_hasPendingTxPower) {
-        WiFi.setTxPower((wifi_power_t)_pendingTxPower);
-        LOG_DEBUGF("WiFi TX power applied: %d (deferred from applyTxPowerEarly)", (int)_pendingTxPower);
-        _hasPendingTxPower = false;
+    if (n == 1) {
+        // Single SSID: skip scan, no BSSID hint.
+        prepareSingleCandidate(0);
+        return startCurrentCandidate();
     }
-
-    enterPhase(ConnectPhase::CONNECTING);
+    // Multi-SSID: scan first.
+    kickScan();
     return true;
 }
 
 void WiFiManager::pollConnect() {
     if (!isConnectInProgress()) return;
 
+    if (_connectPhase == ConnectPhase::SCANNING) {
+        int rc = WiFi.scanComplete();
+        if (rc >= 0) {
+            processScanResults();
+            return;
+        }
+        if (rc == WIFI_SCAN_FAILED) {
+            LOG_ERROR("WiFi scan failed");
+            WiFi.scanDelete();
+            terminateConnect(ConnectPhase::FAILED);
+            return;
+        }
+        if (millis() - _phaseStartMs >= SCAN_TIMEOUT_MS) {
+            LOG_WARN("WiFi scan timeout");
+            WiFi.scanDelete();
+            terminateConnect(ConnectPhase::FAILED);
+            return;
+        }
+        return;  // scan still running
+    }
+
+    // CONNECTING or PMF_RETRY
     wl_status_t status = WiFi.status();
     uint32_t elapsed = millis() - _phaseStartMs;
 
@@ -343,34 +494,24 @@ void WiFiManager::pollConnect() {
         terminateConnect(ConnectPhase::CONNECTED);
         return;
     }
-
-    // Terminal radio states: SSID not in range / auth failure.  No point waiting.
     if (status == WL_NO_SSID_AVAIL || status == WL_CONNECT_FAILED) {
-        // Reason 208 only fires when the AP is reachable but rejects PMF.
-        // If we got here with NO_SSID_AVAIL or CONNECT_FAILED, PMF retry won't help.
-        terminateConnect(ConnectPhase::FAILED);
+        onCurrentCandidateFailed();
         return;
     }
-
-    // Phase timeout reached.
     if (elapsed >= CONNECT_PHASE_TIMEOUT_MS) {
         if (_connectPhase == ConnectPhase::CONNECTING &&
             _lastDisconnectReason == WIFI_REASON_ASSOC_COMEBACK_TIME_TOO_LONG) {
-            // Switch to PMF retry sub-state.  Don't terminate yet.
             enterPmfRetry();
             return;
         }
-        terminateConnect(ConnectPhase::FAILED);
+        onCurrentCandidateFailed();
         return;
     }
-
     // Still in progress - nothing to do this tick.
 }
 
-bool WiFiManager::connectStation(const String& ssid, const String& password, const String& hostname) {
-    if (!beginConnect(ssid, password, hostname)) {
-        return false;
-    }
+bool WiFiManager::connectStation(const Config& cfg) {
+    if (!beginConnect(cfg)) return false;
     while (isConnectInProgress()) {
         pollConnect();
         if (isConnectInProgress()) delay(50);

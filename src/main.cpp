@@ -749,12 +749,12 @@ void setup() {
         }
     } else {
         // Attempt 1
-        bool connected = wifiManager.connectStation(config.getWifiSSID(), config.getWifiPassword(), config.getHostname());
+        bool connected = wifiManager.connectStation(config);
         if (!connected) {
             LOG_WARN("WiFi connect attempt 1 failed — waiting 3s before retry...");
             delay(3000);
             // Attempt 2
-            connected = wifiManager.connectStation(config.getWifiSSID(), config.getWifiPassword(), config.getHostname());
+            connected = wifiManager.connectStation(config);
         }
 
         if (!connected) {
@@ -1819,7 +1819,7 @@ void loop() {
                 CLEAR_PERI_REG_MASK(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_ENA);
             }
 
-            wifiManager.beginConnect(config.getWifiSSID(), config.getWifiPassword(), config.getHostname());
+            wifiManager.beginConnect(config);
             lastWifiReconnectAttempt = currentTime;  // count from attempt start
         }
 

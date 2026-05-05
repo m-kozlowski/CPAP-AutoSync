@@ -16,6 +16,7 @@ public:
     // Connection state machine
     enum class ConnectPhase {
         IDLE,       // no attempt in progress
+        SCANNING,   // async WiFi.scanNetworks() in progress (multi-SSID only)
         CONNECTING, // WiFi.begin() called with PMF enabled (default), awaiting result
         PMF_RETRY,  // PMF disabled after reason-208 disconnect, awaiting result
         CONNECTED,  // success, terminal
@@ -30,6 +31,19 @@ private:
     int8_t _pendingTxPower;   // Deferred TX power (dBm*4), applied during beginConnect()
     bool _hasPendingTxPower;
 
+    // One scan-result entry that matched a configured SSID.  Built during the
+    // SCANNING phase, sorted by RSSI desc, then tried in order.
+    struct Candidate {
+        uint8_t configSlot;   // index into Config.wifiNetworks[]
+        uint8_t bssid[6];     // BSSID from scan result (used as connect hint)
+        uint8_t channel;      // 1..14 (used as connect hint)
+        int8_t  rssi;         // dBm
+    };
+
+    static constexpr int     MAX_CANDIDATES        = 12;
+    static constexpr uint8_t CANDIDATE_MAX_RETRIES = 2;
+    static constexpr uint32_t SCAN_TIMEOUT_MS      = 12000;
+
     // beginConnect/pollConnect state. _pendingSsid/Password retained so PMF
     // retry can re-issue the connection without the caller passing them again.
     ConnectPhase _connectPhase;
@@ -37,6 +51,14 @@ private:
     String       _pendingSsid;
     String       _pendingPassword;
     uint8_t      _consecutiveFailures;
+
+    // Multi-SSID candidate iteration.
+    Candidate    _candidates[MAX_CANDIDATES];
+    uint8_t      _candidateCount;
+    uint8_t      _candidateIndex;
+    uint8_t      _candidateRetries;
+    const Config* _pendingConfig;
+    String       _pendingHostname;
 
     static constexpr uint32_t CONNECT_PHASE_TIMEOUT_MS = 15000;
 
@@ -48,19 +70,24 @@ private:
     void terminateConnect(ConnectPhase result);  // CONNECTED or FAILED
     void logConnectFailure();
 
+    void prepareSingleCandidate(uint8_t configSlot);
+    void kickScan();
+    void processScanResults();
+    bool startCurrentCandidate();
+    void onCurrentCandidateFailed();
+
 public:
     WiFiManager();
 
     void setupEventHandlers();
 
-    // Synchronous connect (boot path)
-    bool connectStation(const String& ssid, const String& password, const String& hostname);
+    // Multi-SSID connect. Reads up to WIFI_MAX_NETWORKS slots from Config.
+    // With 1 populated slot: direct WiFi.begin (no scan).
+    // With 2+: async scan first, ranks visible APs by RSSI, tries each
+    // connectStation() is the synchronous wrapper used at boot
+    bool connectStation(const Config& cfg);
+    bool beginConnect(const Config& cfg);
 
-    // Non-blocking connect API (loop reconnect path).
-    // beginConnect() starts an attempt; returns false on invalid args or if an
-    // attempt is already in progress. pollConnect() must be called from the
-    // main loop until isConnectInProgress() returns false.
-    bool beginConnect(const String& ssid, const String& password, const String& hostname);
     void pollConnect();
     bool isConnectInProgress() const;
     ConnectPhase getConnectPhase() const { return _connectPhase; }
