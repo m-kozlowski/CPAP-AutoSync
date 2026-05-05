@@ -755,9 +755,17 @@ void setup() {
             LOG_ERROR("Failed to connect to WiFi after 2 attempts.");
 
             // ── EMERGENCY BOOT ERROR DUMP ──
-            if (sdManager.takeControl()) {
-                Logger::getInstance().dumpToSD(sdManager.getFS(), "/uploader_error.txt", "WiFi connection failure");
-                sdManager.releaseControl();
+            // The WiFi attempts above ran a ~30s busy-wait that froze the main
+            // loop, so the PCNT idle counter is stale. Refresh it before gating.
+            trafficMonitor.update();
+            bool safeToDump = !g_pcntCapable || trafficMonitor.isIdleFor(2000);
+            if (safeToDump) {
+                if (sdManager.takeControl()) {
+                    Logger::getInstance().dumpToSD(sdManager.getFS(), "/uploader_error.txt", "WiFi connection failure");
+                    sdManager.releaseControl();
+                }
+            } else {
+                LOG_WARN("[Boot] CPAP bus active — skipping SD log dump to avoid mid-transaction MUX flip");
             }
 
             // Re-enable brownout detection if it was only relaxed for boot
