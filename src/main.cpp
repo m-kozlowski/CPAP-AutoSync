@@ -1792,14 +1792,19 @@ void loop() {
     // GUARD: Skip when in AP setup mode. beginConnect() uses WIFI_AP_STA
     // when apMode is true (so a retry would not disrupt the AP), but the
     // current UX intent is "user is configuring, stop retrying old creds".
+    // Tracks whether the new-attempt block below relaxed brownout detection
+    // for the in-flight attempt. Roam scans don't relax brownout, so we must
+    // not re-enable it (or log "reconnect complete") when a roam-stay decision
+    // exits ROAM_SCAN -> CONNECTED.
+    static bool brownoutRelaxedThisAttempt = false;
+
     bool wasInProgress = wifiManager.isConnectInProgress();
     wifiManager.pollConnect();
     if (wasInProgress && !wifiManager.isConnectInProgress()) {
-        // Just terminated a connect attempt this tick - re-enable brownout
-        // detection if relaxed.
-        if (config.getBrownoutDetectMode() == BrownoutDetectMode::RELAXED) {
+        if (brownoutRelaxedThisAttempt) {
             LOG_INFO("[POWER] WiFi reconnect complete - re-enabling brownout detection");
             SET_PERI_REG_MASK(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_ENA);
+            brownoutRelaxedThisAttempt = false;
         }
         if (wifiManager.getConnectPhase() == WiFiManager::ConnectPhase::CONNECTED) {
             LOG_DEBUG("WiFi reconnected successfully");
@@ -1826,6 +1831,7 @@ void loop() {
             if (config.getBrownoutDetectMode() == BrownoutDetectMode::RELAXED) {
                 LOG_INFO("[POWER] Relaxing brownout detection for WiFi reconnect");
                 CLEAR_PERI_REG_MASK(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_ENA);
+                brownoutRelaxedThisAttempt = true;
             }
 
             wifiManager.beginConnect(config);
