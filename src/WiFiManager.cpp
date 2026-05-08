@@ -441,7 +441,36 @@ void WiFiManager::processScanResults() {
     LOGF("WiFi scan: %d known of %d visible", _candidateCount, n);
 
     if (_candidateCount == 0) {
-        terminateConnect(ConnectPhase::FAILED);
+        // Hidden-SSID fallback
+        LOG_WARN("WiFi scan: no configured networks visible - trying configured slots blind (hidden SSID?)");
+        for (int slot = 0; slot < cfgCount && _candidateCount < MAX_CANDIDATES; slot++) {
+            Candidate& c = _candidates[_candidateCount];
+            c.configSlot = (uint8_t)slot;
+            memset(c.bssid, 0, 6);
+            c.channel = 0;
+            c.rssi    = -127;
+            const String& ssid = _pendingConfig->getWifiSSID(slot);
+            const SavedNetworkHint* best = nullptr;
+            for (int hi = 0; hi < networkHints.count(); hi++) {
+                const SavedNetworkHint* h = networkHints.at(hi);
+                if (h && strcmp(h->ssid, ssid.c_str()) == 0) {
+                    if (!best || h->last_used_secs > best->last_used_secs) best = h;
+                }
+            }
+            if (best) {
+                memcpy(c.bssid, best->bssid, 6);
+                c.channel = best->channel;
+            }
+            _candidateCount++;
+        }
+        if (_candidateCount == 0) {
+            terminateConnect(ConnectPhase::FAILED);
+            return;
+        }
+        // No RSSI signal to sort by; try in config order.
+        _candidateIndex   = 0;
+        _candidateRetries = 0;
+        startCurrentCandidate();
         return;
     }
 
