@@ -2,7 +2,7 @@
 #include "Logger.h"
 #include "UploadFSM.h"
 #include "version.h"
-#include "web_ui.h"
+#include "web_ui_gz.h"
 #include "WebStatus.h"
 #include "setup_html_gz.h"
 #include <time.h>
@@ -484,7 +484,8 @@ void CpapWebServer::handleRoot() {
     server->sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
     server->sendHeader("Pragma", "no-cache");
     server->sendHeader("Connection", "close");
-    server->send_P(200, "text/html; charset=utf-8", WEB_UI_HTML);
+    server->sendHeader("Content-Encoding", "gzip");
+    server->send_P(200, "text/html", (const char*)web_ui_gz, web_ui_gz_len);
 }
 
 // GET /trigger-upload - Force immediate upload
@@ -779,7 +780,8 @@ public:
 void CpapWebServer::handleLogs() {
     server->sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
     server->sendHeader("Connection", "close");
-    server->send_P(200, "text/html; charset=utf-8", WEB_UI_HTML);
+    server->sendHeader("Content-Encoding", "gzip");
+    server->send_P(200, "text/html", (const char*)web_ui_gz, web_ui_gz_len);
 }
 
 // GET /api/logs - Legacy alias for circular-buffer logs
@@ -899,13 +901,15 @@ void CpapWebServer::handleApiLogsStream() {
 void CpapWebServer::handleConfigPage() {
     server->sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
     server->sendHeader("Connection", "close");
-    server->send_P(200, "text/html; charset=utf-8", WEB_UI_HTML);
+    server->sendHeader("Content-Encoding", "gzip");
+    server->send_P(200, "text/html", (const char*)web_ui_gz, web_ui_gz_len);
 }
 // GET /status - serve SPA
 void CpapWebServer::handleStatusPage() {
     server->sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
     server->sendHeader("Connection", "close");
-    server->send_P(200, "text/html; charset=utf-8", WEB_UI_HTML);
+    server->sendHeader("Content-Encoding", "gzip");
+    server->send_P(200, "text/html", (const char*)web_ui_gz, web_ui_gz_len);
 }
 // GET /api/status - rebuild snapshot on demand then serve it.
 // Must NOT rely on the main-loop periodic rebuild: during blocking uploads
@@ -1785,7 +1789,8 @@ void CpapWebServer::handleSdActivity() {
 void CpapWebServer::handleMonitorPage() {
     server->sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
     server->sendHeader("Connection", "close");
-    server->send_P(200, "text/html; charset=utf-8", WEB_UI_HTML);
+    server->sendHeader("Content-Encoding", "gzip");
+    server->send_P(200, "text/html", (const char*)web_ui_gz, web_ui_gz_len);
 }
 
 // ============================================================================
