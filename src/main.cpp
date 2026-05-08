@@ -1823,7 +1823,7 @@ void loop() {
         if (intervalElapsed && !busBusy) {
             LOG_WARN("WiFi disconnected, attempting to reconnect...");
 
-            if (!config.valid() || config.getWifiNetworkCount().isEmpty()) {
+            if (!config.valid() || config.getWifiNetworkCount() == 0) {
                 LOG_ERROR("Cannot reconnect to WiFi: no networks configured");
                 lastWifiReconnectAttempt = currentTime;
                 return;
