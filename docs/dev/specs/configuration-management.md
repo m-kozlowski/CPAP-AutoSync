@@ -37,7 +37,8 @@ ENDPOINT = //192.168.1.100/cpap_backups
 ## Configuration Parameters
 
 ### Network Settings
-- `WIFI_SSID` / `WIFI_PASSWORD` - WiFi credentials
+- `WIFI_SSID` / `WIFI_PASSWORD` - WiFi credentials (alias for slot 1)
+- `WIFI_SSID_1..4` / `WIFI_PASSWORD_1..4` - up to 4 networks; roaming/failover is implicit when more than one is configured
 - `HOSTNAME` - mDNS hostname (default: "cpap")
 - `NTP_SERVER` - Custom NTP server (default: empty for DHCP Option 42 with pool.ntp.org fallback)
 

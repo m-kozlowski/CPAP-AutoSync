@@ -60,11 +60,14 @@ bool g_mdnsTimedOut = false;
 // ============================================================================
 // Global Objects
 // ============================================================================
+#include "NetworkHints.h"
+
 Config config;
 SDCardManager sdManager;
 WiFiManager wifiManager;
 FileUploader* uploader = nullptr;
 TrafficMonitor trafficMonitor;
+NetworkHints networkHints;
 
 #ifdef ENABLE_OTA_UPDATES
 OTAManager otaManager;
@@ -728,6 +731,9 @@ void setup() {
     // Setup WiFi event handlers for logging
     wifiManager.setupEventHandlers();
 
+    // Load cached per-AP connection hints (BSSID, channel, PMF flag) from NVS.
+    networkHints.begin();
+
     // Defer TX power cap — applied inside connectStation() after WiFi.mode(WIFI_STA)
     // to avoid "Neither AP or STA has been started" warning.
     wifiManager.applyTxPowerEarly(config.getWifiTxPower());
@@ -743,21 +749,29 @@ void setup() {
         }
     } else {
         // Attempt 1
-        bool connected = wifiManager.connectStation(config.getWifiSSID(), config.getWifiPassword(), config.getHostname());
+        bool connected = wifiManager.connectStation(config);
         if (!connected) {
             LOG_WARN("WiFi connect attempt 1 failed — waiting 3s before retry...");
             delay(3000);
             // Attempt 2
-            connected = wifiManager.connectStation(config.getWifiSSID(), config.getWifiPassword(), config.getHostname());
+            connected = wifiManager.connectStation(config);
         }
 
         if (!connected) {
             LOG_ERROR("Failed to connect to WiFi after 2 attempts.");
 
             // ── EMERGENCY BOOT ERROR DUMP ──
-            if (sdManager.takeControl()) {
-                Logger::getInstance().dumpToSD(sdManager.getFS(), "/uploader_error.txt", "WiFi connection failure");
-                sdManager.releaseControl();
+            // The WiFi attempts above ran a ~30s busy-wait that froze the main
+            // loop, so the PCNT idle counter is stale. Refresh it before gating.
+            trafficMonitor.update();
+            bool safeToDump = !g_pcntCapable || trafficMonitor.isIdleFor(2000);
+            if (safeToDump) {
+                if (sdManager.takeControl()) {
+                    Logger::getInstance().dumpToSD(sdManager.getFS(), "/uploader_error.txt", "WiFi connection failure");
+                    sdManager.releaseControl();
+                }
+            } else {
+                LOG_WARN("[Boot] CPAP bus active — skipping SD log dump to avoid mid-transaction MUX flip");
             }
 
             // Re-enable brownout detection if it was only relaxed for boot
@@ -1367,7 +1381,8 @@ void handleUploading() {
         
         uploadTaskComplete = false;
         uploadTaskRunning = true;
-        
+        wifiManager.suspendRoaming();  // no roam scans / AP switches mid-upload
+
         // Relax task watchdog during upload — TLS handshake (5-15s of CPU-intensive
         // crypto) starves IDLE0 on Core 0. Instead of removing IDLE0 from monitoring
         // (which causes "task not found" error spam because IDLE0 still calls
@@ -1401,6 +1416,7 @@ void handleUploading() {
                        ESP.getFreeHeap(),
                        ESP.getMaxAllocHeap());
             uploadTaskRunning = false;
+            wifiManager.resumeRoaming();
             delete params;
             // Restore normal watchdog timeout (task creation failed)
             {
@@ -1422,6 +1438,7 @@ void handleUploading() {
     } else if (uploadTaskComplete) {
         // ── Task finished: read result and transition ──
         uploadTaskRunning = false;
+        wifiManager.resumeRoaming();
         uploadTaskHandle = nullptr;
         g_abortUploadFlag = false;  // Clear abort flag — task has stopped
         
@@ -1724,6 +1741,7 @@ void loop() {
             LOG_WARN("[FSM] Killing active upload task for state reset");
             vTaskDelete(uploadTaskHandle);
             uploadTaskRunning = false;
+            wifiManager.resumeRoaming();
             uploadTaskHandle = nullptr;
         }
         
@@ -1766,51 +1784,77 @@ void loop() {
         stopMonitoringRequested = true;
     }
 #endif
-    
+
     // ── WiFi reconnection (non-blocking with 30 second retry interval) ──
     // GUARD: Do NOT attempt reconnection while upload task is running on Core 0.
     // The upload task manages its own WiFi recovery via tryCoordinatedWifiCycle().
     // Concurrent reconnection from both cores corrupts the lwIP state machine.
-    // GUARD: Do NOT reconnect in AP setup mode — the radio is intentionally in
-    // WIFI_AP and calling connectStation() would tear down the AP broadcast.
-    if (!g_apSetupMode && !wifiManager.isConnected() && !uploadTaskRunning) {
+    // While in boot-fallback AP mode we keep retrying in the background so the
+    // device can self-heal once the router comes back, but skip the retry while
+    // an AP client is connected (user is mid-config; don't disrupt the radio).
+    // Tracks whether the new-attempt block below relaxed brownout detection
+    // for the in-flight attempt.  Roam scans don't relax brownout, so we must
+    // not re-enable it (or log "reconnect complete") when a roam-stay decision
+    // exits ROAM_SCAN -> CONNECTED.
+    static bool brownoutRelaxedThisAttempt = false;
+
+    bool wasInProgress = wifiManager.isConnectInProgress();
+    wifiManager.pollConnect();
+    if (wasInProgress && !wifiManager.isConnectInProgress()) {
+        if (brownoutRelaxedThisAttempt) {
+            LOG_INFO("[POWER] WiFi reconnect complete - re-enabling brownout detection");
+            SET_PERI_REG_MASK(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_ENA);
+            brownoutRelaxedThisAttempt = false;
+        }
+        if (wifiManager.getConnectPhase() == WiFiManager::ConnectPhase::CONNECTED) {
+            LOG_DEBUG("WiFi reconnected successfully");
+        }
+        // FAILED case logs inside terminateConnect via logConnectFailure().
+    }
+
+    if (!wifiManager.isConnectInProgress() &&
+        !wifiManager.isConnected() && !uploadTaskRunning &&
+        wifiManager.getApClientCount() == 0) {
         unsigned long currentTime = millis();
-        if (currentTime - lastWifiReconnectAttempt >= 30000) {
+        bool intervalElapsed = (currentTime - lastWifiReconnectAttempt >= wifiManager.getReconnectIntervalMs());
+        // PCNT-aware bus-idle gate: defer the RF burst if the CPAP is currently using the SD bus
+        // No-op on non-pcnt capable devices
+        bool busBusy = g_pcntCapable && !trafficMonitor.isIdleFor(2000);
+        if (intervalElapsed && !busBusy) {
             LOG_WARN("WiFi disconnected, attempting to reconnect...");
-            
+
             if (!config.valid() || config.getWifiSSID().isEmpty()) {
                 LOG_ERROR("Cannot reconnect to WiFi: Invalid configuration");
                 lastWifiReconnectAttempt = currentTime;
                 return;
             }
-            
-            // ── POWER: Relax brownout detection before reconnecting ──
+
             if (config.getBrownoutDetectMode() == BrownoutDetectMode::RELAXED) {
                 LOG_INFO("[POWER] Relaxing brownout detection for WiFi reconnect");
                 CLEAR_PERI_REG_MASK(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_ENA);
+                brownoutRelaxedThisAttempt = true;
             }
-            
-            if (!wifiManager.connectStation(config.getWifiSSID(), config.getWifiPassword(), config.getHostname())) {
-                LOG_ERROR("Failed to reconnect to WiFi");
-                lastWifiReconnectAttempt = currentTime;
-                
-                // Re-enable if we failed early
-                if (config.getBrownoutDetectMode() == BrownoutDetectMode::RELAXED) {
-                    SET_PERI_REG_MASK(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_ENA);
-                }
-                return;
-            }
-            LOG_DEBUG("WiFi reconnected successfully");
-            
-            // Re-enable brownout detection after a successful reconnect attempt.
-            if (config.getBrownoutDetectMode() == BrownoutDetectMode::RELAXED) {
-                LOG_INFO("[POWER] WiFi reconnect complete — re-enabling brownout detection");
-                SET_PERI_REG_MASK(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_ENA);
-            }
+
+            wifiManager.beginConnect(config);
+            lastWifiReconnectAttempt = currentTime;  // count from attempt start
         }
 
         // Initialize web server regardless of connection success
         // It will either serve normal UI or AP setup UIFSM while WiFi is down
+    }
+
+    // Stable-quiet AP teardown
+    // If we booted into AP-fallback (failed STA at boot) and STA has since
+    // recovered, drop the AP back down so the radio runs in plain STA again.
+    // We reboot rather than tearing down in place: the AP-mode boot path
+    // skipped uploader/scheduler init, so a clean reboot through the normal
+    // STA path is the simplest way to bring the device fully online.
+    if (g_apSetupMode && wifiManager.shouldTearDownAP()) {
+        LOG_INFO("[AP] STA reconnected stably for 2 min, no AP clients - rebooting to exit AP mode");
+        setRebootReason("AP fallback teardown after STA recovery");
+        Logger::getInstance().flushBeforeReboot();
+        delay(300);
+        esp_restart();
     }
 
     // ── NTP sync retry ──

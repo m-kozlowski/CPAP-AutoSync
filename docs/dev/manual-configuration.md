@@ -21,12 +21,26 @@ If you prefer to keep your passwords as plaintext in `config.txt` (e.g., for eas
 
 **WIFI_SSID** (required)
 - Your WiFi network name
+- Alias for `WIFI_SSID_1` - the first slot in the multi-network table
 - Example: `WIFI_SSID = HomeNetwork`
 - Note: ESP32 only supports 2.4GHz WiFi (not 5GHz)
 
 **WIFI_PASSWORD** (required)
 - Your WiFi password
+- Alias for `WIFI_PASSWORD_1`
 - Example: `WIFI_PASSWORD = MySecurePassword123`
+
+**WIFI_SSID_1 .. WIFI_SSID_4 / WIFI_PASSWORD_1 .. WIFI_PASSWORD_4** (optional)
+- Up to 4 WiFi networks can be configured. The device picks the strongest available one at boot and roams between them as signal degrades.
+- Example:
+  ```
+  WIFI_SSID_1 = HomeNetwork
+  WIFI_PASSWORD_1 = primary-password
+  WIFI_SSID_2 = MobileHotspot
+  WIFI_PASSWORD_2 = backup-password
+  ```
+- `WIFI_SSID` / `WIFI_PASSWORD` (no suffix) are aliases for slot 1 - using either form is fine for single-network setups.
+- Each slot's password is stored in its own NVS key when `MASK_CREDENTIALS=true`. Slot 1 uses the legacy `wifi_pass` key for back-compat with existing flashed devices; slots 2–4 use `wifi_pass_2` / `wifi_pass_3` / `wifi_pass_4`.
 
 **HOSTNAME** (optional, default: "cpap")
 - Device hostname for local network discovery

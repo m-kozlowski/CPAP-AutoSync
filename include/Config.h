@@ -37,9 +37,17 @@ public:
     // Max line length for config file
     static const size_t MAX_LINE_LENGTH = 256;
 
+    // Maximum number of configured WiFi networks (WIFI_SSID_1 .. WIFI_SSID_N).
+    static constexpr int WIFI_MAX_NETWORKS = 4;
+
+    struct WiFiCredential {
+        String ssid;
+        String password;
+    };
+
 private:
-    String wifiSSID;
-    String wifiPassword;
+    WiFiCredential wifiNetworks[WIFI_MAX_NETWORKS];
+    int wifiNetworkCount;  // populated slots (0..WIFI_MAX_NETWORKS)
     String hostname;  // mDNS hostname (defaults to "cpap")
     String ntpServer; // Custom NTP server
     String schedule;
@@ -103,10 +111,16 @@ private:
     
     // Preferences constants
     static const char* PREFS_NAMESPACE;
-    static const char* PREFS_KEY_WIFI_PASS;
+    static const char* PREFS_KEY_WIFI_PASS;       // slot 0 (legacy key, preserved for back-compat)
+    static const char* PREFS_KEY_WIFI_PASS_2;     // slot 1
+    static const char* PREFS_KEY_WIFI_PASS_3;     // slot 2
+    static const char* PREFS_KEY_WIFI_PASS_4;     // slot 3
     static const char* PREFS_KEY_ENDPOINT_PASS;
     static const char* PREFS_KEY_CLOUD_SECRET;
     static const char* CENSORED_VALUE;
+
+    // Returns the NVS key for the WiFi password at slot idx, or nullptr if out of range.
+    static const char* prefsKeyForWifiSlot(int idx);
     
     // Preferences initialization and cleanup methods
     bool initPreferences();
@@ -137,8 +151,15 @@ public:
     bool loadFromString(const String& rawConfig);
     void overrideUploadMode(const String& mode);
     
+    // Slot-0 accessors (back-compat with single-network callers).
     const String& getWifiSSID() const;
     const String& getWifiPassword() const;
+
+    // Multi-slot accessors. idx in [0, getWifiNetworkCount()).
+    int getWifiNetworkCount() const;
+    const String& getWifiSSID(int idx) const;
+    const String& getWifiPassword(int idx) const;
+
     const String& getHostname() const;
     const String& getNtpServer() const;
     const String& getSchedule() const;

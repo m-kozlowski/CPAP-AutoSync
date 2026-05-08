@@ -308,6 +308,12 @@
         <!-- ════════ WiFi ════════ -->
         <div class="card">
             <h2>WiFi Connection</h2>
+            <p class="help-text" style="margin-top:0">
+                Configure up to 4 networks. The device connects to the strongest available one
+                and roams between them as signal degrades.
+            </p>
+
+            <!-- Primary network (slot 1) -->
             <div class="fg">
                 <label for="f-ssid">Network Name (SSID)</label>
                 <div style="display:flex;gap:8px;align-items:flex-start">
@@ -325,6 +331,64 @@
                     <button type="button" class="eye-btn" onclick="togglePwd(this)" title="Show/hide password">&#128065;</button>
                 </div>
             </div>
+
+            <!-- Secondary networks (slots 2-4) — hidden by default -->
+            <div class="wifi-network-extra hidden" id="wifi-row-2">
+                <hr style="border-color:#2a2f3a;margin:14px 0">
+                <div class="fg">
+                    <label for="f-ssid-2">Network 2 SSID</label>
+                    <div style="display:flex;gap:8px;align-items:flex-start">
+                        <input type="text" id="f-ssid-2" placeholder="Secondary network name" style="flex:1">
+                        <button type="button" class="btn bs" onclick="removeNetwork(2)">Remove</button>
+                    </div>
+                </div>
+                <div class="fg">
+                    <label for="f-wifipass-2">Network 2 Password</label>
+                    <div class="pwd-wrap">
+                        <input type="password" id="f-wifipass-2" placeholder="Leave blank to keep existing">
+                        <button type="button" class="eye-btn" onclick="togglePwd(this)" title="Show/hide password">&#128065;</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="wifi-network-extra hidden" id="wifi-row-3">
+                <hr style="border-color:#2a2f3a;margin:14px 0">
+                <div class="fg">
+                    <label for="f-ssid-3">Network 3 SSID</label>
+                    <div style="display:flex;gap:8px;align-items:flex-start">
+                        <input type="text" id="f-ssid-3" placeholder="Tertiary network name" style="flex:1">
+                        <button type="button" class="btn bs" onclick="removeNetwork(3)">Remove</button>
+                    </div>
+                </div>
+                <div class="fg">
+                    <label for="f-wifipass-3">Network 3 Password</label>
+                    <div class="pwd-wrap">
+                        <input type="password" id="f-wifipass-3" placeholder="Leave blank to keep existing">
+                        <button type="button" class="eye-btn" onclick="togglePwd(this)" title="Show/hide password">&#128065;</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="wifi-network-extra hidden" id="wifi-row-4">
+                <hr style="border-color:#2a2f3a;margin:14px 0">
+                <div class="fg">
+                    <label for="f-ssid-4">Network 4 SSID</label>
+                    <div style="display:flex;gap:8px;align-items:flex-start">
+                        <input type="text" id="f-ssid-4" placeholder="Quaternary network name" style="flex:1">
+                        <button type="button" class="btn bs" onclick="removeNetwork(4)">Remove</button>
+                    </div>
+                </div>
+                <div class="fg">
+                    <label for="f-wifipass-4">Network 4 Password</label>
+                    <div class="pwd-wrap">
+                        <input type="password" id="f-wifipass-4" placeholder="Leave blank to keep existing">
+                        <button type="button" class="eye-btn" onclick="togglePwd(this)" title="Show/hide password">&#128065;</button>
+                    </div>
+                </div>
+            </div>
+
+            <button type="button" class="btn bs" id="btn-add-network" onclick="addNetwork()"
+                    style="margin-top:12px">+ Add another network</button>
         </div>
 
         <!-- ════════ Timezone ════════ -->
@@ -588,7 +652,10 @@
 
 // Keys managed by the visual form (everything else is preserved as-is)
 var KNOWN_KEYS = [
-    'WIFI_SSID', 'WIFI_PASSWORD', 'HOSTNAME',
+    'WIFI_SSID', 'WIFI_PASSWORD',
+    'WIFI_SSID_1', 'WIFI_SSID_2', 'WIFI_SSID_3', 'WIFI_SSID_4',
+    'WIFI_PASSWORD_1', 'WIFI_PASSWORD_2', 'WIFI_PASSWORD_3', 'WIFI_PASSWORD_4',
+    'HOSTNAME',
     'TZ_STRING', 'TZ_NAME',
     'UPLOAD_MODE', 'UPLOAD_START_HOUR', 'UPLOAD_END_HOUR', 'SMART_START_HOUR', 'COOLDOWN_MINUTES', 'EXCLUSIVE_ACCESS_MINUTES',
     'ENDPOINT_TYPE', 'ENDPOINT', 'ENDPOINT_USER', 'ENDPOINT_PASSWORD',
@@ -596,7 +663,11 @@ var KNOWN_KEYS = [
 ];
 
 // Password keys — values from the server arrive as '******'
-var PASSWORD_KEYS = ['WIFI_PASSWORD', 'ENDPOINT_PASSWORD', 'CLOUD_CLIENT_SECRET'];
+var PASSWORD_KEYS = [
+    'WIFI_PASSWORD',
+    'WIFI_PASSWORD_1', 'WIFI_PASSWORD_2', 'WIFI_PASSWORD_3', 'WIFI_PASSWORD_4',
+    'ENDPOINT_PASSWORD', 'CLOUD_CLIENT_SECRET'
+];
 
 var rawLines = [];   // Array of { type:'kv'|'comment'|'blank'|'raw', key:'', val:'', raw:'' }
 var timezones = [];  // Array of { name:'', posix:'' }
@@ -684,9 +755,19 @@ function getValue(key) {
 // ══════════════════════════════════════════════════════════════
 
 function populateFormFromConfig() {
-    // WiFi
-    document.getElementById('f-ssid').value = getValue('WIFI_SSID');
-    // Password fields are left empty — '******' from server is intentionally not shown
+    // WiFi - slot 1: prefer WIFI_SSID_1, fall back to WIFI_SSID alias.
+    document.getElementById('f-ssid').value = getValue('WIFI_SSID_1') || getValue('WIFI_SSID');
+
+    // Slots 2-4: load if present, reveal the row.
+    for (var n = 2; n <= 4; n++) {
+        var ssid = getValue('WIFI_SSID_' + n);
+        document.getElementById('f-ssid-' + n).value = ssid;
+        if (ssid) {
+            document.getElementById('wifi-row-' + n).classList.remove('hidden');
+        }
+    }
+    updateAddNetworkButton();
+    // Password fields are left empty - '******' from server is intentionally not shown
 
     // Timezone — prefer TZ_NAME (IANA name) over POSIX reverse-lookup
     document.getElementById('f-tz-value').value = getValue('TZ_STRING');
@@ -941,6 +1022,48 @@ function togglePwd(btn) {
 }
 
 // ══════════════════════════════════════════════════════════════
+// Multi-network add / remove
+// ══════════════════════════════════════════════════════════════
+
+function addNetwork() {
+    // Show the lowest-numbered hidden slot (2..4).
+    for (var n = 2; n <= 4; n++) {
+        var row = document.getElementById('wifi-row-' + n);
+        if (row.classList.contains('hidden')) {
+            row.classList.remove('hidden');
+            document.getElementById('f-ssid-' + n).focus();
+            break;
+        }
+    }
+    updateAddNetworkButton();
+    updateRawPreview();
+}
+
+function removeNetwork(slot) {
+    var row = document.getElementById('wifi-row-' + slot);
+    if (!row) return;
+    document.getElementById('f-ssid-' + slot).value = '';
+    document.getElementById('f-wifipass-' + slot).value = '';
+    row.classList.add('hidden');
+    updateAddNetworkButton();
+    updateRawPreview();
+}
+
+function updateAddNetworkButton() {
+    var btn = document.getElementById('btn-add-network');
+    if (!btn) return;
+    // Hide the button when all 4 rows are visible.
+    var allVisible = true;
+    for (var n = 2; n <= 4; n++) {
+        if (document.getElementById('wifi-row-' + n).classList.contains('hidden')) {
+            allVisible = false;
+            break;
+        }
+    }
+    btn.classList.toggle('hidden', allVisible);
+}
+
+// ══════════════════════════════════════════════════════════════
 // PCNT capability (Smart Mode availability)
 // ══════════════════════════════════════════════════════════════
 function applyPcntCapable(capable) {
@@ -1152,14 +1275,34 @@ function toggleRaw() {
 function collectFormValues() {
     var vals = {};
 
+    // Slot 1 - keep using WIFI_SSID / WIFI_PASSWORD (alias for slot 1) so
+    // existing single-network configs round-trip without reformatting.
     vals['WIFI_SSID'] = document.getElementById('f-ssid').value.trim();
-
-    // WiFi password: blank = keep existing (server restores from masked value)
     var wifiPass = document.getElementById('f-wifipass').value;
     if (wifiPass !== '') {
         vals['WIFI_PASSWORD'] = wifiPass;
     }
     // else: key not in vals → rawLines keeps original '******'
+
+    // Slots 2-4: write WIFI_SSID_N / WIFI_PASSWORD_N when SSID is non-empty.
+    // If a slot was previously populated and is now empty, write empty SSID
+    // so the parser drops the entry on next load (compaction in Config).
+    for (var n = 2; n <= 4; n++) {
+        var rowVisible = !document.getElementById('wifi-row-' + n).classList.contains('hidden');
+        var ssid = document.getElementById('f-ssid-' + n).value.trim();
+        var pwd  = document.getElementById('f-wifipass-' + n).value;
+        if (rowVisible && ssid) {
+            vals['WIFI_SSID_' + n] = ssid;
+            if (pwd !== '') vals['WIFI_PASSWORD_' + n] = pwd;
+        } else {
+            // Row hidden or SSID cleared - emit empty so any pre-existing
+            // entry in config.txt is overwritten with blank (treated as unset).
+            vals['WIFI_SSID_' + n] = '';
+            if (pwd !== '') {
+                vals['WIFI_PASSWORD_' + n] = '';
+            }
+        }
+    }
 
     // Timezone — write both TZ_STRING (POSIX) and TZ_NAME (IANA) to config
     if (!document.getElementById('tz-select-wrap').classList.contains('hidden')) {
