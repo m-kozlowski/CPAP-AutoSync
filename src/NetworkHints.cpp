@@ -116,9 +116,11 @@ bool NetworkHints::upsert(const char* ssid, const uint8_t* bssid, uint8_t channe
     if (!ssid || ssid[0] == '\0' || !bssid) return false;
 
     uint32_t nowSecs = (uint32_t)time(nullptr);
+    uint8_t  newPmf  = pmf_disable ? 1 : 0;
 
     int idx = findIndex(ssid, bssid);
-    if (idx < 0) {
+    bool wasNew = (idx < 0);
+    if (wasNew) {
         if (_count >= MAX_HINTS) evictLRUSlot();
         idx = _count;
         _count++;
@@ -127,9 +129,17 @@ bool NetworkHints::upsert(const char* ssid, const uint8_t* bssid, uint8_t channe
         memcpy(_hints[idx].bssid, bssid, 6);
     }
 
+    // Refresh pmf_set_secs on fresh entry, transition in the pmf_disable bit,
+    // or revalidation after the TTL expired
+    bool refreshPmfTs = wasNew
+        || (_hints[idx].pmf_disable != newPmf)
+        || (nowSecs > 1700000000u  // sanity-check post-NTP
+            && nowSecs - _hints[idx].pmf_set_secs > PMF_TTL_SECS);
+
     _hints[idx].channel        = channel;
-    _hints[idx].pmf_disable    = pmf_disable ? 1 : 0;
+    _hints[idx].pmf_disable    = newPmf;
     _hints[idx].last_used_secs = nowSecs;
+    if (refreshPmfTs) _hints[idx].pmf_set_secs = nowSecs;
     return true;
 }
 

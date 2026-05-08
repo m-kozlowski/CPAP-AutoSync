@@ -441,7 +441,11 @@ void WiFiManager::processScanResults() {
     LOGF("WiFi scan: %d known of %d visible", _candidateCount, n);
 
     if (_candidateCount == 0) {
-        // Hidden-SSID fallback
+        // Hidden-SSID fallback: scan with show_hidden=false won't see APs that
+        // suppress beacons / probe responses for unknown SSIDs. Build blind
+        // candidates from each configured slot in config order (no RSSI signal
+        // to rank by) so the radio's own probe-with-known-SSID can find them.
+        // Cached hints (if any) supply BSSID + channel to skip the second scan.
         LOG_WARN("WiFi scan: no configured networks visible - trying configured slots blind (hidden SSID?)");
         for (int slot = 0; slot < cfgCount && _candidateCount < MAX_CANDIDATES; slot++) {
             Candidate& c = _candidates[_candidateCount];
@@ -512,8 +516,17 @@ bool WiFiManager::startCurrentCandidate() {
     if (hasBssid) {
         const SavedNetworkHint* hint = networkHints.find(_pendingSsid.c_str(), c.bssid);
         if (hint && hint->pmf_disable) {
-            _pendingPmfDisable = true;
-            LOGF("WiFi: hint says PMF disabled for '%s'", _pendingSsid.c_str());
+            uint32_t now = (uint32_t)time(nullptr);
+            // Honor cache if clock is unsynced
+            bool fresh = (now <= 1700000000u) ||
+                         (now - hint->pmf_set_secs < NetworkHints::PMF_TTL_SECS);
+            if (fresh) {
+                _pendingPmfDisable = true;
+                LOGF("WiFi: hint says PMF disabled for '%s'", _pendingSsid.c_str());
+            } else {
+                LOGF("WiFi: PMF-disable hint for '%s' aged out, re-testing PMF on",
+                     _pendingSsid.c_str());
+            }
         }
     }
 
