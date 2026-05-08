@@ -151,10 +151,6 @@ public:
     bool loadFromString(const String& rawConfig);
     void overrideUploadMode(const String& mode);
     
-    // Slot-0 accessors (back-compat with single-network callers).
-    const String& getWifiSSID() const;
-    const String& getWifiPassword() const;
-
     // Multi-slot accessors. idx in [0, getWifiNetworkCount()).
     int getWifiNetworkCount() const;
     const String& getWifiSSID(int idx) const;

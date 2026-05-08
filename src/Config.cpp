@@ -727,8 +727,6 @@ bool Config::loadFromSD(fs::FS &sd) {
     return isValid;
 }
 
-const String& Config::getWifiSSID() const { return wifiNetworks[0].ssid; }
-const String& Config::getWifiPassword() const { return wifiNetworks[0].password; }
 int Config::getWifiNetworkCount() const { return wifiNetworkCount; }
 const String& Config::getWifiSSID(int idx) const {
     static const String empty;
