@@ -63,6 +63,7 @@ If your REF 39517 AirSense 11 has power issues, the following community-develope
 
 | Model | Made In | Platform | REF | Modem | Success rate | Notes |
 | :--- | :--- | :--- | :--- | :--- | :---: | :--- |
+| **AirSense 11** | Singapore | `R390-451/1` | 39463 | *(not specified / Europe)* | ✅ **100%** | Fully working |
 | **AirSense 11** | Singapore | `R390-420/1` | 39480 | *(not specified / Europe)* | ✅ **100%** | Fully working |
 | **AirSense 11** | Singapore | `R390-451/1` | 39483 | *(not specified / Europe)* | ✅ **100%** | Fully working |
 | **AirSense 11** | Singapore | `R390-447/1` | 39517 | AIR11M1G22 | ❌ **35%** | Has known power delivery issues. Fails on most units. |
