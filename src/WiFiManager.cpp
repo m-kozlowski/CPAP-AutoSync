@@ -54,6 +54,8 @@ void WiFiManager::processDNS() {
 
 void WiFiManager::setupEventHandlers() {
     WiFi.onEvent(onWiFiEvent);
+    // Disable Arduino-ESP32 supplicant retry, so the reconnection is owned by the our loop
+    WiFi.setAutoReconnect(false);
     LOG_DEBUG("WiFi event handlers registered");
 }
 
@@ -160,6 +162,9 @@ void WiFiManager::onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
                     break;
                 case WIFI_REASON_NO_AP_FOUND:
                     LOG_WARN("Disconnect reason: No AP found");
+                    break;
+                case WIFI_REASON_STA_LEAVING:
+                    LOG_WARN("Disconnect reason: Station leaving (radio gave up on this BSS)");
                     break;
                 case WIFI_REASON_AUTH_FAIL:
                     LOG_WARN("Disconnect reason: Authentication failed");
@@ -639,6 +644,17 @@ bool WiFiManager::beginConnect(const Config& cfg) {
 }
 
 void WiFiManager::pollConnect() {
+    // if the radio reports WL_CONNECTED while we're IDLE or FAILED, adopt the connection.
+    if ((_connectPhase == ConnectPhase::IDLE || _connectPhase == ConnectPhase::FAILED) &&
+        WiFi.status() == WL_CONNECTED) {
+        LOG_WARN("WiFi: radio CONNECTED outside managed path - adopting connection");
+        _connectPhase = ConnectPhase::CONNECTED;
+        connected = true;
+        _consecutiveFailures = 0;
+        // refreshHintForCurrentConnection will fire on the next tick via the
+        // _hintRefreshPending flag set by the STA_GOT_IP event handler.
+    }
+
     // Roaming maintenance while connected.
     if (_connectPhase == ConnectPhase::CONNECTED) {
         if (_hintRefreshPending) {
