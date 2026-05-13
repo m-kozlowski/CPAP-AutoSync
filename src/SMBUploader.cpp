@@ -948,8 +948,10 @@ bool SMBUploader::upload(const String& localPath, const String& remotePath,
                                                smb2_generic_cb, &slots[i].cb);
                     if (rc < 0) {
                         const char* err = smb2_get_error(smb2);
-                        LOGF("[SMB] ERROR: pipeline dispatch failed at offset %llu: %s (rc=%d)",
-                             (unsigned long long)sendOffset, err ? err : "unknown", rc);
+                        LOGF("[SMB] ERROR: pipeline dispatch failed at offset 0x%08lx%08lx: %s (rc=%d)",
+                             (unsigned long)(sendOffset >> 32),
+                             (unsigned long)(sendOffset & 0xffffffffULL),
+                             err ? err : "unknown", rc);
                         hadWriteError = true;
                         firstErrno = (errno != 0 ? errno : EIO);
                         firstErrorText = err ? err : "dispatch failure";
@@ -986,8 +988,9 @@ bool SMBUploader::upload(const String& localPath, const String& remotePath,
                     if (status < 0) {
                         if (!hadWriteError) {
                             const char* err = smb2_get_error(smb2);
-                            LOGF("[SMB] ERROR: pipelined write failed at offset %llu: status=%d err=%s",
-                                 (unsigned long long)slots[i].offset, status,
+                            LOGF("[SMB] ERROR: pipelined write failed at offset 0x%08lx%08lx: status=%d err=%s",
+                                 (unsigned long)(slots[i].offset >> 32),
+                                 (unsigned long)(slots[i].offset & 0xffffffffULL), status,
                                  err ? err : "unknown");
                             hadWriteError = true;
                             firstErrno = (status == -ECANCELED) ? ECANCELED : EIO;
@@ -996,8 +999,9 @@ bool SMBUploader::upload(const String& localPath, const String& remotePath,
                         continue;
                     }
                     if ((uint32_t)status != slots[i].length) {
-                        LOGF("[SMB] ERROR: pipelined short write at offset %llu: wrote %d / %u",
-                             (unsigned long long)slots[i].offset, status, slots[i].length);
+                        LOGF("[SMB] ERROR: pipelined short write at offset 0x%08lx%08lx: wrote %d / %u",
+                             (unsigned long)(slots[i].offset >> 32),
+                             (unsigned long)(slots[i].offset & 0xffffffffULL), status, slots[i].length);
                         if (!hadWriteError) {
                             hadWriteError = true;
                             firstErrno = EIO;

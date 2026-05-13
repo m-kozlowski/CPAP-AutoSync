@@ -1,11 +1,4 @@
-#pragma once
-#include <pgmspace.h>
-
-// Auto-served from flash via server->send_P() — zero heap allocation.
-// All rendering is client-side JS. ESP32 only serves this once per page load,
-// then the browser polls /api/status (includes diagnostics), /api/logs, /api/config, /api/sd-activity.
-
-static const char WEB_UI_HTML[] PROGMEM = R"HTMLEOF(<!DOCTYPE html><html><head>
+<!DOCTYPE html><html><head>
 <title>CPAP Uploader</title><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <style>
@@ -1337,4 +1330,4 @@ function handleOtaResult(d,sid){
    startStatusPoll();
  },150);
 </script>
-</body></html>)HTMLEOF";
+</body></html>
