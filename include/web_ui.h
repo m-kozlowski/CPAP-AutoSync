@@ -469,6 +469,7 @@ function badgeHtml(st){var s=st.toLowerCase(),c='bi';
   return '<span class="badge '+c+'">'+st+'</span>';
 }
 function set(id,html,inner){var el=document.getElementById(id);if(el){if(inner===false)el.innerHTML=html;else el.textContent=html;}}
+function escHtml(s){return String(s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
 function seti(id,html){set(id,html,false);}
 
 var statusFailCount=0,rebootExpected=false,lastStatusOkMs=0;
@@ -597,7 +598,8 @@ function renderStatus(d){
   }
   if(d.wifi){
     var rc=sigClass(d.rssi),rl=sigLabel(d.rssi);
-    document.getElementById('d-wifi').innerHTML='<span class='+rc+'>'+rl+' ('+d.rssi+' dBm)</span>';
+    var pref=d.wifi_ssid?escHtml(d.wifi_ssid)+' &middot; ':'';
+    document.getElementById('d-wifi').innerHTML=pref+'<span class='+rc+'>'+rl+' ('+d.rssi+' dBm)</span>';
   }else{set('d-wifi','Disconnected');}
   set('d-ep',cfg.endpoint_type||d.endpoint_type||'—');
   set('d-up',fmtUp(d.uptime||0));

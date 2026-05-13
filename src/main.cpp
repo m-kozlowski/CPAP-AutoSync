@@ -699,7 +699,7 @@ void setup() {
     if (g_debugMode) {
         LOG_WARN("DEBUG mode enabled — verbose pre-flight logs and heap stats active");
     }
-    LOG_DEBUGF("WiFi SSID: %s", config.getWifiSSID().c_str());
+    LOG_DEBUGF("WiFi SSID: %s", config.getWifiSSID(0).c_str());
     LOG_DEBUGF("Endpoint: %s", config.getEndpoint().c_str());
 
     // Configure LittleFS-backed syslog rotation for optional periodic persistence
@@ -1823,8 +1823,8 @@ void loop() {
         if (intervalElapsed && !busBusy) {
             LOG_WARN("WiFi disconnected, attempting to reconnect...");
 
-            if (!config.valid() || config.getWifiSSID().isEmpty()) {
-                LOG_ERROR("Cannot reconnect to WiFi: Invalid configuration");
+            if (!config.valid() || config.getWifiNetworkCount() == 0) {
+                LOG_ERROR("Cannot reconnect to WiFi: no networks configured");
                 lastWifiReconnectAttempt = currentTime;
                 return;
             }

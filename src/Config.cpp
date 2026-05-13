@@ -607,9 +607,11 @@ bool Config::loadFromSD(fs::FS &sd) {
             credentialsInFlash = false;
         } else {
             // Check loaded credentials for censorship (per WiFi slot + endpoint + cloud)
+            bool wifiWasCensored[WIFI_MAX_NETWORKS] = {false};
             bool anyWifiCensored = false;
             for (int i = 0; i < WIFI_MAX_NETWORKS; i++) {
                 if (isCensored(wifiNetworks[i].password)) {
+                    wifiWasCensored[i] = true;
                     anyWifiCensored = true;
                     const char* nvsKey = prefsKeyForWifiSlot(i);
                     if (nvsKey) {
@@ -636,11 +638,11 @@ bool Config::loadFromSD(fs::FS &sd) {
             bool needsMigration = false;
             for (int i = 0; i < WIFI_MAX_NETWORKS; i++) {
                 const String& pw = wifiNetworks[i].password;
-                if (!pw.isEmpty() && !isCensored(pw)) { needsMigration = true; break; }
+                if (!pw.isEmpty() && !wifiWasCensored[i]) { needsMigration = true; break; }
             }
             if (!endpointPassword.isEmpty() && !endpointCensored) needsMigration = true;
             if (!cloudClientSecret.isEmpty() && !cloudSecretCensored) needsMigration = true;
-            
+
             if (needsMigration) {
                 LOG("New plain text credentials detected in mask mode - attempting migration");
                 if (migrateToSecureStorage(sd)) {
@@ -725,8 +727,6 @@ bool Config::loadFromSD(fs::FS &sd) {
     return isValid;
 }
 
-const String& Config::getWifiSSID() const { return wifiNetworks[0].ssid; }
-const String& Config::getWifiPassword() const { return wifiNetworks[0].password; }
 int Config::getWifiNetworkCount() const { return wifiNetworkCount; }
 const String& Config::getWifiSSID(int idx) const {
     static const String empty;

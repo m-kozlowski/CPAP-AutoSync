@@ -933,9 +933,12 @@ void CpapWebServer::updateStatusSnapshot() {
     unsigned long inStateSec = (millis() - stateEnteredAt) / 1000;
     const char* st = getStateName(currentState);
     int rssi = 0; bool wifiConn = false;
+    char wifiSsid[33] = {0};
     if (wifiManager && wifiManager->isConnected()) {
         wifiConn = true;
         rssi = wifiManager->getSignalStrength();
+        String s = WiFi.SSID();
+        strncpy(wifiSsid, s.c_str(), sizeof(wifiSsid) - 1);
     }
     // Per-backend folder counts — both backends render their own row in the UI.
     //
@@ -1068,7 +1071,7 @@ void CpapWebServer::updateStatusSnapshot() {
         "{\"state\":\"%s\",\"in_state_sec\":%lu,\"uptime\":%lu"
         ",\"time\":\"%s\",\"time_synced\":%s"
         ",\"free_heap\":%u,\"max_alloc\":%u"
-        ",\"wifi\":%s,\"rssi\":%d"
+        ",\"wifi\":%s,\"rssi\":%d,\"wifi_ssid\":\"%s\""
         ",\"backends\":{"
             "\"cloud\":{\"enabled\":%s,\"done\":%d,\"total\":%d,\"pending\":%d,\"last_ts\":%lu"
                 ",\"live\":{\"active\":%s,\"folder\":\"%s\",\"up\":%d,\"total\":%d}}"
@@ -1088,7 +1091,7 @@ void CpapWebServer::updateStatusSnapshot() {
         st, inStateSec, upSec,
         timeBuf, timeSynced ? "true" : "false",
         (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap(),
-        wifiConn ? "true" : "false", rssi,
+        wifiConn ? "true" : "false", rssi, wifiSsid,
         cloudEnabled ? "true" : "false", cloudDone, cloudTotal, cloudPending,
             (unsigned long)cloudLastTs,
             cloudLiveActive ? "true" : "false", cloudLiveFolder, cloudLiveUp, cloudLiveTotal,
@@ -1132,7 +1135,7 @@ void CpapWebServer::initConfigSnapshot() {
         ",\"cloud_configured\":%s"
         ",\"brownout_detect_mode\":\"%s\""
         ",\"firmware\":\"%s\"}",
-        config->getWifiSSID().c_str(),
+        config->getWifiSSID(0).c_str(),
         config->getHostname().c_str(),
         config->getEndpointType().c_str(),
         config->getEndpointUser().c_str(),

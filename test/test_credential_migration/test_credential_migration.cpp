@@ -43,7 +43,7 @@ void test_migration_plain_to_secure() {
     
     TEST_ASSERT_TRUE(loaded);
     TEST_ASSERT_TRUE(config.areCredentialsInFlash());
-    TEST_ASSERT_EQUAL_STRING("MyWifiPass123", config.getWifiPassword().c_str());
+    TEST_ASSERT_EQUAL_STRING("MyWifiPass123", config.getWifiPassword(0).c_str());
     TEST_ASSERT_EQUAL_STRING("MyEndpointPass456", config.getEndpointPassword().c_str());
     
     // Verify config.txt was censored
@@ -76,7 +76,7 @@ void test_migration_already_migrated() {
     
     TEST_ASSERT_TRUE(loaded);
     TEST_ASSERT_TRUE(config.areCredentialsInFlash());
-    TEST_ASSERT_EQUAL_STRING("StoredWifiPass", config.getWifiPassword().c_str());
+    TEST_ASSERT_EQUAL_STRING("StoredWifiPass", config.getWifiPassword(0).c_str());
     TEST_ASSERT_EQUAL_STRING("StoredEndpointPass", config.getEndpointPassword().c_str());
 }
 
@@ -97,7 +97,7 @@ void test_migration_plain_text_mode() {
     TEST_ASSERT_TRUE(loaded);
     TEST_ASSERT_FALSE(config.areCredentialsInFlash());
     TEST_ASSERT_TRUE(config.isStoringPlainText());
-    TEST_ASSERT_EQUAL_STRING("PlainWifiPass", config.getWifiPassword().c_str());
+    TEST_ASSERT_EQUAL_STRING("PlainWifiPass", config.getWifiPassword(0).c_str());
     TEST_ASSERT_EQUAL_STRING("PlainEndpointPass", config.getEndpointPassword().c_str());
     
     // Verify config.txt was NOT censored
@@ -122,7 +122,7 @@ void test_migration_empty_credentials() {
     
     TEST_ASSERT_TRUE(loaded);
     TEST_ASSERT_FALSE(config.areCredentialsInFlash());
-    TEST_ASSERT_EQUAL_STRING("", config.getWifiPassword().c_str());
+    TEST_ASSERT_EQUAL_STRING("", config.getWifiPassword(0).c_str());
     TEST_ASSERT_EQUAL_STRING("", config.getEndpointPassword().c_str());
 }
 
@@ -150,7 +150,7 @@ void test_migration_persistence() {
         bool loaded = config2.loadFromSD(mockSD);
         TEST_ASSERT_TRUE(loaded);
         TEST_ASSERT_TRUE(config2.areCredentialsInFlash());
-        TEST_ASSERT_EQUAL_STRING("PersistentPass123", config2.getWifiPassword().c_str());
+        TEST_ASSERT_EQUAL_STRING("PersistentPass123", config2.getWifiPassword(0).c_str());
         TEST_ASSERT_EQUAL_STRING("PersistentEndpoint456", config2.getEndpointPassword().c_str());
     }
 }
@@ -176,7 +176,7 @@ void test_migration_mixed_state() {
     
     TEST_ASSERT_TRUE(loaded);
     TEST_ASSERT_TRUE(config.areCredentialsInFlash());
-    TEST_ASSERT_EQUAL_STRING("StoredWifiPass", config.getWifiPassword().c_str());
+    TEST_ASSERT_EQUAL_STRING("StoredWifiPass", config.getWifiPassword(0).c_str());
     TEST_ASSERT_EQUAL_STRING("PlainEndpointPass", config.getEndpointPassword().c_str());
 }
 

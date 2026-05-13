@@ -58,8 +58,8 @@ void test_config_load_valid() {
     
     TEST_ASSERT_TRUE(loaded);
     TEST_ASSERT_TRUE(config.valid());
-    TEST_ASSERT_EQUAL_STRING("TestNetwork", config.getWifiSSID().c_str());
-    TEST_ASSERT_EQUAL_STRING("TestPassword123", config.getWifiPassword().c_str());
+    TEST_ASSERT_EQUAL_STRING("TestNetwork", config.getWifiSSID(0).c_str());
+    TEST_ASSERT_EQUAL_STRING("TestPassword123", config.getWifiPassword(0).c_str());
     TEST_ASSERT_EQUAL_STRING("DAILY", config.getSchedule().c_str());
     TEST_ASSERT_EQUAL_STRING("//192.168.1.100/share/uploads", config.getEndpoint().c_str());
     TEST_ASSERT_EQUAL_STRING("SMB", config.getEndpointType().c_str());
@@ -88,7 +88,7 @@ void test_config_load_with_defaults() {
     
     TEST_ASSERT_TRUE(loaded);
     TEST_ASSERT_TRUE(config.valid());
-    TEST_ASSERT_EQUAL_STRING("MinimalNetwork", config.getWifiSSID().c_str());
+    TEST_ASSERT_EQUAL_STRING("MinimalNetwork", config.getWifiSSID(0).c_str());
     TEST_ASSERT_EQUAL_STRING("//server/share", config.getEndpoint().c_str());
     
     // Check default values
@@ -158,7 +158,7 @@ void test_config_load_invalid_format() {
     // Should still load valid parts
     TEST_ASSERT_TRUE(loaded);
     TEST_ASSERT_TRUE(config.valid());
-    TEST_ASSERT_EQUAL_STRING("ValidSSID", config.getWifiSSID().c_str());
+    TEST_ASSERT_EQUAL_STRING("ValidSSID", config.getWifiSSID(0).c_str());
 }
 
 // Test loading empty config file
@@ -344,7 +344,7 @@ void test_config_plain_text_mode() {
     TEST_ASSERT_TRUE_MESSAGE(config.valid(), "Config should be valid");
     TEST_ASSERT_TRUE_MESSAGE(config.isStoringPlainText(), "Should be in plain text mode");
     TEST_ASSERT_FALSE_MESSAGE(config.areCredentialsInFlash(), "Credentials should not be in flash");
-    TEST_ASSERT_EQUAL_STRING("PlainTextPassword", config.getWifiPassword().c_str());
+    TEST_ASSERT_EQUAL_STRING("PlainTextPassword", config.getWifiPassword(0).c_str());
     TEST_ASSERT_EQUAL_STRING("PlainEndpointPass", config.getEndpointPassword().c_str());
 }
 
@@ -367,7 +367,7 @@ void test_config_secure_mode_migration() {
     TEST_ASSERT_TRUE(config.areCredentialsInFlash());
     
     // Credentials should be loaded from Preferences
-    TEST_ASSERT_EQUAL_STRING("SecurePassword123", config.getWifiPassword().c_str());
+    TEST_ASSERT_EQUAL_STRING("SecurePassword123", config.getWifiPassword(0).c_str());
     TEST_ASSERT_EQUAL_STRING("SecureEndpointPass", config.getEndpointPassword().c_str());
     
     // Config file should be censored
@@ -405,7 +405,7 @@ void test_config_secure_mode_already_censored() {
     TEST_ASSERT_TRUE(config2.areCredentialsInFlash());
     
     // Should load credentials from Preferences
-    TEST_ASSERT_EQUAL_STRING("OriginalPassword", config2.getWifiPassword().c_str());
+    TEST_ASSERT_EQUAL_STRING("OriginalPassword", config2.getWifiPassword(0).c_str());
     TEST_ASSERT_EQUAL_STRING("OriginalEndpointPass", config2.getEndpointPassword().c_str());
 }
 
@@ -424,7 +424,7 @@ void test_config_credential_storage_various_lengths() {
     Config config1;
     bool loaded1 = config1.loadFromSD(mockSD);
     TEST_ASSERT_TRUE(loaded1);
-    TEST_ASSERT_EQUAL_STRING("abc", config1.getWifiPassword().c_str());
+    TEST_ASSERT_EQUAL_STRING("abc", config1.getWifiPassword(0).c_str());
     TEST_ASSERT_EQUAL_STRING("123", config1.getEndpointPassword().c_str());
     
     // Test long password (64 characters)
@@ -441,7 +441,7 @@ void test_config_credential_storage_various_lengths() {
     Config config2;
     bool loaded2 = config2.loadFromSD(mockSD);
     TEST_ASSERT_TRUE(loaded2);
-    TEST_ASSERT_EQUAL_STRING(longPassword.c_str(), config2.getWifiPassword().c_str());
+    TEST_ASSERT_EQUAL_STRING(longPassword.c_str(), config2.getWifiPassword(0).c_str());
     TEST_ASSERT_EQUAL_STRING(longPassword.c_str(), config2.getEndpointPassword().c_str());
     
     // Test password with special characters
@@ -459,7 +459,7 @@ void test_config_credential_storage_various_lengths() {
     Config config3;
     bool loaded3 = config3.loadFromSD(mockSD);
     TEST_ASSERT_TRUE(loaded3);
-    TEST_ASSERT_EQUAL_STRING(specialPass.c_str(), config3.getWifiPassword().c_str());
+    TEST_ASSERT_EQUAL_STRING(specialPass.c_str(), config3.getWifiPassword(0).c_str());
     TEST_ASSERT_EQUAL_STRING(specialEndpoint.c_str(), config3.getEndpointPassword().c_str());
 }
 
@@ -502,7 +502,7 @@ void test_config_empty_credentials() {
     TEST_ASSERT_TRUE(loaded);
     TEST_ASSERT_TRUE(config.valid());
     // Empty credentials should be handled gracefully
-    TEST_ASSERT_EQUAL_STRING("", config.getWifiPassword().c_str());
+    TEST_ASSERT_EQUAL_STRING("", config.getWifiPassword(0).c_str());
     TEST_ASSERT_EQUAL_STRING("", config.getEndpointPassword().c_str());
 }
 
@@ -543,7 +543,7 @@ void test_config_switch_plain_to_secure() {
     TEST_ASSERT_TRUE_MESSAGE(config2.areCredentialsInFlash(), "Credentials should be in flash");
     
     // Credentials should be migrated to Preferences
-    TEST_ASSERT_EQUAL_STRING("PlainPassword", config2.getWifiPassword().c_str());
+    TEST_ASSERT_EQUAL_STRING("PlainPassword", config2.getWifiPassword(0).c_str());
     TEST_ASSERT_EQUAL_STRING("PlainEndpointPass", config2.getEndpointPassword().c_str());
 }
 
@@ -600,7 +600,7 @@ void test_config_multiple_instances() {
         Config config1;
         bool loaded1 = config1.loadFromSD(mockSD);
         TEST_ASSERT_TRUE(loaded1);
-        TEST_ASSERT_EQUAL_STRING("SharedPassword", config1.getWifiPassword().c_str());
+        TEST_ASSERT_EQUAL_STRING("SharedPassword", config1.getWifiPassword(0).c_str());
         // config1 destructor called here
     }
     
@@ -609,7 +609,7 @@ void test_config_multiple_instances() {
     Config config2;
     bool loaded2 = config2.loadFromSD(mockSD);
     TEST_ASSERT_TRUE(loaded2);
-    TEST_ASSERT_EQUAL_STRING("SharedPassword", config2.getWifiPassword().c_str());
+    TEST_ASSERT_EQUAL_STRING("SharedPassword", config2.getWifiPassword(0).c_str());
     TEST_ASSERT_EQUAL_STRING("SharedEndpointPass", config2.getEndpointPassword().c_str());
 }
 
@@ -628,7 +628,7 @@ void test_config_wifi_only_secure() {
     TEST_ASSERT_TRUE(loaded);
     TEST_ASSERT_TRUE(config.valid());
     TEST_ASSERT_TRUE(config.areCredentialsInFlash());
-    TEST_ASSERT_EQUAL_STRING("WiFiOnlyPassword", config.getWifiPassword().c_str());
+    TEST_ASSERT_EQUAL_STRING("WiFiOnlyPassword", config.getWifiPassword(0).c_str());
     TEST_ASSERT_EQUAL_STRING("", config.getEndpointPassword().c_str());
 }
 
@@ -647,7 +647,7 @@ void test_config_endpoint_only_secure() {
     TEST_ASSERT_TRUE(loaded);
     TEST_ASSERT_TRUE(config.valid());
     TEST_ASSERT_TRUE(config.areCredentialsInFlash());
-    TEST_ASSERT_EQUAL_STRING("", config.getWifiPassword().c_str());
+    TEST_ASSERT_EQUAL_STRING("", config.getWifiPassword(0).c_str());
     TEST_ASSERT_EQUAL_STRING("EndpointOnlyPassword", config.getEndpointPassword().c_str());
 }
 
@@ -690,7 +690,7 @@ void test_config_update_wifi_only() {
     TEST_ASSERT_TRUE_MESSAGE(config2.valid(), "Config should be valid");
     
     // Should use new WiFi password from config, stored endpoint password from flash
-    TEST_ASSERT_EQUAL_STRING("NewWiFiPassword123", config2.getWifiPassword().c_str());
+    TEST_ASSERT_EQUAL_STRING("NewWiFiPassword123", config2.getWifiPassword(0).c_str());
     TEST_ASSERT_EQUAL_STRING("OriginalEndpointPass", config2.getEndpointPassword().c_str());
     TEST_ASSERT_TRUE_MESSAGE(config2.areCredentialsInFlash(), "Should have credentials in flash");
 }
@@ -730,7 +730,7 @@ void test_config_update_endpoint_only() {
     TEST_ASSERT_TRUE_MESSAGE(config2.valid(), "Config should be valid");
     
     // Should use stored WiFi password from flash, new endpoint password from config
-    TEST_ASSERT_EQUAL_STRING("OriginalWiFiPass", config2.getWifiPassword().c_str());
+    TEST_ASSERT_EQUAL_STRING("OriginalWiFiPass", config2.getWifiPassword(0).c_str());
     TEST_ASSERT_EQUAL_STRING("NewEndpointPassword456", config2.getEndpointPassword().c_str());
     TEST_ASSERT_TRUE_MESSAGE(config2.areCredentialsInFlash(), "Should have credentials in flash");
 }
@@ -770,7 +770,7 @@ void test_config_update_both_credentials() {
     TEST_ASSERT_TRUE_MESSAGE(config2.valid(), "Config should be valid");
     
     // Should use both new passwords from config
-    TEST_ASSERT_EQUAL_STRING("NewWiFiPassword123", config2.getWifiPassword().c_str());
+    TEST_ASSERT_EQUAL_STRING("NewWiFiPassword123", config2.getWifiPassword(0).c_str());
     TEST_ASSERT_EQUAL_STRING("NewEndpointPassword456", config2.getEndpointPassword().c_str());
     TEST_ASSERT_TRUE_MESSAGE(config2.areCredentialsInFlash(), "Should have credentials in flash after migration");
 }
@@ -800,7 +800,7 @@ void test_config_mixed_state_wifi_new() {
     TEST_ASSERT_TRUE_MESSAGE(config.valid(), "Config should be valid");
     
     // Should use new WiFi password from config, stored endpoint password from flash
-    TEST_ASSERT_EQUAL_STRING("NewWiFiPassword", config.getWifiPassword().c_str());
+    TEST_ASSERT_EQUAL_STRING("NewWiFiPassword", config.getWifiPassword(0).c_str());
     TEST_ASSERT_EQUAL_STRING("StoredEndpointPass", config.getEndpointPassword().c_str());
     TEST_ASSERT_TRUE_MESSAGE(config.areCredentialsInFlash(), "Should have credentials in flash");
 }
@@ -830,7 +830,7 @@ void test_config_mixed_state_endpoint_new() {
     TEST_ASSERT_TRUE_MESSAGE(config.valid(), "Config should be valid");
     
     // Should use stored WiFi password from flash, new endpoint password from config
-    TEST_ASSERT_EQUAL_STRING("StoredWiFiPass", config.getWifiPassword().c_str());
+    TEST_ASSERT_EQUAL_STRING("StoredWiFiPass", config.getWifiPassword(0).c_str());
     TEST_ASSERT_EQUAL_STRING("NewEndpointPassword", config.getEndpointPassword().c_str());
     TEST_ASSERT_TRUE_MESSAGE(config.areCredentialsInFlash(), "Should have credentials in flash");
 }
@@ -861,7 +861,7 @@ void test_config_mixed_state_both_new() {
     TEST_ASSERT_TRUE_MESSAGE(config.valid(), "Config should be valid");
     
     // Should use new passwords from config (prioritized over stored ones)
-    TEST_ASSERT_EQUAL_STRING("NewWiFiPassword", config.getWifiPassword().c_str());
+    TEST_ASSERT_EQUAL_STRING("NewWiFiPassword", config.getWifiPassword(0).c_str());
     TEST_ASSERT_EQUAL_STRING("NewEndpointPassword", config.getEndpointPassword().c_str());
     TEST_ASSERT_TRUE_MESSAGE(config.areCredentialsInFlash(), "Should have credentials in flash");
 }
