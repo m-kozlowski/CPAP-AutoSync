@@ -1,8 +1,32 @@
-# CPAP AutoSync v4.2 — Firmware Image Minimization
+# CPAP AutoSync v4.2 — Multi-SSID WiFi & Firmware Image Minimization
 
 > **OTA upgrades from v4.0, v4.1, v4.1.1, v4.1.2, or v4.1.3 are fully supported.** There are no partition-table or config.txt changes in this release.
 
 ## What's Changed in v4.2
+
+### 📶 Multi-SSID WiFi Support
+
+The device now supports up to **4 configured WiFi networks** and will automatically select the best one.
+
+Credit to **m-kozlowski** for the multi-SSID implementation in **PR #98** and the follow-up cleanup in **PR #101**.
+
+- **Up to 4 networks**: Configure `WIFI_SSID_1` through `WIFI_SSID_4` (with matching `WIFI_PASSWORD_1` through `WIFI_PASSWORD_4`) in your `config.txt`. The legacy `WIFI_SSID` / `WIFI_PASSWORD` keys continue to work for single-network setups.
+- **Automatic RSSI-ranked selection**: On connect, the device scans for all configured networks, ranks visible APs by signal strength, and connects to the strongest candidate.
+- **Per-candidate retries with fallback**: Each candidate gets up to 2 retries before moving to the next. If all visible APs fail, the device falls back to blind-try mode (useful for hidden SSIDs).
+- **Roaming with hysteresis**: When 2+ networks are configured, the device periodically samples RSSI and switches to a stronger AP if it exceeds the current connection by a configurable margin. Roaming is automatically suspended during upload sessions to avoid mid-transfer disruption.
+- **Exponential backoff**: Failed reconnect attempts use increasing intervals (30s → 60s → 2m → 5m cap) to avoid hammering the radio.
+- **NetworkHints persistence**: BSSID, channel, and PMF flags are cached in NVS for faster reconnects. Hints have a configurable TTL.
+- **AP fallback with STA retry**: If the initial boot WiFi connection fails, the device starts a setup AP while continuing to retry STA in the background. Once STA recovers stably for 2 minutes with no AP clients, the device reboots into normal STA-only mode.
+- **Setup wizard updated**: The web-based setup wizard now supports configuring up to 4 WiFi networks.
+- **Bus-aware reconnect deferral**: On PCNT-capable devices, WiFi reconnect attempts are deferred while the CPAP machine is actively using the SD bus, preventing RF bursts from interfering with ongoing SD I/O.
+
+### 📡 WiFi Stability Fix
+
+Credit to **m-kozlowski** for the WiFi stability fix in **PR #104**.
+
+- **Disabled supplicant auto-reconnect**: The ESP32's built-in WiFi supplicant was autonomously retrying connections after disconnects, competing with the firmware's managed reconnection loop. This produced scan failures, ghost connections the FSM couldn't track, and log storms of repeated disconnect events. The supplicant auto-reconnect is now disabled so the main loop is the sole reconnection owner.
+- **Ghost-connect reconciliation**: If the radio reports connected while the managed state machine is idle or failed, the connection is now adopted instead of ignored.
+- **Reason-36 mapping**: `WIFI_REASON_STA_LEAVING` (reason code 36) is now logged with a human-readable label instead of `Unknown (36)`.
 
 ### 📦 Smaller Web UI Payloads
 
@@ -103,6 +127,15 @@ Unchanged from v4.1.3.
 
 ## Changelog Summary (since v4.1.3)
 
+- **WiFi**: Multi-SSID support with up to 4 configured networks, RSSI-ranked selection, per-candidate retries, and hidden-SSID blind fallback.
+- **WiFi**: Roaming with RSSI hysteresis between configured networks, suspended during uploads.
+- **WiFi**: Exponential backoff for reconnect attempts (30s → 60s → 2m → 5m cap).
+- **WiFi**: NetworkHints persistence (BSSID, channel, PMF flags) in NVS for faster reconnects.
+- **WiFi**: AP fallback mode with background STA retry and stable-quiet teardown after recovery.
+- **WiFi**: Bus-aware reconnect deferral on PCNT-capable devices during active CPAP SD I/O.
+- **WiFi**: Setup wizard updated to support up to 4 WiFi networks.
+- **WiFi**: Disabled ESP32 supplicant auto-reconnect to eliminate ghost-connect races and log storms.
+- **WiFi**: Added ghost-connect reconciliation for radio connections outside the managed path.
 - **Size**: Runtime web UI is now generated, minified, gzip-compressed, and served with `Content-Encoding: gzip`.
 - **Size**: Applied no-BLE firmware image reductions, improving free OTA space from ~226 KB to ~313 KB.
 - **Size**: Reduced final app usage from 1,603,440 bytes to 1,514,415 bytes, saving 89,025 bytes.
@@ -110,4 +143,4 @@ Unchanged from v4.1.3.
 - **Build**: Reduced Arduino core debug verbosity to `CORE_DEBUG_LEVEL=1`.
 - **SMB**: Replaced `%llu` 64-bit offset logging with Nano-safe hexadecimal high/low formatting.
 - **Dashboard**: Preserved and hardened WiFi SSID display by escaping SSID values in status JSON.
-- **Credit**: Includes web UI gzip/minification work from **m-kozlowski** in PR #100 and dashboard WiFi SSID display work from **m-kozlowski** in PR #101.
+- **Credit**: Multi-SSID WiFi from **m-kozlowski** in PR #98, WiFi stability fix from **m-kozlowski** in PR #104, web UI gzip/minification from **m-kozlowski** in PR #100, and dashboard WiFi SSID display from **m-kozlowski** in PR #101.
