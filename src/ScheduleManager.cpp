@@ -1,26 +1,37 @@
 #include "ScheduleManager.h"
 #include "Logger.h"
+#if defined(ESP32)
+#include "esp_sntp.h"
+#endif
 
 extern bool g_heapRecoveryBoot;  // defined in main.cpp (RTC_DATA_ATTR)
 
 ScheduleManager::ScheduleManager() :
     uploadStartHour(8),
     uploadEndHour(22),
+    smartStartHour(6),
     uploadMode("scheduled"),
     uploadHour(12),
     uploadCompletedToday(false),
     lastCompletedDay(-1),
     lastUploadTimestamp(0),
-    ntpSynced(false),
     ntpServer("pool.ntp.org"),
     gmtOffsetHours(0)
 {}
 
+void ScheduleManager::setNtpServer(const String& server) {
+    if (server.length() > 0) {
+        ntpServer = server;
+    }
+}
+
 bool ScheduleManager::begin(const String& mode, int startHour, int endHour,
-                            int gmtOffset, const String& tz, const String& ntp) {
+                            int smartStart, int gmtOffset,
+                            const String& tz, const String& ntp) {
     this->uploadMode = mode;
     this->uploadStartHour = startHour;
     this->uploadEndHour = endHour;
+    this->smartStartHour = smartStart;
     this->gmtOffsetHours = gmtOffset;
     this->tzString = tz;
     this->ntpServer = ntp;
@@ -29,11 +40,11 @@ bool ScheduleManager::begin(const String& mode, int startHour, int endHour,
     this->uploadHour = startHour;
     
     if (tzString.length() > 0) {
-        LOGF("[Schedule] Mode: %s, Window: %d:00-%d:00, TZ: %s",
-             mode.c_str(), startHour, endHour, tzString.c_str());
+        LOGF("[Schedule] Mode: %s, Window: %d:00-%d:00, SmartStart: %d:00, TZ: %s",
+             mode.c_str(), startHour, endHour, smartStart, tzString.c_str());
     } else {
-        LOGF("[Schedule] Mode: %s, Window: %d:00-%d:00, GMT%+d",
-             mode.c_str(), startHour, endHour, gmtOffset);
+        LOGF("[Schedule] Mode: %s, Window: %d:00-%d:00, SmartStart: %d:00, GMT%+d",
+             mode.c_str(), startHour, endHour, smartStart, gmtOffset);
     }
     LOGF("[Schedule] NTP server: %s", ntpServer.c_str());
     
@@ -50,7 +61,7 @@ bool ScheduleManager::begin(int uploadHour, int gmtOffsetHours) {
         this->uploadHour = 12;
     }
     
-    return begin("scheduled", this->uploadHour, (this->uploadHour + 2) % 24, gmtOffsetHours);
+    return begin("scheduled", this->uploadHour, (this->uploadHour + 2) % 24, this->smartStartHour, gmtOffsetHours);
 }
 
 bool ScheduleManager::syncTime() {
@@ -71,15 +82,47 @@ bool ScheduleManager::syncTime() {
     // ICMP reachability is not required for NTP (uses UDP/123).
     LOG("[NTP] Proceeding directly with UDP NTP sync (ICMP pre-check disabled)");
     
-    if (tzString.length() > 0) {
-        LOGF("[NTP] Using POSIX timezone: %s", tzString.c_str());
-        configTzTime(tzString.c_str(), ntpServer.c_str());
-    } else {
-        LOGF("[NTP] Using GMT offset: %d hours (no DST)", gmtOffsetHours);
-        long gmtOffsetSeconds = gmtOffsetHours * 3600L;
-        configTime(gmtOffsetSeconds, 0, ntpServer.c_str());
+    // Check if DHCP gave us a server (esp_sntp_servermode_dhcp(true) was called before WiFi connect)
+    bool hasDhcpServer = false;
+    const ip_addr_t* dhcpServer = esp_sntp_getserver(0);
+    if (dhcpServer && !ip_addr_isany(dhcpServer)) {
+        hasDhcpServer = true;
     }
     
+    const char* serverToUse = nullptr;
+    
+    // Configure DHCP Option 42 (NTP) based on server override
+    if (ntpServer.length() > 0 && ntpServer != "pool.ntp.org") {
+#if defined(ESP32)
+        esp_sntp_servermode_dhcp(0);
+#endif
+        LOGF("[NTP] Using configured override: %s", ntpServer.c_str());
+        serverToUse = ntpServer.c_str();
+    } else if (hasDhcpServer) {
+        LOGF("[NTP] Using DHCP-provided server: " IPSTR, IP2STR(&dhcpServer->u_addr.ip4));
+        serverToUse = nullptr; // Tells configTzTime not to overwrite server 0
+    } else {
+        LOG("[NTP] No DHCP server found, using fallback: pool.ntp.org");
+        serverToUse = "pool.ntp.org";
+    }
+
+    String tzVal;
+    if (tzString.length() > 0) {
+        LOGF("[NTP] Using POSIX timezone: %s", tzString.c_str());
+        tzVal = tzString;
+    } else {
+        // note inverted sign, TZ "UTC-5" is "GMT+5"
+        char tz[24];
+        snprintf(tz, sizeof(tz), "UTC%d", -gmtOffsetHours);
+        LOGF("[NTP] Using GMT offset: %d hours (TZ=%s)", gmtOffsetHours, tz);
+        tzVal = tz;
+    }
+
+    // configTzTime natively handles SNTP init, parses the TZ string natively, 
+    // and correctly preserves DHCP SNTP servers if serverToUse is nullptr.
+    configTzTime(tzVal.c_str(), serverToUse);
+    
+
     // Wait for time to be set (with timeout)
     int retries = 0;
     const int maxRetries = 20;  // Increased timeout
@@ -92,7 +135,6 @@ bool ScheduleManager::syncTime() {
         if (now > 24 * 3600) {  // Time is set if it's past Jan 1, 1970 + 1 day
             struct tm timeinfo;
             if (getLocalTime(&timeinfo)) {
-                ntpSynced = true;
                 LOG("[NTP] Time synchronized successfully!");
                 LOGF("[NTP] Current time: %04d-%02d-%02d %02d:%02d:%02d", 
                      timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
@@ -112,7 +154,6 @@ bool ScheduleManager::syncTime() {
     LOG("[NTP]   - DNS resolution failure for pool.ntp.org");
     LOG("[NTP]   - No internet connectivity");
     LOG("[NTP]   - NTP server unreachable from this network");
-    ntpSynced = false;
     return false;
 }
 
@@ -121,7 +162,7 @@ bool ScheduleManager::syncTime() {
 // ============================================================================
 
 bool ScheduleManager::isInUploadWindow() {
-    if (!ntpSynced) return false;
+    if (!isTimeSynced()) return false;
     
     struct tm timeinfo;
     if (!getLocalTime(&timeinfo)) return false;
@@ -140,26 +181,49 @@ bool ScheduleManager::isInUploadWindow() {
     }
 }
 
+bool ScheduleManager::isSmartQuietPeriod() {
+    if (!isSmartMode()) return false;
+    if (!isTimeSynced()) return false;
+    
+    // If smartStartHour == uploadEndHour, quiet period is disabled (24/7 active)
+    if (smartStartHour == uploadEndHour) return false;
+    
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo)) return false;
+    
+    int currentHour = timeinfo.tm_hour;
+    
+    // Quiet period: from uploadEndHour to smartStartHour
+    // This typically crosses midnight (e.g., 21:00 → 06:00)
+    if (uploadEndHour <= smartStartHour) {
+        // Same-day range (e.g., end=6, start=9 — unlikely but valid)
+        return currentHour >= uploadEndHour && currentHour < smartStartHour;
+    } else {
+        // Cross-midnight range (e.g., end=21, start=6)
+        return currentHour >= uploadEndHour || currentHour < smartStartHour;
+    }
+}
+
 bool ScheduleManager::canUploadFreshData() {
-    if (!ntpSynced) return false;
+    if (!isTimeSynced()) return false;
     
     if (isSmartMode()) {
-        // Smart mode: fresh data can upload anytime
-        return true;
+        // Smart mode: fresh data can upload anytime EXCEPT during quiet period
+        return !isSmartQuietPeriod();
     }
     // Scheduled mode: fresh data only within upload window
     return isInUploadWindow();
 }
 
 bool ScheduleManager::canUploadOldData() {
-    if (!ntpSynced) return false;
+    if (!isTimeSynced()) return false;
     
     // Both modes: old data only within upload window
     return isInUploadWindow();
 }
 
 bool ScheduleManager::isUploadEligible(bool hasFreshData, bool hasOldData) {
-    if (!ntpSynced) return false;
+    if (!isTimeSynced()) return false;
     
     // In scheduled mode, check if already completed today
     if (!isSmartMode() && isDayCompleted()) {
@@ -202,7 +266,7 @@ bool ScheduleManager::isDayCompleted() {
 // ============================================================================
 
 bool ScheduleManager::isUploadTime() {
-    if (!ntpSynced) {
+    if (!isTimeSynced()) {
         LOG("Time not synced, cannot check upload schedule");
         return false;
     }
@@ -218,7 +282,7 @@ void ScheduleManager::markUploadCompleted() {
 }
 
 unsigned long ScheduleManager::getSecondsUntilNextUpload() {
-    if (!ntpSynced) {
+    if (!isTimeSynced()) {
         return 0;
     }
     
@@ -256,7 +320,7 @@ unsigned long ScheduleManager::getSecondsUntilNextUpload() {
 // ============================================================================
 
 bool ScheduleManager::isTimeSynced() const {
-    return ntpSynced;
+    return time(nullptr) > 1000000000;
 }
 
 unsigned long ScheduleManager::getLastUploadTimestamp() const {
@@ -268,7 +332,7 @@ void ScheduleManager::setLastUploadTimestamp(unsigned long timestamp) {
 }
 
 String ScheduleManager::getCurrentLocalTime() const {
-    if (!ntpSynced) {
+    if (!isTimeSynced()) {
         return "Time not synchronized";
     }
     
@@ -299,5 +363,6 @@ String ScheduleManager::getCurrentLocalTime() const {
 
 const String& ScheduleManager::getUploadMode() const { return uploadMode; }
 int ScheduleManager::getUploadStartHour() const { return uploadStartHour; }
+int ScheduleManager::getSmartStartHour() const { return smartStartHour; }
 int ScheduleManager::getUploadEndHour() const { return uploadEndHour; }
 bool ScheduleManager::isSmartMode() const { return uploadMode == "smart"; }

@@ -112,11 +112,21 @@ public:
     bool begin();
 
     // Lightweight work probe — streaming directory check with no vector/String heap churn.
-    // Returns which backends have pending work. Used before creating the upload task
-    // so the no-work path avoids TLS allocation entirely.
+    // Used before creating the upload task so the no-work path avoids TLS allocation.
+    // Single pass over /DATALOG consults both backends per folder, then publishes
+    // a per-backend snapshot (universe, synced) into each state manager so the
+    // dashboard can render a stable, meaningful "X / Y folders synced" ratio.
+    //
+    //   universe = folders within MAX_DAYS on the card (same value for both backends).
+    //   synced   = of those, how many are fully in sync for THIS backend
+    //              (completed AND, for recent folders, no .edf has changed).
+    //   hasWork  = true when any in-window folder still needs work for this backend.
     struct WorkProbeResult {
         bool hasCloudWork;
         bool hasSmbWork;
+        int  universe;        // Folders on card within MAX_DAYS window (-1 if no probe ran)
+        int  cloudSynced;     // Fully-synced folders from `universe` for cloud (-1 if N/A)
+        int  smbSynced;       // Fully-synced folders from `universe` for SMB   (-1 if N/A)
     };
     WorkProbeResult hasWorkToUpload(fs::FS &sd);
 
@@ -124,7 +134,7 @@ public:
     // TLS connects on-demand in cloud phase — no pre-warm needed (arena protects heap).
     // Safety resetConnection() before SMB phase handles any lingering TLS.
     UploadResult runFullSession(class SDCardManager* sdManager, int maxMinutes,
-                                DataFilter filter);
+                                DataFilter filter, bool reducedRetries = false);
 
     // Getters for internal components (for web interface access)
     UploadStateManager* getStateManager()    { return primaryStateManager(); }

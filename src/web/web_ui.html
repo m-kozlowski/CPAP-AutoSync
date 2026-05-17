@@ -1,11 +1,4 @@
-#pragma once
-#include <pgmspace.h>
-
-// Auto-served from flash via server->send_P() — zero heap allocation.
-// All rendering is client-side JS. ESP32 only serves this once per page load,
-// then the browser polls /api/status (includes diagnostics), /api/logs, /api/config, /api/sd-activity.
-
-static const char WEB_UI_HTML[] PROGMEM = R"HTMLEOF(<!DOCTYPE html><html><head>
+<!DOCTYPE html><html><head>
 <title>CPAP Uploader</title><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <style>
@@ -165,15 +158,15 @@ nav button:hover:not(.act){background:#3a5a7e}
 </svg>
 </div>
 <p class=sub id=sub>Connecting...</p>
-<div id=reboot-overlay><h3>&#8635; Connection lost &mdash; reconnecting&hellip;</h3><p>Trying to reconnect to the device now.<br>This can happen if your phone or browser paused this page in the background, if the device is temporarily busy, or if it is restarting.</p><div style="background:#2a3a2a;border-left:3px solid #57cbde;padding:8px 12px;margin:12px 0;text-align:left;font-size:0.9em"><strong style="color:#57cbde">AirSense 10 Users:</strong> Your CPAP resets the SD card every 60s while blowing air, which causes this device to reboot. This is normal and won't affect uploads once therapy finishes.</div><p>If everything is normal, this page should recover automatically within a few seconds.</p></div>
-<div id=mon-active-banner><h3>&#128270; SD Access Monitoring is active</h3><p>All automatic uploads are <strong>paused</strong> while monitoring is running.<br>Go to the <strong>SD Access</strong> tab and click <strong>Stop</strong> to resume normal operation.</p></div>
+<div id=reboot-overlay><h3>&#8635; Connection lost &mdash; reconnecting&hellip;</h3><p>Trying to reconnect to the device now.<br>This can happen if your phone or browser paused this page in the background, if the device is temporarily busy, or if it is restarting.</p><p>If everything is normal, this page should recover automatically within a few seconds.</p></div>
+<div id=mon-active-banner><h3>&#128270; SD Activity Monitoring is active</h3><p>All automatic uploads are <strong>paused</strong> while monitoring is running.<br>Go to the <strong>SD Activity</strong> tab and click <strong>Stop</strong> to resume normal operation.</p></div>
 <div id=multitab-banner style="display:none;background:#3a1a1a;border:1px solid #cc3333;border-radius:10px;padding:14px 18px;margin-bottom:14px;text-align:center;animation:mtPulse 2.5s ease-in-out infinite"><h3 style="color:#ff6666;font-size:1em;margin-bottom:6px">&#9888; Multiple tabs/browsers detected</h3><p style="color:#c0a0a0;font-size:.84em;line-height:1.5">This device has very limited memory. Multiple connections cause <strong>heap fragmentation</strong>, network contention, and can trigger <strong>watchdog reboots</strong> during uploads.<br>Please <strong>close all other tabs/browsers</strong> connected to this device. This tab has throttled its polling to reduce impact.</p></div>
 <div id=brownout-banner style="display:none;background:#3a2a0a;border:1px solid #cc8800;border-radius:10px;padding:14px 18px;margin-bottom:14px;text-align:center"><h3 style="color:#ffaa00;font-size:1em;margin-bottom:6px">&#9888; Brownout Detection Disabled</h3><p style="color:#c0b090;font-size:.84em;line-height:1.5">BROWNOUT_DETECT is set to OFF in config.txt. The device will <strong>not</strong> reset on power drops &mdash; this may cause data corruption.</p></div>
 <nav>
 <button id=t-dash onclick="tab('dash')" class=act>Dashboard</button>
 <button id=t-logs onclick="tab('logs')">Logs</button>
 <button id=t-cfg onclick="tab('cfg')">Config</button>
-<button id=t-mon onclick="tab('mon')">SD Access</button>
+<button id=t-mon onclick="tab('mon')">SD Activity</button>
 <button id=t-mem onclick="tab('mem')">System</button>
 <button id=t-ota onclick="tab('ota')">OTA</button>
 </nav>
@@ -204,15 +197,15 @@ nav button:hover:not(.act){background:#3a5a7e}
 </div>
 <div class=cards>
 <div class=card style="grid-column:1/-1"><h2>Upload Progress</h2>
-<div class=be>
-<div class=bh><span id=d-ab-name class=bt-s>—</span><span id=d-ab-st class=v>—</span></div>
-<div class=prog><div id=d-pf-active class=pf style=width:0%></div></div>
-<div id=d-ab-det class=bd-i></div>
+<div class=be id=d-be-cloud style=display:none>
+<div class=bh><span class=bt-s style=color:#aa66ff>SleepHQ Cloud</span><span id=d-cloud-st class=v>—</span></div>
+<div class=prog><div id=d-pf-cloud class=pf style="width:0%;background:linear-gradient(90deg,#8a4fd0,#aa66ff)"></div></div>
+<div id=d-cloud-det class=bd-i></div>
 </div>
-<div class=be id=d-next-be style=display:none>
-<div class=bh><span id=d-nb-name class="bt-s" style=color:#8f98a0>Next: —</span><span id=d-nb-st class=v style="font-size:.78em;color:#8f98a0">—</span></div>
-<div class=prog><div id=d-pf-next class=pf style="width:0%;background:linear-gradient(90deg,#556070,#6a7a8a)"></div></div>
-<div id=d-nb-det class=bd-i style=color:#8f98a0></div>
+<div class=be id=d-be-smb style=display:none>
+<div class=bh><span class=bt-s style=color:#66c0f4>NAS (SMB)</span><span id=d-smb-st class=v>—</span></div>
+<div class=prog><div id=d-pf-smb class=pf style=width:0%></div></div>
+<div id=d-smb-det class=bd-i></div>
 </div>
 <div class=row style="border-top:1px solid #2a475e;padding-top:8px;margin-top:2px"><span class=k>Status</span><span id=d-fst class=v></span></div>
 </div>
@@ -224,12 +217,12 @@ nav button:hover:not(.act){background:#3a5a7e}
 <div style="flex:1;min-width:200px">
 <button id=btn-up class="btn bo" onclick=triggerUpload()><span class=ic>&#9650;</span> Force Upload</button>
 <div style="border-top:2px solid #aa6622;margin:8px 0;width:100%"></div>
-<p style="font-size:.78em;color:#8f98a0;line-height:1.45" id=d-danger-upload>The firmware automatically detects when your CPAP finishes therapy and uploads new data. Forcing an upload bypasses this detection and immediately takes control of the SD card, which <strong style="color:#ffaa44">increases the risk of an SD card error</strong> if the CPAP is actively writing <strong style="color:#ffaa44">or attempts to write at any point</strong> during the upload (which may take several minutes). Only use this if automatic uploads have not run for an unusual amount of time and you are confident the CPAP will remain idle.</p>
+<p style="font-size:.78em;color:#8f98a0;line-height:1.45" id=d-danger-upload>Immediately takes control of the SD card. If the CPAP <strong style="color:#ffaa44">attempts to write during the upload</strong>, it may cause a <strong style="color:#ffaa44">reboot or SD card error</strong> (requiring SD card reinsertion). Only use when therapy is <strong style="color:#ffaa44">not running and not planned to start soon</strong>.</p>
 </div>
 <div style="flex:1;min-width:200px;text-align:right">
 <button id=btn-rst class="btn bd" onclick=resetState()><span class=ic>&#9762;</span> Reset State</button>
 <div style="border-top:2px solid #c0392b;margin:8px 0;width:100%"></div>
-<p style="font-size:.78em;color:#8f98a0;line-height:1.45;text-align:left" id=d-danger-reset>Erases all upload tracking state and reboots the device. Every data folder will be re-scanned and re-uploaded from scratch on the next cycle. Under normal use (CPAP used daily with regular uploads), this is <strong style="color:#ffaa44">never needed</strong>. Only use this if uploads are stuck in a persistent de-sync state &mdash; for example, files appear as uploaded in the dashboard but are missing on your server, or the progress counter is clearly wrong after multiple upload cycles.</p>
+<p style="font-size:.78em;color:#8f98a0;line-height:1.45;text-align:left" id=d-danger-reset>Erases upload tracking state and reboots. All data will be re-scanned and re-uploaded from scratch. Under normal use this is <strong style="color:#ffaa44">never needed</strong>. Only use for persistent de-sync states (files show uploaded but missing, or progress is wrong).</p>
 </div>
 </div>
 </div>
@@ -250,49 +243,15 @@ nav button:hover:not(.act){background:#3a5a7e}
 </div>
 </div>
 
-<!-- CONFIG SD-ACCESS WARNING MODAL -->
-<div id="cfg-warn-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.85);z-index:9999;align-items:center;justify-content:center;overflow:auto;padding:16px">
-<div style="background:#1b2838;border:1px solid #aa9900;border-radius:12px;padding:20px;max-width:480px;width:100%;box-sizing:border-box;box-shadow:0 10px 40px rgba(170,153,0,0.2);margin:auto">
-<h2 style="color:#ffcc44;margin-bottom:10px;font-size:1.2em">&#9888; SD Card Access Warning</h2>
-<p style="font-size:.88em;color:#c7d5e0;line-height:1.6;margin-bottom:16px">
-Editing and saving config requires <strong>reading from and writing to the CPAP&rsquo;s SD card</strong>. This carries a small risk of an SD card error if the CPAP machine is actively writing at the same time.
-</p>
-<div style="background:#0f1923;padding:14px;border-radius:8px;margin-bottom:18px;border:1px solid #2a475e">
-<ul style="font-size:.84em;color:#8f98a0;padding-left:18px;line-height:1.7;margin:0">
-<li><strong style="color:#44ff44">Safest:</strong> Edit config when the CPAP machine is <strong>off</strong> or between therapy sessions.</li>
-<li><strong style="color:#ddcc44">Acceptable:</strong> Quick edits during the day while CPAP is idle (not in therapy).</li>
-<li><strong style="color:#ff6b6b">Risky:</strong> Editing while the CPAP is actively recording therapy data.</li>
-</ul>
-</div>
-<div style="display:flex;gap:10px;justify-content:flex-end">
-<button class="btn bs" onclick="document.getElementById('cfg-warn-modal').style.display='none'">Cancel</button>
-<button class="btn bp" onclick="document.getElementById('cfg-warn-modal').style.display='none';_doCfgLock();" style="background:#aa8800;color:#fff">I Understand, Edit Config</button>
-</div>
-</div>
-</div>
-
 <!-- CONFIG -->
 <div id=cfg class=page>
-<div id=cfg-lock-banner style="display:none;background:#2a2a00;border:1px solid #aa9900;border-radius:6px;padding:10px 14px;margin-bottom:10px;font-size:.85em;color:#ddcc88">
-&#128274; <strong>Upload running</strong> &mdash; Config editor is active. Press <em>Cancel</em> to close without saving, or <em>Save &amp; Reboot</em> to apply changes. After reboot, <strong>always</strong> physically eject and reinsert the CPAP&rsquo;s SD card before powering it on.
+<div id=cfg-pcnt-banner style="display:none;background:#1a2a3a;border:1px solid #2a5070;border-radius:6px;padding:10px 14px;margin-bottom:10px;font-size:.84em;color:#8faab8;line-height:1.5">
+&#9432; <strong style="color:#66c0f4">Smart mode unavailable:</strong> This CPAP uses 1-bit SD communication (no DAT3 activity). If <code>UPLOAD_MODE=smart</code> is set, it will be automatically overridden to <code>scheduled</code> mode at boot.
 </div>
-<div class=card>
-<h2>Edit config.txt
-<span id=cfg-lock-badge style="display:none;margin-left:8px;background:#4a8a4a;color:#fff;font-size:.65em;padding:2px 7px;border-radius:10px;font-weight:600;vertical-align:middle">LOCKED</span>
-</h2>
-<p style="font-size:.82em;color:#8f98a0;margin-bottom:8px">Direct editor for the SD card config file. Passwords stored securely in flash appear as <code>***STORED_IN_FLASH***</code> &mdash; leave them unchanged to keep existing credentials. Max 4096 bytes. <strong>Changes take effect after reboot.</strong></p>
-<p style="font-size:.82em;color:#ffcc44;margin-bottom:8px">&#9888; Click <strong>Edit</strong> to start editing. Uploads continue while the editor is open.</p>
-<textarea id=cfg-raw style="width:100%;box-sizing:border-box;height:320px;background:#111820;color:#6a7a8a;border:1px solid #2d3440;border-radius:4px;padding:8px;font-family:monospace;font-size:.8em;resize:vertical" maxlength=4096 oninput=cfgRawCount() placeholder="Click Edit to begin..." readonly></textarea>
-<div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
-<span id=cfg-raw-cnt style="font-size:.8em;color:#8f98a0">0 / 4096 bytes</span>
-<div class=actions style=margin:0>
-<button id=btn-cfg-edit class="btn bp" onclick=acquireCfgLock()>&#9998; Edit</button>
-<button id=btn-cfg-reload class="btn bs" onclick=loadRawCfg() style="display:none">&#8635; Reload</button>
-<button id=btn-cfg-savereboot class="btn bd" onclick=saveAndReboot() style="display:none">Save &amp; Reboot</button>
-<button id=btn-cfg-cancel class="btn bs" onclick=releaseCfgLock() style="display:none">&#10005; Cancel</button>
-</div>
-</div>
-<div id=cfg-raw-msg style="margin-top:6px;font-size:.83em"></div>
+<div class=card style="margin-bottom:12px">
+<h2>Setup Wizard</h2>
+<p style="font-size:.82em;color:#8f98a0;margin-bottom:10px;line-height:1.5">Use the visual setup wizard to configure WiFi, timezone, upload schedule, SleepHQ, and network share settings &mdash; no manual editing required.</p>
+<a href="/setup" class="btn bp" style="text-decoration:none">&#9881; Open Setup Wizard</a>
 </div>
 </div>
 
@@ -493,6 +452,7 @@ function toast(msg,mode){
 }
 function fmt(ms){var s=Math.round(ms/1000);if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m '+s%60+'s';return Math.floor(s/3600)+'h '+Math.floor(s%3600/60)+'m';}
 function fmtUp(s){if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m '+s%60+'s';var h=Math.floor(s/3600);return h+'h '+Math.floor(s%3600/60)+'m';}
+function fmtAgo(ts){if(!ts)return 'never';var s=Math.round(Date.now()/1000-ts);if(s<0)s=0;if(s<60)return 'just now';if(s<3600)return Math.floor(s/60)+' min ago';if(s<86400)return Math.floor(s/3600)+' h ago';var d=Math.floor(s/86400);return d+' day'+(d>1?'s':'')+' ago';}
 function sigClass(r){if(r>=-65)return 'sig-exc';if(r>=-75)return 'sig-good';if(r>=-85)return 'sig-fair';if(r>=-95)return 'sig-weak';return 'sig-vweak';}
 function sigLabel(r){if(r>=-65)return 'Excellent';if(r>=-75)return 'Good';if(r>=-85)return 'Fair';if(r>=-95)return 'Weak';return 'Very Weak';}
 function badgeHtml(st){var s=st.toLowerCase(),c='bi';
@@ -502,6 +462,7 @@ function badgeHtml(st){var s=st.toLowerCase(),c='bi';
   return '<span class="badge '+c+'">'+st+'</span>';
 }
 function set(id,html,inner){var el=document.getElementById(id);if(el){if(inner===false)el.innerHTML=html;else el.textContent=html;}}
+function escHtml(s){return String(s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
 function seti(id,html){set(id,html,false);}
 
 var statusFailCount=0,rebootExpected=false,lastStatusOkMs=0;
@@ -513,6 +474,14 @@ function renderStatus(d){
   var _prevSt=currentFsmState;
   var _newSt=d.state||'';
   currentFsmState=_newSt;
+  // Restore monitoring state from server FSM (fix for page refresh/navigation)
+  if(_newSt==='MONITORING' && !monActive){
+    monActive=true;
+    if(!monPoll)monPoll=setInterval(fetchMon,2000);
+    fetchMon();
+    syncMonBtn();
+    _updateMonBanner();
+  }
   // Auto-trigger deferred backfill when upload finishes
   var _wasBusy=(_prevSt==='UPLOADING'||_prevSt==='ACQUIRING');
   var _nowBusy=(_newSt==='UPLOADING'||_newSt==='ACQUIRING');
@@ -522,14 +491,28 @@ function renderStatus(d){
     _tryBackfill();
   }
   seti('d-st',badgeHtml(currentFsmState||'?'));
-  var ins=d.in_state_sec||0;set('d-ins',ins<60?ins+'s':Math.floor(ins/60)+'m '+ins%60+'s');
+  var ins=d.in_state_sec||0;
+  if(ins<60){set('d-ins',ins+'s');}
+  else if(ins<3600){set('d-ins',Math.floor(ins/60)+'m '+ins%60+'s');}
+  else{var h=Math.floor(ins/3600),m=Math.floor((ins%3600)/60),s=ins%60;set('d-ins',h+'h '+m+'m '+s+'s');}
   var mode=(cfg.upload_mode||'—').toUpperCase();
-  set('d-mode',mode);
+  var pcntOk=d.pcnt_capable!==false;
+  var sciInvalid=d.smart_config_invalid===true;
+  cfg._pcntCapable=pcntOk;
+  if(sciInvalid&&mode==='SMART'){
+    seti('d-mode','SCHEDULED <span title="SMART_START_HOUR is inside the upload window \u2014 Smart mode config is invalid. Downgraded to Scheduled. Fix in Config." style="cursor:help;color:#ff6b6b;font-size:.85em">\u24d8</span>');
+  }else if(!pcntOk&&mode==='SCHEDULED'){
+    seti('d-mode',mode+' <span title="Smart mode requires 4-bit SD bus activity (not available on this CPAP). Using scheduled mode instead." style="cursor:help;color:#ffaa44;font-size:.85em">\u24d8</span>');
+  }else{set('d-mode',mode);}
   set('d-tsync',d.time_synced?'Yes':'No');
-  var sh=cfg.upload_start_hour,eh=cfg.upload_end_hour;
+  var sh=cfg.upload_start_hour,eh=cfg.upload_end_hour,ssh=cfg.smart_start_hour;
   var ws=(sh!=null&&eh!=null)?sh+':00 - '+eh+':00':'—';
   var winAll=(sh!=null&&eh!=null&&sh===eh);
-  set('d-win',winAll?'24/7 (always open)':ws);
+  var winDisplay=ws;
+  if(mode==='SMART'&&ssh!=null&&!winAll){
+    winDisplay=ssh+':00 / '+ws;
+  }
+  set('d-win',winAll?'24/7 (always open)':winDisplay);
   set('d-inact',cfg.inactivity_seconds!=null?cfg.inactivity_seconds+'s':'—');
   set('d-excl',cfg.exclusive_access_minutes!=null?cfg.exclusive_access_minutes+' min':'—');
   set('d-cool',cfg.cooldown_minutes!=null?cfg.cooldown_minutes+' min':'—');
@@ -542,8 +525,20 @@ function renderStatus(d){
   var mBadge='<span class="mode-badge">';
   var mEnd='</span>';
   var fBtn='<span style="color:#ffaa44">Force Upload</span> <span style="color:#aa7733;font-size:.9em">(not recommended)</span>';
-  if(mode==='SMART'){
-    if(winAll){
+  var sq=d.smart_quiet;
+  var ssh=cfg.smart_start_hour;
+  var quietDisabled=(ssh!=null&&eh!=null&&ssh===eh);
+  if(sciInvalid&&mode==='SMART'){
+    help='<span style="color:#ff6b6b;font-weight:600">\u26a0 Scheduled mode \u2014 Smart config invalid</span><br>'
+      +'<b>SMART_START_HOUR ('+ssh+':00)</b> must be at least 1 hour before the upload window ('+ws+').<br>'
+      +'Smart mode is <b>disabled</b> until this is corrected.<br>'
+      +'<a href="/setup" style="color:#38bdf8">Fix in Config \u2192</a>';
+  }else if(mode==='SMART'){
+    if(sq&&!quietDisabled){
+      help=mBadge+'\u25b6 Smart mode \u2014 quiet period (no uploads)'+mEnd+'<br>'
+        +'No upload attempts until <b>'+ssh+':00</b>. Safe for therapy.<br>'
+        +fBtn+' \u2192 forces an upload of recent data now.';
+    }else if(winAll&&quietDisabled){
       help=mBadge+'\u25b6 Smart mode \u2014 24/7 window'+mEnd+'<br>'
         +'Uploads up to <b>'+maxd+' days</b> of data whenever CPAP is idle.<br>'
         +fBtn+' \u2192 scans all eligible folders and uploads any new/changed files.';
@@ -581,40 +576,81 @@ function renderStatus(d){
   set('d-time',d.time||'—');
   set('d-fh',d.free_heap?Math.round(d.free_heap/1024)+' KB':'—');
   set('d-ma',d.max_alloc?Math.round(d.max_alloc/1024)+' KB':'—');
-  var tz=cfg.tz_string,gmtOff=cfg.gmt_offset_hours;
-  set('d-tz',tz?tz:(gmtOff!=null?(gmtOff>=0?'GMT+':'GMT')+gmtOff:'—'));
+  var tzOff=d.tz_offset_minutes;
+  if(tzOff!=null){
+    var sign=tzOff>=0?'+':'-';
+    var abs=Math.abs(tzOff);
+    var h=Math.floor(abs/60),m=abs%60;
+    var label='UTC'+sign+h+(m?':'+('0'+m).slice(-2):'');
+    // Show DST hint if live offset differs from the config's base offset by 60 min
+    var baseOff=(cfg.gmt_offset_hours||0)*60;
+    if(tzOff!==baseOff&&cfg.tz_string)label+=' (DST active)';
+    set('d-tz',label);
+  } else {
+    set('d-tz','—');
+  }
   if(d.wifi){
     var rc=sigClass(d.rssi),rl=sigLabel(d.rssi);
-    document.getElementById('d-wifi').innerHTML='<span class='+rc+'>'+rl+' ('+d.rssi+' dBm)</span>';
+    var pref=d.wifi_ssid?escHtml(d.wifi_ssid)+' &middot; ':'';
+    document.getElementById('d-wifi').innerHTML=pref+'<span class='+rc+'>'+rl+' ('+d.rssi+' dBm)</span>';
   }else{set('d-wifi','Disconnected');}
   set('d-ep',cfg.endpoint_type||d.endpoint_type||'—');
   set('d-up',fmtUp(d.uptime||0));
-  var ab=d.active_backend||'NONE';
-  var abColor=ab==='SMB'?'#66c0f4':ab==='CLOUD'?'#aa66ff':ab==='DUAL'?'#44cc88':'#8f98a0';
-  var abEl=document.getElementById('d-ab-name');abEl.textContent=ab;abEl.style.color=abColor;
-  var done=d.folders_done||0,total=d.folders_total||0,pend=d.folders_pending||0;
-  var pct=total>0?Math.round(done*100/total):0;
-  document.getElementById('d-pf-active').style.width=pct+'%';
-  var inc=Math.max(0,total-done);
-  var abSt=total>0?(done+' / '+total+(pend>0?' ('+pend+' empty)':'')):'\u2014';
-  if(total>0&&inc>0)abSt+=' &nbsp;<span style=color:#ffaa44>'+inc+' left</span>';
-  else if(total>0&&inc===0&&done>0)abSt+=' &nbsp;<span style=color:#44ff44>&#10003;</span>';
-  document.getElementById('d-ab-st').innerHTML=abSt;
-  var liveDet=d.live_active?'File '+d.live_up+'/'+d.live_total+(d.live_folder?' &middot; '+d.live_folder:''):'';
-  document.getElementById('d-ab-det').innerHTML=liveDet;
-  var nb=d.next_backend||'NONE';
-  var nbEl=document.getElementById('d-next-be');
-  if(nb&&nb!=='NONE'){nbEl.style.display='';
-    var nbDone=d.next_done||0,nbTotal=d.next_total||0,nbPct=nbTotal>0?Math.round(nbDone*100/nbTotal):0;
-    document.getElementById('d-nb-name').textContent='Next: '+nb;
-    document.getElementById('d-pf-next').style.width=nbPct+'%';
-    var tsStr=d.next_ts>0?new Date(d.next_ts*1000).toLocaleDateString():'never';
-    document.getElementById('d-nb-st').innerHTML=nbDone+'/'+nbTotal+' \u00b7 last '+tsStr+' <em style="color:#666">(stale)</em>';
-    document.getElementById('d-nb-det').textContent=d.next_empty>0?d.next_empty+' empty folder(s)':'';
-  }else{nbEl.style.display='none';}
-  var fst=inc>0?'&#9888; '+inc+' folder(s) pending':(done>0?'&#10003; All synced':'Waiting for first scan');
+  var be=d.backends||{};
+  function renderBe(key,label){
+    var row=document.getElementById('d-be-'+key);
+    var b=be[key]||{};
+    if(!b.enabled){row.style.display='none';return{enabled:false,inc:0,done:0,last_ts:0};}
+    row.style.display='';
+    var done=b.done||0,total=b.total||0;
+    var live=b.live||{};
+    // Numbers now come from the work probe: `total` = folders within
+    // MAX_DAYS on the card (stable across both backends); `done` = folders
+    // in that window that are fully in sync for this backend.  The probe
+    // itself accounts for RECENT_FOLDER_DAYS (a refreshed folder with new
+    // content drops out of `done` automatically), so no client-side
+    // subtraction tricks are needed.  We still render fractional per-file
+    // progress during a live upload so the bar moves visibly.
+    var dispTotal=total,dispDone=done,frac=0;
+    if(live.active&&live.total>0){
+      frac=Math.min(1,Math.max(0,live.up/live.total));
+      dispDone=Math.min(total,done+frac);
+    }
+    var inc=Math.max(0,total-done);
+    var pct=dispTotal>0?Math.min(100,Math.round(dispDone*100/dispTotal)):0;
+    document.getElementById('d-pf-'+key).style.width=pct+'%';
+    var shownDone=live.active?Math.floor(dispDone):done;
+    var st;
+    if(dispTotal===0)st='<span style=color:#8f98a0>No data on card yet</span>';
+    else st=shownDone+' / '+dispTotal;
+    if(dispTotal>0&&live.active)st+=' &nbsp;<span style=color:#38bdf8>uploading</span>';
+    else if(dispTotal>0&&inc>0)st+=' &nbsp;<span style=color:#ffaa44>'+inc+' left</span>';
+    else if(dispTotal>0&&done>0)st+=' &nbsp;<span style=color:#44ff44>&#10003;</span>';
+    document.getElementById('d-'+key+'-st').innerHTML=st;
+    var det='';
+    if(live.active)det='Uploading '+live.up+'/'+live.total+(live.folder?' \u00b7 '+live.folder:'');
+    else if(b.last_ts>0)det='Last upload: '+fmtAgo(b.last_ts);
+    document.getElementById('d-'+key+'-det').innerHTML=det;
+    return{enabled:true,inc:inc,done:done,last_ts:b.last_ts||0};
+  }
+  var rCloud=renderBe('cloud','SleepHQ Cloud');
+  var rSmb=renderBe('smb','NAS (SMB)');
+  var anyEnabled=rCloud.enabled||rSmb.enabled;
+  var anyInc=rCloud.inc>0||rSmb.inc>0;
+  var totalFolders=(d.backends.cloud&&d.backends.cloud.total)||(d.backends.smb&&d.backends.smb.total)||0;
+  var fst;
+  if(!anyEnabled)fst='No backend configured';
+  else if(anyInc){
+    var parts=[];
+    if(rCloud.inc>0)parts.push(rCloud.inc+' on cloud');
+    if(rSmb.inc>0)parts.push(rSmb.inc+' on NAS');
+    fst='&#9888; '+parts.join(', ')+' pending';
+  }else if(!d.has_probed)fst='Waiting for first scan';
+  else if(totalFolders===0)fst='&#10003; No data on card';
+  else fst='&#10003; Up to date';
   seti('d-fst',fst);
-  set('sub','Firmware '+d.firmware+' \u00b7 '+fmtUp(d.uptime||0)+' uptime');
+  document.title=d.hostname+' \u200e- CPAP Uploader';
+  set('sub','Firmware '+d.firmware+' \u00b7 '+d.hostname+' \u00b7 '+fmtUp(d.uptime||0)+' uptime');
   checkMonUploadState();
   var fhV=d.free_heap||0,maV=d.max_alloc||0;
   var fh=fhV?Math.round(fhV/1024)+' KB':'\u2014';
@@ -627,6 +663,8 @@ function renderStatus(d){
   set('hd-c0',c0+'%');set('hd-c1',c1+'%');
   cpuHistory.push({c0:c0,c1:c1,ts:now});while(cpuHistory.length&&cpuHistory[0].ts<cutoff)cpuHistory.shift();
   if(curTab==='mem'){updateHeapChart();updateCpuChart();}
+  var pb=document.getElementById('cfg-pcnt-banner');
+  if(pb)pb.style.display=pcntOk?'none':'block';
   var bb=document.getElementById('brownout-banner');
   if(bb)bb.style.display=(cfg.brownout_detect_mode==='OFF')?'block':'none';
   _mtSyncServerTabs(d.recent_tabs);
@@ -721,17 +759,21 @@ function updateCpuChart(){
 function syncMonBtn(){
   var busy=currentFsmState==='UPLOADING'||currentFsmState==='ACQUIRING';
   var btnSt=document.getElementById('btn-mst');
-  if(!btnSt)return;
+  var btnSp=document.getElementById('btn-msp');
+  if(!btnSt||!btnSp)return;
   if(monActive){
     btnSt.style.display='none';
+    btnSp.style.display='inline-flex';
   }else if(busy){
     btnSt.style.display='inline-flex';
+    btnSp.style.display='none';
     btnSt.disabled=true;
     btnSt.style.opacity='.4';
     btnSt.style.cursor='not-allowed';
     btnSt.textContent='Start Monitoring';
   }else{
     btnSt.style.display='inline-flex';
+    btnSp.style.display='none';
     btnSt.disabled=false;
     btnSt.style.opacity='1';
     btnSt.style.cursor='pointer';
@@ -745,83 +787,10 @@ function checkMonUploadState(){
   syncMonBtn();
 }
 
-var cfgLocked=false;
-function _setCfgLockUI(locked){
-  cfgLocked=locked;
-  document.getElementById('cfg-lock-banner').style.display=locked?'':'none';
-  document.getElementById('cfg-lock-badge').style.display=locked?'':'none';
-  var ta=document.getElementById('cfg-raw');
-  ta.readOnly=!locked;
-  ta.style.background=locked?'#1b2838':'#111820';
-  ta.style.color=locked?'#c7d5e0':'#6a7a8a';
-  ta.style.borderColor=locked?'#3d4450':'#2d3440';
-  document.getElementById('btn-cfg-edit').style.display=locked?'none':'';
-  document.getElementById('btn-cfg-reload').style.display=locked?'':'none';
-  document.getElementById('btn-cfg-savereboot').style.display=locked?'':'none';
-  document.getElementById('btn-cfg-cancel').style.display=locked?'':'none';
-}
-function acquireCfgLock(){
-  document.getElementById('cfg-warn-modal').style.display='flex';
-}
-function _doCfgLock(){
-  var active=currentFsmState==='UPLOADING'||currentFsmState==='ACQUIRING';
-  if(active&&!confirm('An upload is currently in progress.\n\nThe upload will continue running. You can edit config and Save & Reboot when ready.\n\nContinue?'))return;
-  _setCfgLockUI(true);
-  loadRawCfg();
-}
-function releaseCfgLock(){
-  _setCfgLockUI(false);
-  document.getElementById('cfg-raw-msg').textContent='';
-}
 function loadCfg(){
   fetch('/api/config',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
     cfg=d;
   }).catch(function(){});
-}
-function cfgRawCount(){
-  var t=document.getElementById('cfg-raw');
-  document.getElementById('cfg-raw-cnt').textContent=t.value.length+' / 4096 bytes';
-}
-function loadRawCfg(){
-  var msg=document.getElementById('cfg-raw-msg');
-  msg.textContent='Loading...';
-  fetch('/api/config-raw',{cache:'no-store'}).then(function(r){
-    if(!r.ok)return r.text().then(function(t){throw new Error(t);});
-    return r.text();
-  }).then(function(t){
-    document.getElementById('cfg-raw').value=t;
-    cfgRawCount();
-    msg.textContent='';
-  }).catch(function(e){msg.style.color='#ff6060';msg.textContent='Load failed: '+e.message;});
-}
-function saveRawCfg(){
-  var body=document.getElementById('cfg-raw').value;
-  var msg=document.getElementById('cfg-raw-msg');
-  msg.style.color='#8f98a0';msg.textContent='Saving...';
-  fetch('/api/config-raw',{method:'POST',headers:{'Content-Type':'text/plain'},body:body,cache:'no-store'})
-  .then(function(r){return r.json();})
-  .then(function(d){
-    if(d.ok){
-      msg.style.color='#57cbde';msg.innerHTML='\u2713 Saved \u2014 <strong>reboot required</strong> for changes to take effect.';
-      releaseCfgLock();
-    }else{msg.style.color='#ff6060';msg.textContent='Error: '+d.error;}
-  }).catch(function(e){msg.style.color='#ff6060';msg.textContent='Failed: '+e.message;});
-}
-function saveAndReboot(){
-  var body=document.getElementById('cfg-raw').value;
-  var msg=document.getElementById('cfg-raw-msg');
-  msg.style.color='#8f98a0';msg.textContent='Saving...';
-  fetch('/api/config-raw',{method:'POST',headers:{'Content-Type':'text/plain'},body:body,cache:'no-store'})
-  .then(function(r){return r.json();})
-  .then(function(d){
-    if(d.ok){
-      _setCfgLockUI(false);
-      document.getElementById('cfg-lock-banner').style.display='none';
-      msg.style.color='#57cbde';msg.textContent='Saved — rebooting… redirecting in 10s';rebootExpected=true;
-      setTimeout(function(){fetch('/soft-reboot',{cache:'no-store'});},800);
-      setTimeout(function(){window.location.href='/';},10000);
-    }else{msg.style.color='#ff6060';msg.textContent='Error: '+d.error;}
-  }).catch(function(e){msg.style.color='#ff6060';msg.textContent='Failed: '+e.message;});
 }
 
 // Client-side log buffer — persists across soft-reboots in browser memory
@@ -1361,4 +1330,4 @@ function handleOtaResult(d,sid){
    startStatusPoll();
  },150);
 </script>
-</body></html>)HTMLEOF";
+</body></html>

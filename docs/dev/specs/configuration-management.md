@@ -37,13 +37,16 @@ ENDPOINT = //192.168.1.100/cpap_backups
 ## Configuration Parameters
 
 ### Network Settings
-- `WIFI_SSID` / `WIFI_PASSWORD` - WiFi credentials
+- `WIFI_SSID` / `WIFI_PASSWORD` - WiFi credentials (alias for slot 1)
+- `WIFI_SSID_1..4` / `WIFI_PASSWORD_1..4` - up to 4 networks; roaming/failover is implicit when more than one is configured
 - `HOSTNAME` - mDNS hostname (default: "cpap")
+- `NTP_SERVER` - Custom NTP server (default: empty for DHCP Option 42 with pool.ntp.org fallback)
 
 ### Upload Destinations
 - `ENDPOINT_TYPE` - SMB, CLOUD, WEBDAV or comma-separated combinations
 - `ENDPOINT` - Network path (e.g., `//server/share`)
 - `ENDPOINT_USER` / `ENDPOINT_PASSWORD` - SMB credentials
+- `SMB_PRESERVE_TIMESTAMPS` - Copy original file timestamps to NAS (default: `true`)
 - `CLOUD_CLIENT_ID` / `CLOUD_CLIENT_SECRET` - SleepHQ credentials
 
 ### Upload Scheduling
@@ -111,3 +114,15 @@ The Web GUI Config tab provides a live editor for `config.txt` directly on the S
 - **FileUploader**: Uses backend and scheduling settings
 - **All uploaders**: Use endpoint credentials
 - **WebServer**: Serves config editor via `/api/config-raw`
+
+---
+
+## Stealth Mode for Configuration Loading (Unified)
+
+Configuration loading uses the same stealth-aware `SDCardManager::takeControl()` / `releaseControl()` path on all devices (AS10 and AS11):
+
+1. `captureCardState()` — stealth probe captures RCA, bus width, and card state (no CMD0)
+2. `SD_MMC.begin()` — standard mount; config.txt is read via the filesystem
+3. `SD_MMC.end()` + `restoreToSavedState()` — card returned to its exact pre-mount state
+
+**Historical note**: `StealthConfigReader::readConfigTxt()` was previously used on AS10 at boot to read `config.txt` via a custom FAT32 parser (avoiding `SD_MMC` entirely). It is superseded by the unified approach above and retained as `#if 0` in `StealthConfigReader.cpp` for reference.

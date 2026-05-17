@@ -4,14 +4,19 @@
 #include <SD_MMC.h>
 #include <driver/gpio.h>
 
-// Global config reference to check enableSdCmd0Reset
+// Global config reference for SD mode selection
 #include "Config.h"
 extern Config config;
 
-SDCardManager::SDCardManager() : 
-    initialized(false), 
+// Stealth restore: restore card state after upload (AS10 only)
+#include "StealthConfigReader.h"
+extern bool g_pcntCapable;
+
+SDCardManager::SDCardManager() :
+    initialized(false),
     espHasControl(false),
-    controlAcquiredAt(0) {
+    controlAcquiredAt(0),
+    savedState{} {
 }
 
 void SDCardManager::setControlPin(bool espControl) {
@@ -62,6 +67,12 @@ bool SDCardManager::takeControl() {
     gpio_set_drive_capability((gpio_num_t)SD_D2_PIN, GPIO_DRIVE_CAP_0);
     gpio_set_drive_capability((gpio_num_t)SD_D3_PIN, GPIO_DRIVE_CAP_0);
 
+    // Capture card state before SD_MMC.begin() destroys it with CMD0
+    savedState.valid = false;
+    if (!StealthConfigReader::captureCardState(&savedState)) {
+        LOG_WARN("Card state capture failed — will use fallback restore on release");
+    }
+
     // Mount SD in 1-bit or 4-bit mode based on config.
     // 4-bit is default and safer for CPAP handoff.
     // 1-bit uses less ESP-side bus current but requires a compatibility remount on release.
@@ -96,25 +107,50 @@ void SDCardManager::releaseControl() {
     SD_MMC.end();
     initialized = false;
 
-    gpio_set_drive_capability((gpio_num_t)SD_CMD_PIN, GPIO_DRIVE_CAP_2);
-    gpio_set_drive_capability((gpio_num_t)SD_CLK_PIN, GPIO_DRIVE_CAP_2);
-    gpio_set_drive_capability((gpio_num_t)SD_D0_PIN, GPIO_DRIVE_CAP_2);
-    gpio_set_drive_capability((gpio_num_t)SD_D1_PIN, GPIO_DRIVE_CAP_2);
-    gpio_set_drive_capability((gpio_num_t)SD_D2_PIN, GPIO_DRIVE_CAP_2);
-    gpio_set_drive_capability((gpio_num_t)SD_D3_PIN, GPIO_DRIVE_CAP_2);
-
-    // If we mounted in 1-bit mode, do a brief 4-bit compatibility remount
-    // so the card's negotiated bus width is restored to 4-bit before the CPAP takes over.
-    if (config.getEnable1BitSdMode()) {
-        if (SD_MMC.begin("/sdcard", SDIO_BIT_MODE_FAST, false, SDMMC_FREQ_DEFAULT, 2)) {
-            SD_MMC.end();
+    // ── Card-state restoration ──
+    // After SD_MMC.end(), the SDMMC host is deinitialized but the card retains
+    // its state (no CMD0 was sent).  Restore it to the state captured before
+    // SD_MMC.begin(), or fall back to hardcoded Standby/1-bit if capture failed.
+    if (config.getStealthRestore()) {
+        if (savedState.valid) {
+            if (StealthConfigReader::restoreToSavedState(savedState)) {
+                LOG_INFOF("[SDCard] Card restored to saved state: %d-bit, state=%d",
+                          savedState.busWidth, savedState.cardState);
+            } else {
+                LOG_WARN("[SDCard] Saved state restore failed — trying fallback");
+                StealthConfigReader::restoreCardState();
+            }
         } else {
-            LOG_WARN("SD handoff compatibility remount failed");
+            if (StealthConfigReader::restoreCardState()) {
+                LOG_INFO("[SDCard] Card state restored to Standby via stealth (fallback)");
+            } else {
+                LOG_WARN("[SDCard] Stealth card-state restoration failed");
+            }
         }
     }
 
+    // ── AS10 FIX: Hold SD bus lines high (idle) during MUX transition ──
+    // After SD_MMC.end() the SDMMC peripheral releases the GPIOs, leaving
+    // them floating.  We explicitly set them as inputs with pull-ups so the
+    // bus lines stay HIGH (SD idle convention) until the MUX switches.
+    // This prevents spurious CRC errors from noise/glitches on the AS10.
+    static const int sdPins[] = { SD_CMD_PIN, SD_CLK_PIN, SD_D0_PIN,
+                                  SD_D1_PIN, SD_D2_PIN, SD_D3_PIN };
+    for (int pin : sdPins) {
+        gpio_set_direction((gpio_num_t)pin, GPIO_MODE_INPUT);
+        gpio_set_pull_mode((gpio_num_t)pin, GPIO_PULLUP_ONLY);
+    }
+
+    // ── MUX switch: hand card back to CPAP ──
     setControlPin(false);
     espHasControl = false;
+
+    // Restore GPIO drive strength for the next takeControl() cycle.
+    // This happens AFTER the MUX switch so we don't drive the bus during handoff.
+    for (int pin : sdPins) {
+        gpio_set_drive_capability((gpio_num_t)pin, GPIO_DRIVE_CAP_2);
+    }
+
     LOG("SD card control released to CPAP machine");
 }
 

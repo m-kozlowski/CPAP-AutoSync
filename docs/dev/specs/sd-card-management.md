@@ -275,3 +275,17 @@ INACTIVITY_SECONDS = 60
 - **Hardware reset**: Power cycle to clear hardware issues
 - **Configuration reset**: Return to default timing values
 - **Firmware update**: Address compatibility issues
+
+---
+
+## Stealth Mode Approach (Unified)
+
+The firmware uses a single stealth mode approach for all SD card access — both at boot and during upload cycles — on all device types (AS10 and AS11):
+
+1. **Capture**: `captureCardState()` probes the card in stealth mode (no CMD0) to read the RCA, card state, and bus width. Called after MUX switches to ESP, before `SD_MMC.begin()`.
+2. **Mount & Access**: `SD_MMC.begin()` runs normally (sends CMD0, full init). Card is read/written via the standard ESP-IDF SDMMC driver.
+3. **Restore**: `restoreToSavedState()` puts the card back exactly as found (RCA, bus width, selected/deselected). Called after `SD_MMC.end()`. Falls back to `restoreCardState()` (hardcoded 1-bit Standby) if capture failed.
+
+This is implemented in `SDCardManager::takeControl()` / `releaseControl()` and applies to both config reads at boot and upload sessions.
+
+**Historical note**: `StealthConfigReader::readConfigTxt()` was previously used for AS10 boot-time config reads, bypassing `SD_MMC` entirely with a custom FAT32 parser. It has been superseded by the unified approach above and is retained in `StealthConfigReader.cpp` as `#if 0` for reference only.

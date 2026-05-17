@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <driver/pulse_cnt.h>
+#include "EarlyPCNT.h"
 
 /**
  * TrafficMonitor - PCNT-based SD bus activity detector
@@ -29,7 +30,8 @@ class TrafficMonitor {
 public:
     TrafficMonitor();
 
-    void begin(int pin);              // Initialize PCNT on given GPIO
+    void begin(int pin);              // Initialize PCNT on given GPIO (creates new unit)
+    void adoptUnit(PcntHandles h, int pin);  // Adopt pre-existing PCNT unit (from EarlyPCNT)
     void update();                    // Call every loop() — non-blocking ~100ms sample
     
     // Power management: suspend/resume PCNT for light-sleep

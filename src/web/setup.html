@@ -1,0 +1,1754 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CPAP AutoSync Setup</title>
+    <style>
+        /* ── Design tokens matching web_ui.h dark theme ── */
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html { overflow-y: scroll; scroll-behavior: smooth; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f1923; color: #c7d5e0;
+            min-height: 100vh; padding: 16px; overflow-x: hidden;
+        }
+        .wrap { max-width: 900px; margin: 0 auto; overflow-x: hidden; }
+
+        /* ── Header ── */
+        .hdr { margin-bottom: 2px; }
+        .hdr svg { height: 108px; width: auto; display: block; }
+        .sub { color: #66c0f4; font-size: 0.85em; margin-bottom: 14px; }
+        .header-bar {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 14px; flex-wrap: wrap; gap: 8px;
+        }
+        .header-bar h2 { color: #c7d5e0; font-size: 1em; font-weight: 400; }
+
+        /* ── Animated header SVG keyframes (same as main UI) ── */
+        .spin-ring { transform-origin: 80px 80px; animation: hSpin 8s linear infinite; }
+        .arrow-anim { animation: hUp 2s ease-in-out infinite; }
+        .pulse-wave { animation: hPulse 3.5s ease-in-out infinite; }
+        .wifi-1 { animation: hWifi 1.5s infinite 0s; }
+        .wifi-2 { animation: hWifi 1.5s infinite 0.25s; }
+        .wifi-3 { animation: hWifi 1.5s infinite 0.5s; }
+        @keyframes hSpin { 100% { transform: rotate(360deg); } }
+        @keyframes hUp { 0% { transform: translateY(1.5px); opacity: 0; } 40% { opacity: 1; } 100% { transform: translateY(-4px); opacity: 0; } }
+        @keyframes hPulse { 0%,100% { opacity: .6; } 50% { opacity: 1; } }
+        @keyframes hWifi { 0%,100% { opacity: .4; } 50% { opacity: 1; } }
+
+        /* ── Cards & Sections ── */
+        .card {
+            background: #1b2838; border: 1px solid #2a475e;
+            border-radius: 10px; padding: 15px; margin-bottom: 14px;
+        }
+        .card h2 {
+            font-size: .8em; text-transform: uppercase; letter-spacing: 1px;
+            color: #66c0f4; margin-bottom: 9px;
+            border-bottom: 1px solid #2a475e; padding-bottom: 6px;
+        }
+
+        /* ── Form Elements ── */
+        .fg { margin-bottom: 12px; }
+        .fg label { display: block; margin-bottom: 4px; color: #8f98a0; font-size: .86em; }
+        .fg input[type="text"],
+        .fg input[type="password"],
+        .fg input[type="number"],
+        .fg select,
+        .fg textarea {
+            width: 100%; padding: 8px; background: #0f1923;
+            border: 1px solid #2a475e; color: #fff;
+            border-radius: 6px; font-size: .86em;
+        }
+        .fg input:focus, .fg select:focus, .fg textarea:focus {
+            outline: none; border-color: #66c0f4;
+        }
+        .fg select { cursor: pointer; }
+        .help-text { font-size: 0.82em; color: #8f98a0; margin-top: 4px; display: block; line-height: 1.4; }
+        .help-text a { color: #66c0f4; text-decoration: none; }
+        .help-text a:hover { text-decoration: underline; }
+
+        /* ── Password eye toggle ── */
+        .pwd-wrap { position: relative; display: flex; align-items: center; }
+        .pwd-wrap input { flex: 1; padding-right: 38px; }
+        .eye-btn {
+            position: absolute; right: 8px; background: none; border: none;
+            cursor: pointer; color: #8f98a0; font-size: 1.1em; padding: 2px;
+            line-height: 1;
+        }
+        .eye-btn:hover { color: #66c0f4; }
+
+        /* ── Checkbox toggle ── */
+        .cb-label {
+            display: flex; align-items: center; gap: 8px;
+            font-size: .9em; cursor: pointer; margin-bottom: 10px;
+        }
+        .cb-label input[type="checkbox"] { transform: scale(1.25); cursor: pointer; accent-color: #66c0f4; }
+
+        /* ── Radio Buttons (Upload Mode) ── */
+        .radio-group { margin-bottom: 10px; }
+        .radio-label {
+            display: flex; align-items: center; gap: 8px; font-weight: 600;
+            cursor: pointer; margin-bottom: 4px;
+        }
+        .radio-label input[type="radio"] { transform: scale(1.3); accent-color: #66c0f4; }
+        .radio-desc { font-size: .82em; color: #8f98a0; margin-left: 24px; margin-bottom: 10px; line-height: 1.4; }
+
+        /* ── Per-Slider Locks ── */
+        .lock-btn {
+            background: none; border: none; padding: 4px 6px; font-size: 1.15em;
+            cursor: pointer; opacity: 0.5; transition: opacity 0.2s, transform 0.1s;
+        }
+        .lock-btn:active { transform: scale(0.9); }
+        .lock-btn:hover { opacity: 0.8; }
+
+        /* ── Toggle switch ── */
+        .conditional { margin-left: 24px; padding-left: 12px; border-left: 2px solid #2a475e; }
+
+        /* ── Buttons ── */
+        .btn {
+            display: inline-flex; align-items: center; gap: 5px;
+            padding: 7px 14px; border-radius: 6px;
+            font-size: .84em; font-weight: 600; text-decoration: none;
+            border: none; cursor: pointer; transition: all .2s;
+        }
+        .bp { background: #66c0f4; color: #0f1923; }
+        .bp:hover { background: #88d0ff; }
+        .bp:disabled { background: #2a475e; color: #6a7a8a; cursor: not-allowed; }
+        .bs { background: #2a475e; color: #c7d5e0; }
+        .bs:hover { background: #3a5a7e; }
+        .bg { background: #2f8f57; color: #fff; }
+        .bg:hover { background: #3aaa6a; }
+        .bd { background: #c0392b; color: #fff; }
+        .bd:hover { background: #e04030; }
+
+        /* ── WiFi Scan List ── */
+        .wifi-list { list-style: none; padding: 0; margin: 8px 0 0; }
+        .wifi-item {
+            display: flex; align-items: center;
+            padding: 10px 12px; background: #0f1923;
+            border: 1px solid #2a475e; border-radius: 6px;
+            margin-bottom: 4px; cursor: pointer; transition: background .15s;
+        }
+        .wifi-item:hover { background: #1a2a3a; }
+        .wifi-item.selected { border-color: #66c0f4; background: #1a2a3a; }
+        .wifi-item input[type="radio"] { margin-right: 10px; accent-color: #66c0f4; cursor: pointer; }
+        .wifi-lock { margin-right: 8px; font-size: 1em; }
+        .wifi-ssid { flex: 1; color: #c7d5e0; font-size: .9em; }
+        .wifi-rssi { color: #8f98a0; font-size: .82em; margin-left: 8px; }
+
+        /* ── SMB path preview ── */
+        .smb-preview {
+            font-family: monospace; font-size: .82em;
+            color: #66c0f4; padding: 6px 10px;
+            background: #0f1923; border-radius: 4px;
+            margin-top: 6px; border: 1px solid #2a475e;
+        }
+
+        /* ── Status messages ── */
+        .status { padding: 10px 14px; border-radius: 6px; margin-bottom: 14px; display: none; font-size: .88em; }
+        .status.success { display: block; background: #1a3a1a; border: 1px solid #2f8f57; color: #44ff44; }
+        .status.error { display: block; background: #3a1a1a; border: 1px solid #c0392b; color: #ff6b6b; }
+        .status.info { display: block; background: #1a2a3a; border: 1px solid #2a5a8a; color: #66c0f4; }
+
+        /* ── Info banner ── */
+        .info-note {
+            font-size: .82em; color: #8f98a0; line-height: 1.5;
+            background: #16213e; border: 1px solid #2a475e;
+            border-radius: 6px; padding: 8px 12px; margin-top: 8px;
+        }
+
+        /* ── Advanced section ── */
+        #advanced-raw {
+            font-family: Consolas, Monaco, monospace; white-space: pre;
+            height: 300px; resize: vertical; font-size: .8em;
+            background: #0f1923; color: #aaddff;
+        }
+
+        .hidden { display: none !important; }
+
+        /* ── Modal overlay ── */
+        .modal-overlay {
+            display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.85); z-index: 9999;
+            align-items: center; justify-content: center; overflow-y: auto; padding: 16px;
+        }
+        .modal-card {
+            background: #1b2838; border: 1px solid #66c0f4; border-radius: 12px; padding: 24px;
+            max-width: 550px; width: 100%; box-sizing: border-box;
+            box-shadow: 0 10px 40px rgba(102,192,244,0.2); margin: auto;
+        }
+        .modal-card h2 { color: #fff; margin-bottom: 12px; font-size: 1.4em; border: none; padding: 0; text-transform: none; letter-spacing: 0; }
+        .modal-card p { font-size: .9em; color: #c7d5e0; line-height: 1.6; margin-bottom: 16px; }
+        .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+
+        /* ── Reconnection assistant phases ── */
+        .reconnect-phase { margin: 8px 0; font-size: .88em; color: #8f98a0; }
+        .reconnect-phase.done { color: #44ff44; }
+        .reconnect-phase.active { color: #66c0f4; }
+        .reconnect-progress { height: 6px; background: #2a475e; border-radius: 3px; margin: 10px 0; overflow: hidden; }
+        .reconnect-progress-bar { height: 100%; background: #66c0f4; border-radius: 3px; transition: width .5s; width: 0; }
+        .reconnect-attempt { font-size: .82em; color: #8f98a0; margin-top: 6px; }
+        .reconnect-fallback { margin-top: 12px; }
+        .reconnect-fallback input {
+            width: 100%; padding: 8px; background: #0f1923;
+            border: 1px solid #2a475e; color: #fff; border-radius: 6px; font-size: .86em;
+        }
+
+        /* ── Reconnection Debug Log ── */
+        .rc-debug-log {
+            margin-top: 15px; padding: 10px; background: #0a1118;
+            border: 1px solid #2a475e; border-radius: 6px;
+            font-family: monospace; font-size: 0.72em; color: #8faab8;
+            max-height: 120px; overflow-y: auto; line-height: 1.4;
+            white-space: pre-wrap; word-break: break-all;
+        }
+        .rc-debug-entry { margin-bottom: 4px; border-bottom: 1px solid #1a2a3a; padding-bottom: 2px; }
+        .rc-debug-entry:last-child { border-bottom: none; }
+        .rc-debug-ts { color: #5c7e8f; margin-right: 5px; }
+        .rc-debug-err { color: #ff6b6b; }
+        .rc-debug-warn { color: #ddcc44; }
+        .rc-debug-ok { color: #44ff44; }
+
+        @media (max-width: 600px) {
+            .hdr svg { height: 108px; }
+            .header-bar { gap: 6px; }
+        }
+
+        /* ── Schedule Timeline Sliders ── */
+        #f-smart-start::-webkit-slider-thumb,
+        #f-start-hour::-webkit-slider-thumb,
+        #f-end-hour::-webkit-slider-thumb {
+            -webkit-appearance: none; appearance: none;
+            width: 20px; height: 20px; border-radius: 50%;
+            background: #38bdf8; cursor: pointer; border: 2px solid #0f172a;
+        }
+        #f-smart-start::-moz-range-thumb,
+        #f-start-hour::-moz-range-thumb,
+        #f-end-hour::-moz-range-thumb {
+            width: 20px; height: 20px; border-radius: 50%;
+            background: #38bdf8; cursor: pointer; border: 2px solid #0f172a;
+        }
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <!-- ── Animated Logo Header (matches main dashboard) ── -->
+    <div class="hdr">
+        <svg viewBox="0 0 480 160" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI',system-ui,-apple-system,sans-serif" preserveAspectRatio="xMidYMid meet">
+            <defs>
+                <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stop-color="#0f1923"/><stop offset="100%" stop-color="#0f1923"/>
+                </linearGradient>
+                <linearGradient id="circleGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stop-color="#1a6b8a"/><stop offset="100%" stop-color="#0d4a6b"/>
+                </linearGradient>
+                <linearGradient id="waveGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                    <stop offset="0%" stop-color="#2dd4bf"/><stop offset="50%" stop-color="#38bdf8"/><stop offset="100%" stop-color="#818cf8"/>
+                </linearGradient>
+                <linearGradient id="arrowGrad" x1="0%" y1="100%" x2="0%" y2="0%">
+                    <stop offset="0%" stop-color="#38bdf8"/><stop offset="100%" stop-color="#2dd4bf"/>
+                </linearGradient>
+                <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+                    <feGaussianBlur stdDeviation="2.5" result="coloredBlur"/>
+                    <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+                </filter>
+                <filter id="waveGlow" x="-10%" y="-50%" width="120%" height="200%">
+                    <feGaussianBlur stdDeviation="1.8" result="coloredBlur"/>
+                    <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+                </filter>
+            </defs>
+            <rect width="480" height="160" rx="18" fill="url(#bgGrad)"/>
+            <circle class="spin-ring" cx="80" cy="80" r="58" fill="none" stroke="url(#waveGrad)" stroke-width="3" stroke-dasharray="126 13 78 13 48 13 30 13 18 13" stroke-linecap="round" opacity="0.85"/>
+            <circle cx="80" cy="80" r="54" fill="url(#circleGrad)"/>
+            <circle cx="80" cy="80" r="54" fill="none" stroke="url(#waveGrad)" stroke-width="1" opacity="0.6"/>
+            <g transform="translate(52,52)">
+                <path d="M7,0 L29,0 L36,7 L36,34 Q36,36 34,36 L2,36 Q0,36 0,34 L0,2 Q0,0 2,0 Z" fill="#0a2233" stroke="#38bdf8" stroke-width="1.2" opacity="0.9"/>
+                <rect x="6" y="24" width="4" height="10" rx="1" fill="#2dd4bf" opacity="0.85"/>
+                <rect x="12" y="24" width="4" height="10" rx="1" fill="#2dd4bf" opacity="0.85"/>
+                <rect x="18" y="24" width="4" height="10" rx="1" fill="#2dd4bf" opacity="0.85"/>
+                <rect x="24" y="24" width="4" height="10" rx="1" fill="#2dd4bf" opacity="0.85"/>
+                <line x1="29" y1="0" x2="36" y2="7" stroke="#38bdf8" stroke-width="1.2" opacity="0.7"/>
+            </g>
+            <g transform="translate(96,70)" filter="url(#glow)">
+                <g class="arrow-anim">
+                    <line x1="0" y1="22" x2="0" y2="6" stroke="url(#arrowGrad)" stroke-width="3" stroke-linecap="round"/>
+                    <polyline points="-6,10 0,2 6,10" fill="none" stroke="url(#arrowGrad)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+                </g>
+                <line x1="-7" y1="25" x2="7" y2="25" stroke="#38bdf8" stroke-width="2.5" stroke-linecap="round" opacity="0.7"/>
+            </g>
+            <g transform="translate(80,108)" filter="url(#waveGlow)">
+                <path class="pulse-wave" d="M-28,0 C-24,-2 -22,-2 -18,0 C-14,2 -12,2 -8,0 C-4,-10 -2,-10 2,-4 C4,-1 5,8 8,8 C11,8 12,1 15,-4 C18,-10 20,-10 24,-4 C26,0 28,0 28,0" fill="none" stroke="url(#waveGrad)" stroke-width="2.2" stroke-linecap="round"/>
+            </g>
+            <g transform="translate(80,36)" filter="url(#glow)">
+                <path class="wifi-1" d="M-10,10 Q0,-2 10,10" fill="none" stroke="#38bdf8" stroke-width="2.2" stroke-linecap="round"/>
+                <path class="wifi-2" d="M-6,14 Q0,8 6,14" fill="none" stroke="#38bdf8" stroke-width="2.2" stroke-linecap="round"/>
+                <circle class="wifi-3" cx="0" cy="17" r="2.2" fill="#38bdf8"/>
+            </g>
+            <text x="154" y="68" font-size="38" font-weight="700" letter-spacing="-0.5" fill="white">CPAP</text>
+            <text x="154" y="110" font-size="38" font-weight="700" letter-spacing="-0.5" fill="url(#waveGrad)">AutoSync</text>
+            <rect x="154" y="125" width="272" height="2.5" rx="1.25" fill="url(#waveGrad)" opacity="0.7"/>
+        </svg>
+    </div>
+    <p class="sub">Setup &amp; Configuration</p>
+
+    <div class="header-bar">
+        <h2>Configure your uploader settings below</h2>
+        <a href="/" class="btn bs" id="btn-back" style="display:none;text-decoration:none">&#8592; Back to Dashboard</a>
+    </div>
+
+    <div id="status-msg" class="status"></div>
+
+    <div id="loading" class="card">
+        <p style="color:#8f98a0">Loading configuration...</p>
+    </div>
+
+    <div id="app" class="hidden">
+
+        <!-- ════════ WiFi ════════ -->
+        <div class="card">
+            <h2>WiFi Connection</h2>
+            <p class="help-text" style="margin-top:0">
+                Configure up to 4 networks. The device connects to the strongest available one
+                and roams between them as signal degrades.
+            </p>
+
+            <!-- Primary network (slot 1) -->
+            <div class="fg">
+                <label for="f-ssid">Network Name (SSID)</label>
+                <div style="display:flex;gap:8px;align-items:flex-start">
+                    <input type="text" id="f-ssid" placeholder="Enter your WiFi network name" style="flex:1">
+                    <button type="button" class="btn bs" id="btn-scan" onclick="scanWifi()">Scan</button>
+                </div>
+            </div>
+            <div id="wifi-list-wrap" class="hidden">
+                <ul class="wifi-list" id="wifi-list"></ul>
+            </div>
+            <div class="fg">
+                <label for="f-wifipass">Password</label>
+                <div class="pwd-wrap">
+                    <input type="password" id="f-wifipass" placeholder="Enter WiFi password (leave blank to keep existing)">
+                    <button type="button" class="eye-btn" onclick="togglePwd(this)" title="Show/hide password">&#128065;</button>
+                </div>
+            </div>
+
+            <!-- Secondary networks (slots 2-4) — hidden by default -->
+            <div class="wifi-network-extra hidden" id="wifi-row-2">
+                <hr style="border-color:#2a2f3a;margin:14px 0">
+                <div class="fg">
+                    <label for="f-ssid-2">Network 2 SSID</label>
+                    <div style="display:flex;gap:8px;align-items:flex-start">
+                        <input type="text" id="f-ssid-2" placeholder="Secondary network name" style="flex:1">
+                        <button type="button" class="btn bs" onclick="removeNetwork(2)">Remove</button>
+                    </div>
+                </div>
+                <div class="fg">
+                    <label for="f-wifipass-2">Network 2 Password</label>
+                    <div class="pwd-wrap">
+                        <input type="password" id="f-wifipass-2" placeholder="Leave blank to keep existing">
+                        <button type="button" class="eye-btn" onclick="togglePwd(this)" title="Show/hide password">&#128065;</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="wifi-network-extra hidden" id="wifi-row-3">
+                <hr style="border-color:#2a2f3a;margin:14px 0">
+                <div class="fg">
+                    <label for="f-ssid-3">Network 3 SSID</label>
+                    <div style="display:flex;gap:8px;align-items:flex-start">
+                        <input type="text" id="f-ssid-3" placeholder="Tertiary network name" style="flex:1">
+                        <button type="button" class="btn bs" onclick="removeNetwork(3)">Remove</button>
+                    </div>
+                </div>
+                <div class="fg">
+                    <label for="f-wifipass-3">Network 3 Password</label>
+                    <div class="pwd-wrap">
+                        <input type="password" id="f-wifipass-3" placeholder="Leave blank to keep existing">
+                        <button type="button" class="eye-btn" onclick="togglePwd(this)" title="Show/hide password">&#128065;</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="wifi-network-extra hidden" id="wifi-row-4">
+                <hr style="border-color:#2a2f3a;margin:14px 0">
+                <div class="fg">
+                    <label for="f-ssid-4">Network 4 SSID</label>
+                    <div style="display:flex;gap:8px;align-items:flex-start">
+                        <input type="text" id="f-ssid-4" placeholder="Quaternary network name" style="flex:1">
+                        <button type="button" class="btn bs" onclick="removeNetwork(4)">Remove</button>
+                    </div>
+                </div>
+                <div class="fg">
+                    <label for="f-wifipass-4">Network 4 Password</label>
+                    <div class="pwd-wrap">
+                        <input type="password" id="f-wifipass-4" placeholder="Leave blank to keep existing">
+                        <button type="button" class="eye-btn" onclick="togglePwd(this)" title="Show/hide password">&#128065;</button>
+                    </div>
+                </div>
+            </div>
+
+            <button type="button" class="btn bs" id="btn-add-network" onclick="addNetwork()"
+                    style="margin-top:12px">+ Add another network</button>
+        </div>
+
+        <!-- ════════ Timezone ════════ -->
+        <div class="card">
+            <h2>Timezone</h2>
+            <div class="fg" id="tz-select-wrap">
+                <label for="f-tz-select">Select your timezone</label>
+                <select id="f-tz-select" onchange="onTzSelectChange()">
+                    <option value="">Loading timezone list...</option>
+                </select>
+            </div>
+            <div class="fg hidden" id="tz-text-wrap">
+                <label for="f-tz-manual">POSIX Timezone String</label>
+                <input type="text" id="f-tz-manual" placeholder="e.g. AEST-10AEDT,M10.1.0,M4.1.0/3">
+                <span class="help-text">Enter a <a href="https://www.gnu.org/software/libc/manual/html_node/TZ-Variable.html" target="_blank">POSIX TZ string</a> manually.</span>
+            </div>
+            <input type="hidden" id="f-tz-value">
+            <input type="hidden" id="f-tz-name">
+        </div>
+
+        <!-- ════════ Upload Schedule ════════ -->
+        <div class="card">
+            <h2>Upload Schedule</h2>
+            <div class="radio-group">
+                <label class="radio-label" id="smart-mode-label">
+                    <input type="radio" name="upload-mode" value="smart" onchange="onModeChange()" id="radio-smart">
+                    Smart Mode
+                </label>
+                <div class="radio-desc">Auto-detects when you finish therapy near your usual wake-up time. Uploads recent data within minutes of taking your mask off.</div>
+                <div id="pcnt-unavail-note" style="display:none;margin:4px 0 6px 24px;padding:7px 10px;background:#1e2a1e;border:1px solid #3a5a3a;border-radius:6px;font-size:.82em;color:#88bb88">
+                    &#9432; Smart mode is not available on your CPAP machine (AirSense 10 uses a 1-bit SD bus). Scheduled mode is used automatically at runtime.
+                </div>
+                <label class="radio-label">
+                    <input type="radio" name="upload-mode" value="scheduled" onchange="onModeChange()" id="radio-scheduled">
+                    Scheduled Mode
+                </label>
+                <div class="radio-desc">Uploads only during a daily time window.</div>
+            </div>
+
+            <!-- Timeline slider (shared Smart + Scheduled) -->
+            <div id="sched-slider" style="margin-top:14px">
+                <!-- Bar + ticks (inset 10px each side to align with slider thumb centres) -->
+                <div style="background:#0a1520;border:1px solid #2a475e;border-radius:8px;padding:7px 10px 5px;margin-bottom:5px">
+                    <div id="sched-timeline" style="height:10px;border-radius:5px;background:#1e293b;margin-bottom:5px"></div>
+                    <!-- Hour ticks: positions are H/23*100% (matching gradient formula) -->
+                    <div style="position:relative;height:13px;user-select:none">
+                        <span style="position:absolute;left:0%;font-size:.65em;color:#475569">0</span>
+                        <span style="position:absolute;left:13.04%;font-size:.65em;color:#475569;transform:translateX(-50%)">3</span>
+                        <span style="position:absolute;left:26.09%;font-size:.65em;color:#475569;transform:translateX(-50%)">6</span>
+                        <span style="position:absolute;left:39.13%;font-size:.65em;color:#475569;transform:translateX(-50%)">9</span>
+                        <span style="position:absolute;left:52.17%;font-size:.65em;color:#475569;transform:translateX(-50%)">12</span>
+                        <span style="position:absolute;left:65.22%;font-size:.65em;color:#475569;transform:translateX(-50%)">15</span>
+                        <span style="position:absolute;left:78.26%;font-size:.65em;color:#475569;transform:translateX(-50%)">18</span>
+                        <span style="position:absolute;left:91.30%;font-size:.65em;color:#475569;transform:translateX(-50%)">21</span>
+                    </div>
+                </div>
+                <!-- Colour legend -->
+                <div id="timeline-legend" style="display:flex;gap:14px;flex-wrap:wrap;font-size:.74em;color:#64748b;margin-bottom:20px;padding:0 2px">
+                    <span><span style="display:inline-block;width:10px;height:10px;background:#162030;border:1px solid #2a475e;border-radius:2px;vertical-align:middle;margin-right:3px"></span>Quiet — no uploads</span>
+                    <span id="leg-blue"><span style="display:inline-block;width:10px;height:10px;background:#38bdf8;border-radius:2px;vertical-align:middle;margin-right:3px"></span>Recent data only (quick)</span>
+                    <span><span style="display:inline-block;width:10px;height:10px;background:#10b981;border-radius:2px;vertical-align:middle;margin-right:3px"></span>Regular upload</span>
+                </div>
+
+                <div id="smart-slider-row" style="margin-bottom:16px">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
+                        <span style="color:#c7d5e0;font-size:.88em;font-weight:600;flex:1;padding-right:10px;">What time do you usually finish your therapy session?</span>
+                        <div style="display:flex;align-items:center;gap:6px">
+                            <span id="lbl-ssh" style="color:#38bdf8;font-weight:700;font-size:.95em">06:00</span>
+                            <button type="button" class="lock-btn" id="lock-f-smart-start" onclick="toggleSliderLock('f-smart-start')">&#128274;</button>
+                        </div>
+                    </div>
+                    <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Earliest time you take the mask off with no intention of putting it back on. Smart Mode uses this to begin therapy detection.</div>
+                    <input type="range" id="f-smart-start" min="0" max="23" value="6" disabled style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none;touch-action:pan-y;opacity:0.4;cursor:not-allowed;">
+                    <div id="smart-slider-tip" style="margin-top:10px;padding:6px;background:#1e293b;border-left:3px solid #38bdf8;border-radius:4px;font-size:.78em;color:#94a3b8;line-height:1.4">
+                        &#128161; <strong>Tip:</strong> After Smart Mode starts uploading recent data, if you want to resume therapy, you must wait for the upload to complete first (usually under 5 minutes). Failure to do so may result in data loss (SD card error).
+                    </div>
+                </div>
+                <div style="margin-bottom:16px">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
+                        <span style="color:#c7d5e0;font-size:.88em;font-weight:600;flex:1;padding-right:10px;">What time will you definitely not go back to sleep?</span>
+                        <div style="display:flex;align-items:center;gap:6px">
+                            <span id="lbl-sh" style="color:#38bdf8;font-weight:700;font-size:.95em">09:00</span>
+                            <button type="button" class="lock-btn" id="lock-f-start-hour" onclick="toggleSliderLock('f-start-hour')">&#128274;</button>
+                        </div>
+                    </div>
+                    <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Regular uploads start here — starting therapy after this time may cause SD card errors.</div>
+                    <input type="range" id="f-start-hour" min="0" max="23" value="9" disabled style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none;touch-action:pan-y;opacity:0.4;cursor:not-allowed;">
+                </div>
+                <div style="margin-bottom:6px">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
+                        <span style="color:#c7d5e0;font-size:.88em;font-weight:600;flex:1;padding-right:10px;">What is the earliest time you go to sleep?</span>
+                        <div style="display:flex;align-items:center;gap:6px">
+                            <span id="lbl-eh" style="color:#38bdf8;font-weight:700;font-size:.95em">21:00</span>
+                            <button type="button" class="lock-btn" id="lock-f-end-hour" onclick="toggleSliderLock('f-end-hour')">&#128274;</button>
+                        </div>
+                    </div>
+                    <div style="color:#64748b;font-size:.78em;margin-bottom:6px">Uploads must pause before your next therapy session begins.</div>
+                    <input type="range" id="f-end-hour" min="0" max="23" value="21" disabled style="-webkit-appearance:none;appearance:none;width:100%;height:5px;background:#334155;border-radius:3px;outline:none;touch-action:pan-y;opacity:0.4;cursor:not-allowed;">
+                </div>
+            </div>
+
+            <!-- Collapsible timing settings -->
+            <div style="margin-top:12px">
+                <button type="button" id="btn-timing-toggle" onclick="toggleTiming()"
+                    style="background:none;border:none;color:#66c0f4;font-size:.85em;cursor:pointer;padding:0;display:flex;align-items:center;gap:5px">
+                    <span id="timing-chevron" style="font-size:.75em">&#9654;</span> Timing Settings
+                </button>
+                <div id="timing-fields" style="display:none;margin-top:10px;padding:10px 12px;background:#111d2e;border:1px solid #2a475e;border-radius:6px">
+                    <div class="fg" style="margin-bottom:10px">
+                        <label for="f-cooldown">Cooldown between uploads <span style="color:#8f98a0;font-weight:400">(minutes, 1–60)</span></label>
+                        <input type="number" id="f-cooldown" min="1" max="60" value="10" placeholder="10" oninput="clampField(this,1,60)">
+                        <span class="help-text">Time the SD card is released between upload cycles. Default: 10.</span>
+                    </div>
+                    <div class="fg">
+                        <label for="f-excl-access">Max SD card hold time <span style="color:#8f98a0;font-weight:400">(minutes, 1–30)</span></label>
+                        <input type="number" id="f-excl-access" min="1" max="30" value="5" placeholder="5" oninput="clampField(this,1,30)">
+                        <span class="help-text">Maximum time the device holds exclusive SD card control per upload session. Default: 5.</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ════════ SleepHQ Cloud ════════ -->
+        <div class="card">
+            <h2>Cloud Uploads (SleepHQ)</h2>
+            <label class="cb-label">
+                <input type="checkbox" id="f-cloud-enable" onchange="updateConditionals()">
+                Upload to SleepHQ
+            </label>
+            <div id="cloud-fields" class="hidden">
+                <div class="info-note" style="margin-bottom:10px">
+                    &#8505;&#65039; <strong>These are NOT your SleepHQ username and password.</strong> To get your Client ID and Client Secret: go to <strong>sleephq.com/account</strong>,
+                    click <strong>Account Settings</strong> in the lower-left side,
+                    navigate to <strong>API Keys</strong>, then click <strong>Add API Key</strong>.
+                </div>
+                <div class="fg">
+                    <label for="f-cloud-id">Client ID</label>
+                    <input type="text" id="f-cloud-id" placeholder="Your SleepHQ API Client ID">
+                </div>
+                <div class="fg">
+                    <label for="f-cloud-secret">Client Secret</label>
+                    <div class="pwd-wrap">
+                        <input type="password" id="f-cloud-secret" placeholder="Enter secret (leave blank to keep existing)">
+                        <button type="button" class="eye-btn" onclick="togglePwd(this)" title="Show/hide">&#128065;</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ════════ SMB / Network Share ════════ -->
+        <div class="card">
+            <h2>Network Share (SMB)</h2>
+            <label class="cb-label">
+                <input type="checkbox" id="f-smb-enable" onchange="updateConditionals()">
+                Upload to Network Share
+            </label>
+            <div id="smb-fields" class="hidden">
+                <div class="fg">
+                    <label for="f-smb-host">Server (hostname or IP address)</label>
+                    <input type="text" id="f-smb-host" placeholder="e.g. 192.168.1.100 or nas.local" oninput="updateSmbPreview()">
+                </div>
+                <div class="fg">
+                    <label for="f-smb-share">Share Name</label>
+                    <input type="text" id="f-smb-share" placeholder="e.g. cpap_data" oninput="updateSmbPreview()">
+                </div>
+                <div class="smb-preview" id="smb-preview">Path: //&lt;server&gt;/&lt;share&gt;</div>
+                <div class="fg" style="margin-top:10px">
+                    <label for="f-smb-user">Username (optional)</label>
+                    <input type="text" id="f-smb-user" placeholder="Leave blank for guest access">
+                </div>
+                <div class="fg">
+                    <label for="f-smb-pass">Password</label>
+                    <div class="pwd-wrap">
+                        <input type="password" id="f-smb-pass" placeholder="Enter password (leave blank to keep existing)">
+                        <button type="button" class="eye-btn" onclick="togglePwd(this)" title="Show/hide">&#128065;</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ════════ Advanced / Raw Config ════════ -->
+        <div class="card">
+            <h2>Advanced</h2>
+            <label class="cb-label">
+                <input type="checkbox" id="show-raw" onchange="toggleRaw()">
+                Show raw config preview
+            </label>
+            <div id="raw-container" class="hidden">
+                <div class="fg">
+                    <label for="advanced-raw">Full config.txt (auto-generated)</label>
+                    <textarea id="advanced-raw" readonly></textarea>
+                    <span class="help-text">
+                        This is the complete config.txt that will be saved. Unknown/advanced keys are preserved.
+                        Comments are maintained. You can edit this directly if needed (tick "Allow manual editing" first).
+                    </span>
+                </div>
+                <label class="cb-label" style="margin-top:6px">
+                    <input type="checkbox" id="raw-editable" onchange="document.getElementById('advanced-raw').readOnly = !this.checked">
+                    Allow manual editing
+                </label>
+            </div>
+        </div>
+
+        <!-- ════════ Save Button (bottom) ════════ -->
+        <div style="text-align:center;margin:20px 0 30px">
+            <button class="btn bp" id="btn-save" onclick="confirmSave()" style="padding:10px 30px;font-size:1em">
+                Save &amp; Restart
+            </button>
+        </div>
+
+    </div><!-- /app -->
+</div>
+
+<!-- ════════ Validation Error Modal ════════ -->
+<div id="validation-modal" class="modal-overlay">
+    <div class="modal-card">
+        <h2 style="color:#ff6b6b">&#9888; Cannot Save</h2>
+        <p id="validation-msg" style="font-size:.9em;line-height:1.6"></p>
+        <div class="modal-actions">
+            <button class="btn bp" onclick="document.getElementById('validation-modal').style.display='none'">OK, fix it</button>
+        </div>
+    </div>
+</div>
+
+<!-- ════════ Save Confirmation Modal ════════ -->
+<div id="save-modal" class="modal-overlay">
+    <div class="modal-card">
+        <h2>&#9888; Save &amp; Restart</h2>
+        <p>This will save your configuration and reboot the device. All active uploads will be interrupted.</p>
+        <div id="save-instruction"></div>
+        <div class="modal-actions">
+            <button class="btn bs" onclick="document.getElementById('save-modal').style.display='none'">Cancel</button>
+            <button class="btn bd" onclick="document.getElementById('save-modal').style.display='none';saveConfig()">Save &amp; Restart</button>
+        </div>
+    </div>
+</div>
+
+<!-- ════════ Reconnection Assistant Modal (Saving & Rebooting) ════════ -->
+<div id="reconnect-modal" class="modal-overlay">
+    <div class="modal-card">
+        <h2>&#9881; Saving &amp; Rebooting</h2>
+        <div id="reconnect-phases">
+            <div class="reconnect-phase" id="rc-phase1">&#9744; Configuration saved</div>
+            <div class="reconnect-phase" id="rc-phase2">&#9744; Device is rebooting</div>
+            <div class="reconnect-phase" id="rc-phase3">&#9744; Monitoring network for device</div>
+        </div>
+        <div class="reconnect-progress"><div class="reconnect-progress-bar" id="rc-bar"></div></div>
+        <div class="reconnect-attempt" id="rc-attempt"></div>
+        <div id="reconnect-error" class="hidden" style="margin-top:15px; border-top:1px solid #2a475e; padding-top:15px">
+            <p style="font-size:.84em;color:#ff6b6b;margin-bottom:8px">&#9888; Could not reconnect automatically.</p>
+            <div id="rc-error-msg" style="font-size:.82em;color:#8f98a0;line-height:1.5"></div>
+        </div>
+        <div id="rc-debug" class="rc-debug-log"></div>
+    </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════════
+// Configuration Schema & State
+// ══════════════════════════════════════════════════════════════
+
+// Keys managed by the visual form (everything else is preserved as-is)
+var KNOWN_KEYS = [
+    'WIFI_SSID', 'WIFI_PASSWORD',
+    'WIFI_SSID_1', 'WIFI_SSID_2', 'WIFI_SSID_3', 'WIFI_SSID_4',
+    'WIFI_PASSWORD_1', 'WIFI_PASSWORD_2', 'WIFI_PASSWORD_3', 'WIFI_PASSWORD_4',
+    'HOSTNAME',
+    'TZ_STRING', 'TZ_NAME',
+    'UPLOAD_MODE', 'UPLOAD_START_HOUR', 'UPLOAD_END_HOUR', 'SMART_START_HOUR', 'COOLDOWN_MINUTES', 'EXCLUSIVE_ACCESS_MINUTES',
+    'ENDPOINT_TYPE', 'ENDPOINT', 'ENDPOINT_USER', 'ENDPOINT_PASSWORD',
+    'CLOUD_CLIENT_ID', 'CLOUD_CLIENT_SECRET'
+];
+
+// Password keys — values from the server arrive as '******'
+var PASSWORD_KEYS = [
+    'WIFI_PASSWORD',
+    'WIFI_PASSWORD_1', 'WIFI_PASSWORD_2', 'WIFI_PASSWORD_3', 'WIFI_PASSWORD_4',
+    'ENDPOINT_PASSWORD', 'CLOUD_CLIENT_SECRET'
+];
+
+var rawLines = [];   // Array of { type:'kv'|'comment'|'blank'|'raw', key:'', val:'', raw:'' }
+var timezones = [];  // Array of { name:'', posix:'' }
+var isApMode = true;  // Assume SoftAP until /api/status says otherwise (safe default)
+
+// Timezone data embedded at build time (fallback for AP/offline mode)
+// The build script replaces this placeholder with the latest zones.json data
+// Format: { "Region/City": "POSIX_STRING", ... }
+var BUILTIN_TZ = /*__TIMEZONE_DATA__*/{};
+
+// ══════════════════════════════════════════════════════════════
+// Initialization
+// ══════════════════════════════════════════════════════════════
+
+async function init() {
+    try {
+        // Detect AP mode from /api/status (authoritative server ground truth)
+        try {
+            var stRes = await fetch('/api/status');
+            if (stRes.ok) {
+                var stData = await stRes.json();
+                isApMode = !!stData.ap_setup;
+                applyPcntCapable(stData.pcnt_capable !== false);
+            }
+        } catch (e) { /* status fetch failed — keep default isApMode=true */ }
+
+        // Show back button only in regular WebUI mode (not SoftAP)
+        if (!isApMode) {
+            document.getElementById('btn-back').style.display = '';
+        }
+
+        var res = await fetch('/api/config-raw');
+        var text = res.ok ? await res.text() : '';
+        parseConfig(text);
+        populateFormFromConfig();
+        loadTimezones();
+        updateConditionals();
+        updateRawPreview();
+        document.getElementById('loading').classList.add('hidden');
+        document.getElementById('app').classList.remove('hidden');
+    } catch (err) {
+        showStatus('Failed to load configuration. Make sure the SD card is inserted.', 'error');
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+// Config Parsing
+// ══════════════════════════════════════════════════════════════
+
+function parseConfig(text) {
+    rawLines = [];
+    var lines = text.split(/\r?\n/);
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        var trimmed = line.trim();
+        if (trimmed.length === 0) {
+            rawLines.push({ type: 'blank', raw: line });
+        } else if (trimmed.charAt(0) === '#') {
+            rawLines.push({ type: 'comment', raw: line });
+        } else {
+            var eqIdx = line.indexOf('=');
+            if (eqIdx > 0) {
+                var key = line.substring(0, eqIdx).trim();
+                var val = line.substring(eqIdx + 1).trim();
+                rawLines.push({ type: 'kv', key: key, val: val, raw: line });
+            } else {
+                rawLines.push({ type: 'raw', raw: line });
+            }
+        }
+    }
+}
+
+function getValue(key) {
+    if (!key) return '';
+    var searchKey = key.toUpperCase();
+    for (var i = 0; i < rawLines.length; i++) {
+        var line = rawLines[i];
+        if (line.type === 'kv' && line.key.toUpperCase() === searchKey) return line.val;
+    }
+    return '';
+}
+
+// ══════════════════════════════════════════════════════════════
+// Populate Form From Config
+// ══════════════════════════════════════════════════════════════
+
+function populateFormFromConfig() {
+    // WiFi - slot 1: prefer WIFI_SSID_1, fall back to WIFI_SSID alias.
+    document.getElementById('f-ssid').value = getValue('WIFI_SSID_1') || getValue('WIFI_SSID');
+
+    // Slots 2-4: load if present, reveal the row.
+    for (var n = 2; n <= 4; n++) {
+        var ssid = getValue('WIFI_SSID_' + n);
+        document.getElementById('f-ssid-' + n).value = ssid;
+        if (ssid) {
+            document.getElementById('wifi-row-' + n).classList.remove('hidden');
+        }
+    }
+    updateAddNetworkButton();
+    // Password fields are left empty - '******' from server is intentionally not shown
+
+    // Timezone — prefer TZ_NAME (IANA name) over POSIX reverse-lookup
+    document.getElementById('f-tz-value').value = getValue('TZ_STRING');
+    document.getElementById('f-tz-name').value = getValue('TZ_NAME');
+
+    // Upload mode
+    var mode = (getValue('UPLOAD_MODE') || 'smart').toLowerCase();
+    var radios = document.querySelectorAll('input[name="upload-mode"]');
+    for (var i = 0; i < radios.length; i++) {
+        radios[i].checked = (radios[i].value === mode);
+    }
+
+    document.getElementById('f-start-hour').value = getValue('UPLOAD_START_HOUR') || '9';
+    document.getElementById('f-end-hour').value = getValue('UPLOAD_END_HOUR') || '21';
+    document.getElementById('f-cooldown').value = getValue('COOLDOWN_MINUTES') || '10';
+    document.getElementById('f-excl-access').value = getValue('EXCLUSIVE_ACCESS_MINUTES') || '5';
+    document.getElementById('f-smart-start').value = getValue('SMART_START_HOUR') || '6';
+
+    // ENDPOINT_TYPE → cloud/SMB checkboxes
+    var endpointType = getValue('ENDPOINT_TYPE').toUpperCase();
+    var endpoint = getValue('ENDPOINT');
+    var cloudEnabled = endpointType.indexOf('CLOUD') >= 0;
+    var smbEnabled = endpointType.indexOf('SMB') >= 0;
+
+    // Fallback detection if no explicit ENDPOINT_TYPE
+    if (!endpointType) {
+        if (endpoint.indexOf('//') === 0) smbEnabled = true;
+        if (getValue('CLOUD_CLIENT_ID')) cloudEnabled = true;
+    }
+
+    document.getElementById('f-cloud-enable').checked = cloudEnabled;
+    document.getElementById('f-smb-enable').checked = smbEnabled;
+
+    // SleepHQ
+    document.getElementById('f-cloud-id').value = getValue('CLOUD_CLIENT_ID');
+    // CLOUD_CLIENT_SECRET password field left empty intentionally
+
+    // SMB — parse ENDPOINT into host/share
+    if (endpoint.indexOf('//') === 0) {
+        var path = endpoint.substring(2);
+        var slashIdx = path.indexOf('/');
+        if (slashIdx > 0) {
+            document.getElementById('f-smb-host').value = path.substring(0, slashIdx);
+            document.getElementById('f-smb-share').value = path.substring(slashIdx + 1);
+        } else {
+            document.getElementById('f-smb-host').value = path;
+        }
+    }
+    document.getElementById('f-smb-user').value = getValue('ENDPOINT_USER');
+    // ENDPOINT_PASSWORD password field left empty intentionally
+
+    updateSmbPreview();
+    onModeChange();
+}
+
+// ══════════════════════════════════════════════════════════════
+// Timezone Handling
+// ══════════════════════════════════════════════════════════════
+
+async function loadTimezones() {
+    var tzData = null;
+
+    // Try online fetch first (latest data from zones.json)
+    try {
+        var res = await fetch('https://raw.githubusercontent.com/nayarsystems/posix_tz_db/master/zones.json');
+        if (res.ok) {
+            tzData = await res.json();
+            if (typeof tzData !== 'object' || Array.isArray(tzData) || Object.keys(tzData).length === 0) tzData = null;
+        }
+    } catch (e) { /* expected in AP/offline mode */ }
+
+    // Fall back to build-time embedded data
+    if (!tzData && typeof BUILTIN_TZ === 'object' && !Array.isArray(BUILTIN_TZ) && Object.keys(BUILTIN_TZ).length > 0) {
+        tzData = BUILTIN_TZ;
+    }
+
+    if (tzData) {
+        timezones = [];
+        var keys = Object.keys(tzData).sort();
+        for (var i = 0; i < keys.length; i++) {
+            timezones.push({ name: keys[i], posix: tzData[keys[i]] });
+        }
+        populateTzSelect();
+    } else {
+        // No timezone data at all — show text fallback
+        showTzFallback();
+    }
+}
+
+function populateTzSelect() {
+    var select = document.getElementById('f-tz-select');
+    var currentPosix = document.getElementById('f-tz-value').value;
+    var currentName  = document.getElementById('f-tz-name').value;  // preferred: IANA name
+    var found = false;
+
+    select.innerHTML = '<option value="">-- Select Timezone --</option>';
+    for (var i = 0; i < timezones.length; i++) {
+        var tz = timezones[i];
+        var opt = document.createElement('option');
+        opt.value = tz.name;  // store IANA name as value
+        opt.textContent = tz.name;
+        // Prefer matching by IANA name (avoids Melbourne/Sydney ambiguity)
+        // Fall back to POSIX match only if TZ_NAME is absent
+        var matchByName  = currentName  && tz.name  === currentName;
+        var matchByPosix = !currentName && tz.posix === currentPosix;
+        if (matchByName || matchByPosix) {
+            opt.selected = true;
+            found = true;
+        }
+        select.appendChild(opt);
+    }
+
+    // If current value isn't in the list (custom/unknown), add it
+    if (currentPosix && !found) {
+        var opt = document.createElement('option');
+        opt.value = currentName || currentPosix;
+        opt.textContent = currentName ? currentName + ' (custom POSIX)' : 'Custom (' + currentPosix + ')';
+        opt.selected = true;
+        select.appendChild(opt);
+    }
+
+    // Show the select, hide fallback
+    document.getElementById('tz-select-wrap').classList.remove('hidden');
+    document.getElementById('tz-text-wrap').classList.add('hidden');
+}
+
+function showTzFallback() {
+    // No timezone data available — show manual text input
+    document.getElementById('tz-select-wrap').classList.add('hidden');
+    document.getElementById('tz-text-wrap').classList.remove('hidden');
+    document.getElementById('f-tz-manual').value = document.getElementById('f-tz-value').value;
+}
+
+function onTzSelectChange() {
+    var select = document.getElementById('f-tz-select');
+    var ianaName = select.value;  // option value is now the IANA name
+    // Look up the POSIX string for the selected name
+    var posix = '';
+    for (var i = 0; i < timezones.length; i++) {
+        if (timezones[i].name === ianaName) { posix = timezones[i].posix; break; }
+    }
+    document.getElementById('f-tz-value').value = posix;
+    document.getElementById('f-tz-name').value = ianaName;
+    updateRawPreview();
+}
+
+function getTzValue() {
+    // If select is visible, use it; otherwise use manual input
+    if (!document.getElementById('tz-select-wrap').classList.contains('hidden')) {
+        return document.getElementById('f-tz-select').value;  // returns IANA name — resolved to POSIX in collectFormValues
+    }
+    return document.getElementById('f-tz-manual').value.trim();
+}
+
+// ══════════════════════════════════════════════════════════════
+// WiFi Scanning
+// ══════════════════════════════════════════════════════════════
+
+async function scanWifi() {
+    var btn = document.getElementById('btn-scan');
+    var listWrap = document.getElementById('wifi-list-wrap');
+    var list = document.getElementById('wifi-list');
+
+    btn.textContent = 'Scanning...';
+    btn.disabled = true;
+    listWrap.classList.add('hidden');
+
+    try {
+        var res = await fetch('/api/wifi-scan');
+        if (!res.ok) throw new Error('Scan failed');
+        var networks = await res.json();
+
+        list.innerHTML = '';
+        if (networks.length === 0) {
+            list.innerHTML = '<li style="padding:10px;color:#8f98a0">No networks found</li>';
+        } else {
+            var currentSsid = document.getElementById('f-ssid').value;
+            for (var i = 0; i < networks.length; i++) {
+                var net = networks[i];
+                var li = document.createElement('li');
+                li.className = 'wifi-item' + (net.ssid === currentSsid ? ' selected' : '');
+
+                var radio = document.createElement('input');
+                radio.type = 'radio';
+                radio.name = 'wifi-net';
+                radio.value = net.ssid;
+                radio.checked = (net.ssid === currentSsid);
+                radio.onchange = (function(ssid, item) {
+                    return function() {
+                        document.getElementById('f-ssid').value = ssid;
+                        // Update selection highlight
+                        var items = document.querySelectorAll('.wifi-item');
+                        for (var j = 0; j < items.length; j++) items[j].classList.remove('selected');
+                        item.classList.add('selected');
+                        updateRawPreview();
+                    };
+                })(net.ssid, li);
+
+                var lock = document.createElement('span');
+                lock.className = 'wifi-lock';
+                lock.textContent = net.auth !== 0 ? '\uD83D\uDD12' : '\uD83D\uDD13';
+
+                var ssidSpan = document.createElement('span');
+                ssidSpan.className = 'wifi-ssid';
+                ssidSpan.textContent = net.ssid;
+
+                var rssi = document.createElement('span');
+                rssi.className = 'wifi-rssi';
+                rssi.textContent = net.rssi + ' dBm';
+                // Color code signal strength
+                var r = net.rssi;
+                if (r >= -65) rssi.style.color = '#44ff44';
+                else if (r >= -75) rssi.style.color = '#88dd44';
+                else if (r >= -85) rssi.style.color = '#ddcc44';
+                else rssi.style.color = '#dd4444';
+
+                li.appendChild(radio);
+                li.appendChild(lock);
+                li.appendChild(ssidSpan);
+                li.appendChild(rssi);
+
+                // Click anywhere on row to select
+                li.onclick = (function(r) { return function() { r.checked = true; r.onchange(); }; })(radio);
+
+                list.appendChild(li);
+            }
+        }
+        listWrap.classList.remove('hidden');
+    } catch (err) {
+        showStatus('WiFi scan failed. You can type the network name manually.', 'error');
+    } finally {
+        btn.textContent = 'Scan';
+        btn.disabled = false;
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+// UI Interactions
+// ══════════════════════════════════════════════════════════════
+
+function togglePwd(btn) {
+    var inp = btn.previousElementSibling;
+    if (inp.type === 'password') {
+        inp.type = 'text';
+        btn.innerHTML = '&#128064;';
+        btn.title = 'Hide password';
+    } else {
+        inp.type = 'password';
+        btn.innerHTML = '&#128065;';
+        btn.title = 'Show password';
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+// Multi-network add / remove
+// ══════════════════════════════════════════════════════════════
+
+function addNetwork() {
+    // Show the lowest-numbered hidden slot (2..4).
+    for (var n = 2; n <= 4; n++) {
+        var row = document.getElementById('wifi-row-' + n);
+        if (row.classList.contains('hidden')) {
+            row.classList.remove('hidden');
+            document.getElementById('f-ssid-' + n).focus();
+            break;
+        }
+    }
+    updateAddNetworkButton();
+    updateRawPreview();
+}
+
+function removeNetwork(slot) {
+    var row = document.getElementById('wifi-row-' + slot);
+    if (!row) return;
+    document.getElementById('f-ssid-' + slot).value = '';
+    document.getElementById('f-wifipass-' + slot).value = '';
+    row.classList.add('hidden');
+    updateAddNetworkButton();
+    updateRawPreview();
+}
+
+function updateAddNetworkButton() {
+    var btn = document.getElementById('btn-add-network');
+    if (!btn) return;
+    // Hide the button when all 4 rows are visible.
+    var allVisible = true;
+    for (var n = 2; n <= 4; n++) {
+        if (document.getElementById('wifi-row-' + n).classList.contains('hidden')) {
+            allVisible = false;
+            break;
+        }
+    }
+    btn.classList.toggle('hidden', allVisible);
+}
+
+// ══════════════════════════════════════════════════════════════
+// PCNT capability (Smart Mode availability)
+// ══════════════════════════════════════════════════════════════
+function applyPcntCapable(capable) {
+    var radio = document.getElementById('radio-smart');
+    var label = document.getElementById('smart-mode-label');
+    var note  = document.getElementById('pcnt-unavail-note');
+    if (!capable) {
+        radio.disabled = true;
+        label.style.opacity = '0.4';
+        label.style.cursor = 'not-allowed';
+        note.style.display = '';
+        // Force Scheduled if Smart was selected
+        if (radio.checked) {
+            document.getElementById('radio-scheduled').checked = true;
+            onModeChange();
+        }
+    } else {
+        radio.disabled = false;
+        label.style.opacity = '';
+        label.style.cursor = '';
+        note.style.display = 'none';
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+// Per-Slider Lock Toggle & Auto-Relock
+// ══════════════════════════════════════════════════════════════
+var unlockedSliders = {}; // track sliderId -> scrollY
+
+function toggleSliderLock(id) {
+    var slider = document.getElementById(id);
+    var btn = document.getElementById('lock-' + id);
+    if (!slider || !btn) return;
+
+    if (slider.disabled) {
+        // Unlock
+        slider.disabled = false;
+        slider.style.opacity = '1';
+        slider.style.cursor = 'auto';
+        btn.innerHTML = '&#128275;'; // open lock
+        unlockedSliders[id] = window.scrollY;
+    } else {
+        // Lock
+        slider.disabled = true;
+        slider.style.opacity = '0.4';
+        slider.style.cursor = 'not-allowed';
+        btn.innerHTML = '&#128274;'; // closed lock
+        delete unlockedSliders[id];
+    }
+}
+
+// Auto-relock sliders if the user scrolls away
+window.addEventListener('scroll', function() {
+    var keys = Object.keys(unlockedSliders);
+    if (keys.length === 0) return;
+    
+    var currentY = window.scrollY;
+    for (var i = 0; i < keys.length; i++) {
+        var id = keys[i];
+        if (Math.abs(currentY - unlockedSliders[id]) > 100) {
+            var slider = document.getElementById(id);
+            var btn = document.getElementById('lock-' + id);
+            if (slider && btn) {
+                slider.disabled = true;
+                slider.style.opacity = '0.4';
+                slider.style.cursor = 'not-allowed';
+                btn.innerHTML = '&#128274;';
+            }
+            delete unlockedSliders[id];
+        }
+    }
+}, { passive: true });
+
+// ══════════════════════════════════════════════════════════════
+// Timing Settings toggle
+// ══════════════════════════════════════════════════════════════
+function toggleTiming() {
+    var fields = document.getElementById('timing-fields');
+    var chevron = document.getElementById('timing-chevron');
+    var open = fields.style.display !== 'none';
+    fields.style.display = open ? 'none' : '';
+    chevron.innerHTML = open ? '&#9654;' : '&#9660;';
+}
+
+// ══════════════════════════════════════════════════════════════
+// Field clamping helpers
+// ══════════════════════════════════════════════════════════════
+function clampVal(v, min, max) { return Math.min(Math.max(v, min), max); }
+function clampField(el, min, max) {
+    var v = parseInt(el.value);
+    if (!isNaN(v)) { el.value = clampVal(v, min, max); updateRawPreview(); }
+}
+
+// ══════════════════════════════════════════════════════════════
+// Schedule Timeline Slider
+// ══════════════════════════════════════════════════════════════
+function fmtHour(v) { return (v < 10 ? '0' : '') + v + ':00'; }
+
+function updateTimeline() {
+    var mode = 'smart';
+    var radios = document.querySelectorAll('input[name="upload-mode"]');
+    for (var i = 0; i < radios.length; i++) { if (radios[i].checked) { mode = radios[i].value; break; } }
+
+    var ssh = parseInt(document.getElementById('f-smart-start').value);
+    var sh  = parseInt(document.getElementById('f-start-hour').value);
+    var eh  = parseInt(document.getElementById('f-end-hour').value);
+
+    // Enforce 1-hour minimum gaps (cascade from whichever slider moved)
+    if (mode === 'smart') {
+        if (sh <= ssh) { sh = ssh + 1; document.getElementById('f-start-hour').value = sh; }
+        if (eh <= sh)  { eh = sh + 1;  document.getElementById('f-end-hour').value   = eh; }
+        // Cap values at 23
+        if (ssh > 21) { ssh = 21; document.getElementById('f-smart-start').value = ssh;
+                        sh  = 22; document.getElementById('f-start-hour').value  = sh;
+                        eh  = 23; document.getElementById('f-end-hour').value    = eh; }
+        else if (sh > 22) { sh = 22; document.getElementById('f-start-hour').value = sh;
+                            eh = 23; document.getElementById('f-end-hour').value   = eh; }
+        else if (eh > 23) { eh = 23; document.getElementById('f-end-hour').value = eh; }
+    } else {
+        if (eh <= sh)  { eh = sh + 1;  document.getElementById('f-end-hour').value = eh; }
+        if (eh > 23)   { eh = 23;      document.getElementById('f-end-hour').value = eh;
+                         sh = Math.min(sh, 22); document.getElementById('f-start-hour').value = sh; }
+    }
+
+    // Update labels
+    if (mode === 'smart') document.getElementById('lbl-ssh').textContent = fmtHour(ssh);
+    document.getElementById('lbl-sh').textContent = fmtHour(sh);
+    document.getElementById('lbl-eh').textContent = fmtHour(eh);
+
+    // Update timeline gradient
+    // Divide by 23 (slider max) so value=23 fills to 100% of the bar width,
+    // which is inset 10px each side to align with the native slider thumb centres.
+    var bar = document.getElementById('sched-timeline');
+    var sshPct = (ssh / 23) * 100;
+    var shPct  = (sh  / 23) * 100;
+    var ehPct  = (eh  / 23) * 100;
+    if (mode === 'smart') {
+        bar.style.background = 'linear-gradient(to right,'
+            + '#1e293b 0%,#1e293b ' + sshPct + '%,'
+            + '#38bdf8 ' + sshPct + '%,#38bdf8 ' + shPct + '%,'
+            + '#10b981 ' + shPct  + '%,#10b981 ' + ehPct  + '%,'
+            + '#1e293b ' + ehPct  + '%,#1e293b 100%)';
+    } else {
+        bar.style.background = 'linear-gradient(to right,'
+            + '#1e293b 0%,#1e293b ' + shPct + '%,'
+            + '#10b981 ' + shPct + '%,#10b981 ' + ehPct + '%,'
+            + '#1e293b ' + ehPct + '%,#1e293b 100%)';
+    }
+    // Tip and blue legend entry only relevant in Smart mode
+    var tip = document.getElementById('smart-slider-tip');
+    if (tip) tip.style.display = (mode === 'smart') ? '' : 'none';
+    var legBlue = document.getElementById('leg-blue');
+    if (legBlue) legBlue.style.display = (mode === 'smart') ? '' : 'none';
+
+    updateRawPreview();
+}
+
+function onModeChange() {
+    var radios = document.querySelectorAll('input[name="upload-mode"]');
+    var mode = 'smart';
+    for (var i = 0; i < radios.length; i++) {
+        if (radios[i].checked) { mode = radios[i].value; break; }
+    }
+    var smartRow = document.getElementById('smart-slider-row');
+    if (smartRow) smartRow.style.display = (mode === 'smart') ? '' : 'none';
+    updateTimeline();
+}
+
+// Attach slider listeners once DOM is ready
+document.addEventListener('DOMContentLoaded', function() {
+    ['f-smart-start','f-start-hour','f-end-hour'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.addEventListener('input', updateTimeline);
+    });
+});
+
+function updateConditionals() {
+    var cloudOn = document.getElementById('f-cloud-enable').checked;
+    var smbOn = document.getElementById('f-smb-enable').checked;
+    document.getElementById('cloud-fields').classList.toggle('hidden', !cloudOn);
+    document.getElementById('smb-fields').classList.toggle('hidden', !smbOn);
+    updateRawPreview();
+}
+
+function updateSmbPreview() {
+    var host = document.getElementById('f-smb-host').value.trim();
+    var share = document.getElementById('f-smb-share').value.trim();
+    var preview = document.getElementById('smb-preview');
+    if (host && share) {
+        preview.textContent = 'Path: //' + host + '/' + share;
+        preview.style.color = '#66c0f4';
+    } else {
+        preview.textContent = 'Path: //<server>/<share>';
+        preview.style.color = '#8f98a0';
+    }
+    updateRawPreview();
+}
+
+function toggleRaw() {
+    var on = document.getElementById('show-raw').checked;
+    document.getElementById('raw-container').classList.toggle('hidden', !on);
+    if (on) updateRawPreview();
+}
+
+// ══════════════════════════════════════════════════════════════
+// Build Config String
+// ══════════════════════════════════════════════════════════════
+
+function collectFormValues() {
+    var vals = {};
+
+    // Slot 1 - keep using WIFI_SSID / WIFI_PASSWORD (alias for slot 1) so
+    // existing single-network configs round-trip without reformatting.
+    vals['WIFI_SSID'] = document.getElementById('f-ssid').value.trim();
+    var wifiPass = document.getElementById('f-wifipass').value;
+    if (wifiPass !== '') {
+        vals['WIFI_PASSWORD'] = wifiPass;
+    }
+    // else: key not in vals → rawLines keeps original '******'
+
+    // Slots 2-4: write WIFI_SSID_N / WIFI_PASSWORD_N when SSID is non-empty.
+    // If a slot was previously populated and is now empty, write empty SSID
+    // so the parser drops the entry on next load (compaction in Config).
+    for (var n = 2; n <= 4; n++) {
+        var rowVisible = !document.getElementById('wifi-row-' + n).classList.contains('hidden');
+        var ssid = document.getElementById('f-ssid-' + n).value.trim();
+        var pwd  = document.getElementById('f-wifipass-' + n).value;
+        if (rowVisible && ssid) {
+            vals['WIFI_SSID_' + n] = ssid;
+            if (pwd !== '') vals['WIFI_PASSWORD_' + n] = pwd;
+        } else {
+            // Row hidden or SSID cleared - emit empty so any pre-existing
+            // entry in config.txt is overwritten with blank (treated as unset).
+            vals['WIFI_SSID_' + n] = '';
+            if (pwd !== '') {
+                vals['WIFI_PASSWORD_' + n] = '';
+            }
+        }
+    }
+
+    // Timezone — write both TZ_STRING (POSIX) and TZ_NAME (IANA) to config
+    if (!document.getElementById('tz-select-wrap').classList.contains('hidden')) {
+        var ianaName = document.getElementById('f-tz-select').value;
+        var posix = '';
+        for (var k = 0; k < timezones.length; k++) {
+            if (timezones[k].name === ianaName) { posix = timezones[k].posix; break; }
+        }
+        if (posix)  vals['TZ_STRING'] = posix;
+        if (ianaName) vals['TZ_NAME'] = ianaName;
+    } else {
+        var manual = document.getElementById('f-tz-manual').value.trim();
+        if (manual) vals['TZ_STRING'] = manual;
+    }
+
+    // Upload mode
+    var radios = document.querySelectorAll('input[name="upload-mode"]');
+    var mode = 'smart';
+    for (var i = 0; i < radios.length; i++) { if (radios[i].checked) { mode = radios[i].value; break; } }
+    vals['UPLOAD_MODE'] = mode;
+
+    vals['UPLOAD_START_HOUR'] = document.getElementById('f-start-hour').value;
+    vals['UPLOAD_END_HOUR'] = document.getElementById('f-end-hour').value;
+    vals['COOLDOWN_MINUTES'] = clampVal(parseInt(document.getElementById('f-cooldown').value)||10, 1, 60);
+    vals['EXCLUSIVE_ACCESS_MINUTES'] = clampVal(parseInt(document.getElementById('f-excl-access').value)||5, 1, 30);
+    vals['SMART_START_HOUR'] = document.getElementById('f-smart-start').value;
+
+    // Endpoint type
+    var cloudOn = document.getElementById('f-cloud-enable').checked;
+    var smbOn = document.getElementById('f-smb-enable').checked;
+    var types = [];
+    if (smbOn) types.push('SMB');
+    if (cloudOn) types.push('CLOUD');
+    if (types.length > 0) vals['ENDPOINT_TYPE'] = types.join(',');
+
+    // SMB endpoint path
+    if (smbOn) {
+        var host = document.getElementById('f-smb-host').value.trim();
+        var share = document.getElementById('f-smb-share').value.trim();
+        if (host && share) {
+            vals['ENDPOINT'] = '//' + host + '/' + share;
+        } else if (host) {
+            vals['ENDPOINT'] = '//' + host;
+        }
+        var user = document.getElementById('f-smb-user').value.trim();
+        if (user) vals['ENDPOINT_USER'] = user;
+
+        var smbPass = document.getElementById('f-smb-pass').value;
+        if (smbPass !== '') {
+            vals['ENDPOINT_PASSWORD'] = smbPass;
+        }
+    }
+
+    // SleepHQ
+    if (cloudOn) {
+        var cid = document.getElementById('f-cloud-id').value.trim();
+        if (cid) vals['CLOUD_CLIENT_ID'] = cid;
+
+        var csecret = document.getElementById('f-cloud-secret').value;
+        if (csecret !== '') {
+            vals['CLOUD_CLIENT_SECRET'] = csecret;
+        }
+    }
+
+    return vals;
+}
+
+function buildConfigString() {
+    var vals = collectFormValues();
+    var knownSet = {};
+    for (var i = 0; i < KNOWN_KEYS.length; i++) knownSet[KNOWN_KEYS[i]] = true;
+
+    var output = [];
+    var written = {};
+
+    // Pass 1: iterate rawLines, preserving order
+    for (var i = 0; i < rawLines.length; i++) {
+        var line = rawLines[i];
+        var uppercaseKey = (line.type === 'kv') ? line.key.toUpperCase() : null;
+
+        if (uppercaseKey && knownSet[uppercaseKey]) {
+            // Known key — replace with form value or keep original
+            if (vals.hasOwnProperty(uppercaseKey)) {
+                output.push(line.key + '=' + vals[uppercaseKey]);
+                written[uppercaseKey] = true;
+            } else {
+                // Form didn't produce this key (e.g., password unchanged or read-only) — keep original
+                output.push(line.raw);
+                written[uppercaseKey] = true;
+            }
+        } else {
+            // Comment, blank, unknown key — preserve as-is
+            output.push(line.raw);
+        }
+    }
+
+    // Pass 2: append new keys from vals that didn't exist in original config.txt
+    for (var key in vals) {
+        if (vals.hasOwnProperty(key) && !written[key]) {
+            output.push(key + '=' + vals[key]);
+        }
+    }
+
+    // Strip trailing blank/empty entries to prevent newline accumulation
+    while (output.length > 0 && output[output.length - 1].trim() === '') {
+        output.pop();
+    }
+
+    // Join with \r\n (FAT filesystem convention) — exactly one trailing newline
+    return output.join('\r\n') + '\r\n';
+}
+
+function updateRawPreview() {
+    var textarea = document.getElementById('advanced-raw');
+    if (textarea && !document.getElementById('raw-editable').checked) {
+        textarea.value = buildConfigString();
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+// Save Config
+// ══════════════════════════════════════════════════════════════
+
+function validateForm() {
+    var cloudOn = document.getElementById('f-cloud-enable').checked;
+    var smbOn   = document.getElementById('f-smb-enable').checked;
+    if (!cloudOn && !smbOn) {
+        document.getElementById('validation-msg').innerHTML =
+            'At least one upload destination must be enabled.<br><br>'
+            + 'Please enable <b>SleepHQ Cloud</b>, <b>Network Share (SMB)</b>, or both.';
+        document.getElementById('validation-modal').style.display = 'flex';
+        return false;
+    }
+    if (cloudOn) {
+        var cid = document.getElementById('f-cloud-id').value.trim();
+        if (!cid) {
+            document.getElementById('validation-msg').innerHTML =
+                'SleepHQ is enabled but the <b>Client ID</b> field is empty.<br><br>'
+                + 'Enter your SleepHQ API Client ID or disable SleepHQ.';
+            document.getElementById('validation-modal').style.display = 'flex';
+            return false;
+        }
+    }
+    if (smbOn) {
+        var host = document.getElementById('f-smb-host').value.trim();
+        if (!host) {
+            document.getElementById('validation-msg').innerHTML =
+                'SMB is enabled but the <b>Server</b> field is empty.<br><br>'
+                + 'Enter the hostname or IP address of your NAS/PC or disable SMB.';
+            document.getElementById('validation-modal').style.display = 'flex';
+            return false;
+        }
+    }
+    var cd = parseInt(document.getElementById('f-cooldown').value);
+    if (isNaN(cd) || cd < 1 || cd > 60) {
+        document.getElementById('validation-msg').innerHTML =
+            '<b>Cooldown</b> must be between 1 and 60 minutes.';
+        document.getElementById('validation-modal').style.display = 'flex';
+        return false;
+    }
+    var ea = parseInt(document.getElementById('f-excl-access').value);
+    if (isNaN(ea) || ea < 1 || ea > 30) {
+        document.getElementById('validation-msg').innerHTML =
+            '<b>Max SD card hold time</b> must be between 1 and 30 minutes.';
+        document.getElementById('validation-modal').style.display = 'flex';
+        return false;
+    }
+    return true;
+}
+
+function confirmSave() {
+    if (!validateForm()) return;
+    var hostname = getReconnectHostname();
+    var inst = document.getElementById('save-instruction');
+    var msg = '';
+    if (isApMode) {
+        msg = '<p style="color:#ffcc44;font-weight:600;margin-top:10px">&#9888; Action Required After Reboot</p>' +
+              '<p style="font-size:0.88em">After reboot, an attempt will be made to redirect you to the main Web UI (if connection to your WiFi is successful). ' +
+              'If you are not redirected and you cannot connect to <strong>' + hostname + '.local</strong> within the first 2 minutes, ' +
+              'please eject the SD card and reinsert it.</p>';
+    } else {
+        msg = '<p style="color:#ffcc44;font-weight:600;margin-top:10px">&#9888; Action Required After Reboot</p>' +
+              '<p style="font-size:0.88em">After reboot, you will be redirected to the main Web UI. ' +
+              'If you are not redirected and you cannot connect to <strong>' + hostname + '.local</strong> within the first 2 minutes, ' +
+              'please eject the SD card and reinsert it.</p>';
+    }
+    inst.innerHTML = msg;
+    document.getElementById('save-modal').style.display = 'flex';
+}
+
+async function saveConfig() {
+    var btn = document.getElementById('btn-save');
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+    showStatus('', '');
+
+    // If raw editing is enabled, use the textarea content directly
+    var payload;
+    if (document.getElementById('raw-editable').checked) {
+        payload = document.getElementById('advanced-raw').value;
+    } else {
+        payload = buildConfigString();
+    }
+
+    try {
+        var res = await fetch('/api/config-raw', {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain' },
+            body: payload
+        });
+
+        if (res.ok) {
+            // Unified saving UI for both AP and Regular modes
+            startReconnectionAssistant();
+        } else {
+            throw new Error('Server returned ' + res.status);
+        }
+    } catch (err) {
+        showStatus('Failed to save. Please try again.', 'error');
+        btn.disabled = false;
+        btn.textContent = 'Save & Restart';
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+// Reconnection Assistant (SoftAP mode)
+// ══════════════════════════════════════════════════════════════
+
+function getReconnectHostname() {
+    // Determine the actual payload that will be (or was) saved
+    var payload = document.getElementById('raw-editable').checked 
+        ? document.getElementById('advanced-raw').value 
+        : buildConfigString();
+    
+    // Extract HOSTNAME using regex (case-insensitive, handles various whitespace)
+    var match = payload.match(/^HOSTNAME\s*=\s*(.+)$/mi);
+    if (match && match[1]) {
+        var h = match[1].trim();
+        if (h) return h;
+    }
+    return 'cpap';
+}
+
+var rcTimer = null;
+var rcStartTime = 0;
+var rcAttemptCount = 0;
+var rcHostname = 'cpap';     // Resolved hostname for current reconnection attempt
+var rcIpAddress = '';        // Extracted IP address for fallback polling
+var rcUsingIpFallback = false; // Track if we've switched to IP-based polling
+var RC_MAX_ATTEMPTS = 40;    // 40 attempts × 3s = 120s (2 minutes)
+var RC_POLL_INTERVAL = 3000; // 3 seconds
+var RC_FALLBACK_AFTER = 10;  // Switch to IP-based polling after 10 attempts (30s)
+
+function startReconnectionAssistant() {
+    document.getElementById('reconnect-modal').style.display = 'flex';
+    rcStartTime = Date.now();
+    rcAttemptCount = 0;
+    rcHostname = getReconnectHostname();
+    rcUsingIpFallback = false;
+    
+    // Extract IP address from current origin for automatic fallback
+    var originMatch = window.location.origin.match(/https?:\/\/([^/:]+)/);
+    rcIpAddress = originMatch ? originMatch[1] : '';
+
+    // Phase 1: saved
+    setPhase('rc-phase1', 'done');
+    setPhase('rc-phase2', 'active');
+    setPhase('rc-phase3', '');
+    document.getElementById('rc-attempt').textContent = '';
+    document.getElementById('rc-bar').style.width = '10%';
+    document.getElementById('rc-debug').innerHTML = '';
+    rcLog('Assistant started inside ' + (isApMode ? 'AP' : 'Regular') + ' mode');
+    rcLog('Current origin: ' + window.location.origin);
+    if (rcIpAddress) {
+        rcLog('IP fallback available: ' + rcIpAddress);
+    }
+
+    // Trigger soft reboot after a short delay
+    setTimeout(function() {
+        rcLog('Sending /soft-reboot signal...');
+        fetch('/soft-reboot', { method: 'GET' }).catch(function(e) {
+            rcLog('Reboot trig error: ' + e.message);
+        });
+    }, 500);
+
+    // Phase 2: rebooting — wait 8s before starting to poll
+    setTimeout(function() {
+        rcLog('Wait period over, starting network polls...');
+        setPhase('rc-phase2', 'done');
+        setPhase('rc-phase3', 'active');
+        document.getElementById('rc-bar').style.width = '30%';
+        rcAttemptCount = 0;
+        rcTimer = setTimeout(pollReconnect, RC_POLL_INTERVAL);
+    }, 8000);
+}
+
+function pollReconnect() {
+    rcAttemptCount++;
+    
+    // Switch to IP-based polling after RC_FALLBACK_AFTER attempts (only in regular WiFi mode, not AP mode)
+    if (!isApMode && !rcUsingIpFallback && rcAttemptCount >= RC_FALLBACK_AFTER && rcIpAddress) {
+        rcUsingIpFallback = true;
+        rcLog('<span class="rc-debug-warn">Switching to IP-based polling:</span> ' + rcIpAddress);
+    }
+    
+    var hostname = rcHostname;
+    var url;
+    if (rcUsingIpFallback && rcIpAddress) {
+        url = 'http://' + rcIpAddress + '/api/status';
+    } else {
+        url = 'http://' + hostname + '.local/api/status';
+    }
+
+    document.getElementById('rc-attempt').textContent = 'Attempting to reconnect... (' + rcAttemptCount + '/' + RC_MAX_ATTEMPTS + ')';
+    document.getElementById('rc-bar').style.width = (30 + (rcAttemptCount / RC_MAX_ATTEMPTS) * 60) + '%';
+    rcLog('Polling: ' + url);
+
+    // Sane timeout: if the OS resolver or network takes > 10s, abort and retry
+    var controller = new AbortController();
+    var timeout = setTimeout(function() { controller.abort(); }, 10000);
+
+    fetch(url, { mode: 'no-cors', cache: 'no-store', signal: controller.signal }).then(function(res) {
+        clearTimeout(timeout);
+        rcLog('<span class="rc-debug-ok">Success!</span> Received heartbeat from ' + url);
+        
+        // Option A: Trust the opaque response as a definitive signal the device is up
+        setPhase('rc-phase3', 'done');
+        document.getElementById('rc-bar').style.width = '100%';
+        document.getElementById('rc-attempt').textContent = 'Connected! Redirecting...';
+        
+        setTimeout(function() {
+            var redirectUrl;
+            if (rcUsingIpFallback && rcIpAddress) {
+                redirectUrl = 'http://' + rcIpAddress + '/';
+                rcLog('Redirecting to ' + redirectUrl);
+            } else {
+                redirectUrl = 'http://' + hostname + '.local/';
+                rcLog('Redirecting to ' + redirectUrl);
+            }
+            window.location.href = redirectUrl;
+        }, 1500);
+    }).catch(function(err) {
+        clearTimeout(timeout);
+        var msg = (err.name === 'AbortError') ? 'Timeout' : err.message;
+        rcLog('<span class="rc-debug-warn">Warning:</span> ' + msg);
+        // Expected: fetch fails while phone still on SoftAP or device not yet up
+        scheduleNextPoll();
+    });
+}
+
+function rcLog(msg) {
+    var log = document.getElementById('rc-debug');
+    var div = document.createElement('div');
+    div.className = 'rc-debug-entry';
+    var ts = new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    div.innerHTML = '<span class="rc-debug-ts">[' + ts + ']</span> ' + msg;
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+}
+
+function scheduleNextPoll() {
+    if (rcAttemptCount >= RC_MAX_ATTEMPTS) {
+        // Timeout — show failure
+        setPhase('rc-phase3', '');
+        document.getElementById('rc-bar').style.width = '100%';
+        document.getElementById('rc-bar').style.background = '#c0392b';
+        document.getElementById('reconnect-error').classList.remove('hidden');
+        document.getElementById('rc-attempt').textContent = '';
+        
+        var hostname = rcHostname;
+        var errorMsg = 'The device could not be reached at <strong>' + hostname + '.local</strong>';
+        if (rcUsingIpFallback && rcIpAddress) {
+            errorMsg += ' or <strong>' + rcIpAddress + '</strong>';
+        }
+        errorMsg += ' after 2 minutes.<br><br>' +
+            'Please <strong>eject the SD card and reinsert it</strong> into the device to restore the connection or re-enter setup mode.';
+        document.getElementById('rc-error-msg').innerHTML = errorMsg;
+        return;
+    }
+    rcTimer = setTimeout(pollReconnect, RC_POLL_INTERVAL);
+}
+
+function tryReconnectManual() {
+    var ip = document.getElementById('rc-ip-input').value.trim();
+    if (!ip) return;
+    var url = 'http://' + ip + '/api/status';
+    document.getElementById('rc-attempt').textContent = 'Trying ' + ip + '...';
+    fetch(url, { cache: 'no-store' }).then(function(res) {
+        if (res.ok) {
+            setPhase('rc-phase3', 'done');
+            document.getElementById('rc-bar').style.width = '100%';
+            document.getElementById('rc-bar').style.background = '#66c0f4';
+            document.getElementById('rc-attempt').textContent = 'Connected! Redirecting...';
+            setTimeout(function() {
+                window.location.href = 'http://' + ip + '/';
+            }, 1500);
+        } else {
+            document.getElementById('rc-attempt').textContent = 'No response from ' + ip + '. Try another IP.';
+        }
+    }).catch(function() {
+        document.getElementById('rc-attempt').textContent = 'Could not reach ' + ip + '. Try another IP.';
+    });
+}
+
+function setPhase(id, state) {
+    var el = document.getElementById(id);
+    el.className = 'reconnect-phase' + (state ? ' ' + state : '');
+    var text = el.textContent.replace(/^[\u2610\u2611\u2612]\s*/, '');
+    if (state === 'done') {
+        el.innerHTML = '\u2611 ' + text;
+    } else if (state === 'active') {
+        el.innerHTML = '\u25B6 ' + text;
+    } else {
+        el.innerHTML = '\u2610 ' + text;
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+// Reconnection — Regular WebUI mode
+// ══════════════════════════════════════════════════════════════
+
+// Reconnection — Regular WebUI mode (Deprecated: unified into startReconnectionAssistant)
+function startWebuiReconnectPoll() {
+    startReconnectionAssistant();
+}
+
+// ══════════════════════════════════════════════════════════════
+// Helpers
+// ══════════════════════════════════════════════════════════════
+
+function showStatus(msg, type) {
+    var el = document.getElementById('status-msg');
+    if (!msg) { el.className = 'status'; return; }
+    el.textContent = msg;
+    el.className = 'status ' + type;
+}
+
+// ══════════════════════════════════════════════════════════════
+// Bootstrap
+// ══════════════════════════════════════════════════════════════
+
+window.addEventListener('DOMContentLoaded', init);
+
+// Auto-update raw preview on all input/change events
+document.addEventListener('input', function() { updateRawPreview(); });
+document.addEventListener('change', function() { updateRawPreview(); });
+</script>
+</body>
+</html>

@@ -3,12 +3,14 @@
 
 #include <Arduino.h>
 #include <FS.h>
+#include "StealthConfigReader.h"
 
 class SDCardManager {
 private:
     bool initialized;
     bool espHasControl;
     unsigned long controlAcquiredAt;
+    SavedCardState savedState;
 
     void setControlPin(bool espControl);
 

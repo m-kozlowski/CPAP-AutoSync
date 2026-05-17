@@ -3,6 +3,7 @@
 #ifndef UNIT_TEST
 #include "SDCardManager.h"
 #include <WiFi.h>
+#include <WiFiUdp.h>
 #include <LittleFS.h>
 
 #ifdef ENABLE_LOG_RESOURCE_SUFFIX
@@ -62,6 +63,8 @@ Logger::Logger()
     , logFileSystem(nullptr)
     , logFileName("/debug_log.txt")
     , lastDumpedBytes(0)
+    , syslogEnabled(false)
+    , syslogPort(514)
 {
     // Use static BSS buffer (zero heap allocation)
     buffer = s_logBuffer;
@@ -146,6 +149,11 @@ void Logger::log(const char* message) {
     // Write to buffer if initialized
     if (initialized && buffer != nullptr) {
         writeToBuffer(finalMsg, len);
+    }
+
+    // Forward to remote syslog (UDP, fire-and-forget)
+    if (syslogEnabled) {
+        writeToSyslog(finalMsg, len);
     }
     
     // Note: persistent log saving is handled by the periodic flush task.
@@ -505,13 +513,20 @@ void Logger::enableLogSaving(bool enable, fs::FS* logFS) {
         return;
     }
     
+    // Avoid redundant headers if already enabled on the same filesystem
+    if (logSavingEnabled == enable && (logFS == nullptr || logFileSystem == logFS)) {
+        return;
+    }
+
+    bool newlyEnabled = enable && (!logSavingEnabled || logFileSystem != logFS);
     logSavingEnabled = enable;
+    
     if (logFS != nullptr) {
         logFileSystem = logFS;
     }
     
-    if (enable) {
-        // Reset dump tracking when enabling
+    if (newlyEnabled) {
+        // Reset dump tracking when enabling to ensure full buffer is captured
         lastDumpedBytes = 0;
         
         // One-time migration: remove legacy log files from old 2-file scheme
@@ -533,6 +548,9 @@ void Logger::enableLogSaving(bool enable, fs::FS* logFS) {
             if (n > 0) sepFile.write((const uint8_t*)sep, n);
             sepFile.close();
         }
+
+        // Flush the existing RAM buffer to NAND immediately to capture stabilization/SmartWait logs
+        dumpSavedLogsPeriodic(nullptr, true);
     }
 }
 
@@ -792,4 +810,54 @@ void Logger::checkPreviousBootError(fs::FS& fs, const char* filename) {
 bool Logger::dumpSavedLogs(const String& reason) {
     (void)reason;
     return dumpSavedLogsPeriodic(nullptr, true);
+}
+
+// ── Remote UDP Syslog ───────────────────────────────────────────────────────
+
+void Logger::enableSyslog(const IPAddress& host, uint16_t port, const char* hostname) {
+    syslogHost = host;
+    syslogPort = port;
+    strncpy(syslogHostname, hostname, sizeof(syslogHostname) - 1);
+    syslogHostname[sizeof(syslogHostname) - 1] = '\0';
+    syslogEnabled = true;
+}
+
+#ifndef UNIT_TEST
+// Static WiFiUDP instance — lives in BSS, zero heap allocation.
+// Used only for outbound sendTo; no begin() / listening needed.
+static WiFiUDP s_syslogUdp;
+#endif
+
+void Logger::writeToSyslog(const char* data, size_t len) {
+#ifndef UNIT_TEST
+    if (!syslogEnabled || len == 0) return;
+
+    // Determine RFC 3164 severity from the log level prefix.
+    // Default: 6 (Informational).  Facility: local0 (16).
+    uint8_t severity = 6;
+    if (len >= 6 && memcmp(data, "[WARN]", 6) == 0) {
+        severity = 4;  // Warning
+    } else if (len >= 7 && memcmp(data, "[ERROR]", 7) == 0) {
+        severity = 3;  // Error
+    }
+    uint8_t pri = (16 * 8) + severity;  // facility local0 = 16
+
+    // Build RFC 3164 header: <PRI>HOSTNAME TAG: MSG
+    // Keep it on the stack — no heap allocation.
+    char hdr[64];
+    int hdrLen = snprintf(hdr, sizeof(hdr), "<%u>%s cpap: ", pri, syslogHostname);
+    if (hdrLen <= 0 || hdrLen >= (int)sizeof(hdr)) return;
+
+    // Strip trailing newline from data if present (syslog doesn't use them).
+    size_t msgLen = len;
+    if (msgLen > 0 && data[msgLen - 1] == '\n') msgLen--;
+
+    // Fire-and-forget UDP send.  If WiFi is down or the TX queue is full,
+    // endPacket() returns 0 and we silently drop — the circular buffer
+    // and LittleFS rotation are the durable stores.
+    s_syslogUdp.beginPacket(syslogHost, syslogPort);
+    s_syslogUdp.write((const uint8_t*)hdr, hdrLen);
+    s_syslogUdp.write((const uint8_t*)data, msgLen);
+    s_syslogUdp.endPacket();
+#endif
 }

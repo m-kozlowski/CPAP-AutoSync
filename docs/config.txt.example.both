@@ -1,9 +1,15 @@
 # CPAP AutoSync Configuration
 
 # WiFi Settings
+# WIFI_SSID is an alias for WIFI_SSID_1.  Up to 4 networks supported
+# (WIFI_SSID_1..4 / WIFI_PASSWORD_1..4).  Configure more than one to enable
+# automatic failover and RSSI-based roaming between them.
 WIFI_SSID = YourNetworkName
 WIFI_PASSWORD = YourNetworkPassword
+# WIFI_SSID_2 = SecondaryNetwork
+# WIFI_PASSWORD_2 = SecondaryPassword
 HOSTNAME = cpap
+# NTP_SERVER=pool.ntp.org
 
 # Dual Upload Settings (SMB + SleepHQ)
 ENDPOINT_TYPE = SMB,CLOUD

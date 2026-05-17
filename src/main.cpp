@@ -22,6 +22,7 @@
 #include "Logger.h"
 #include "pins_config.h"
 #include "version.h"
+#include "EarlyPCNT.h"
 
 #include "TrafficMonitor.h"
 #include "UploadFSM.h"
@@ -59,11 +60,14 @@ bool g_mdnsTimedOut = false;
 // ============================================================================
 // Global Objects
 // ============================================================================
+#include "NetworkHints.h"
+
 Config config;
 SDCardManager sdManager;
 WiFiManager wifiManager;
 FileUploader* uploader = nullptr;
 TrafficMonitor trafficMonitor;
+NetworkHints networkHints;
 
 #ifdef ENABLE_OTA_UPDATES
 OTAManager otaManager;
@@ -88,6 +92,16 @@ bool g_nothingToUpload = false;  // Set when pre-flight finds no work — skip r
 // This prevents pointless SD mount + scan cycles every 2 minutes when the
 // CPAP hasn't produced any new data — a significant power savings.
 bool g_noWorkSuppressed = false;
+
+// ── PCNT capability: true if CPAP uses 4-bit SD (DAT3 pulses detected) ──
+// Persisted to NVS on power-on boot; read from NVS on soft/watchdog reboots.
+// When false, "smart" upload mode is not available (forced to "scheduled").
+bool g_pcntCapable = false;
+bool g_apSetupMode = false;
+// AP mode is only permitted on cold-boot (power-on / external hard reset).
+// Soft reboots (ESP_RST_SW), watchdog resets, and panics must never start AP.
+// Set once in setup() from esp_reset_reason() — never changes after boot.
+bool g_apModeAllowed = false;
 
 // Monitoring mode flags
 bool monitoringRequested = false;
@@ -141,6 +155,7 @@ struct UploadTaskParams {
     int maxMinutes;
     DataFilter filter;
     bool forceTriggered;  // true when upload was manually triggered via web UI
+    bool reducedRetries;  // true when outside scheduled hours (fewer retries, fast fail)
 };
 
 // ============================================================================
@@ -307,6 +322,26 @@ const char* getResetReasonString(esp_reset_reason_t reason) {
 }
 
 // ============================================================================
+// Pre-Main Constructor: Earliest PCNT + MUX Lock
+// Runs before app_main() / setup() — captures the very first CPAP bus pulses.
+// Priority 101 (0-100 reserved for system/compiler).
+// ============================================================================
+__attribute__((constructor(101)))
+static void preinitPcntAndMux() {
+    // 1. Lock MUX to CPAP immediately — eliminates floating-pin jitter
+    gpio_reset_pin((gpio_num_t)SD_SWITCH_PIN);
+    gpio_set_direction((gpio_num_t)SD_SWITCH_PIN, GPIO_MODE_OUTPUT);
+    gpio_set_level((gpio_num_t)SD_SWITCH_PIN, SD_SWITCH_CPAP_VALUE);
+
+    // 2. Release any stale RTC hold on CS_SENSE (legacy ULP firmware residue)
+    rtc_gpio_hold_dis((gpio_num_t)CS_SENSE);
+    rtc_gpio_deinit((gpio_num_t)CS_SENSE);
+
+    // 3. Start PCNT immediately — capture the very first CPAP bus pulses
+    EarlyPCNT::init(CS_SENSE);
+}
+
+// ============================================================================
 // Setup Function
 // ============================================================================
 void setup() {
@@ -337,22 +372,9 @@ void setup() {
     // preventing TLS from fragmenting the general heap.
     tlsArenaInit();
     
-    // CRITICAL: Immediately release SD card control to CPAP machine
-    // This must happen before any delays to prevent CPAP machine errors
-    // Initialize control pins
-    // ── Fix for ULP firmware residue: release RTC GPIO hold on CS_SENSE ──
-    // A previous firmware version configured GPIO 33 as an RTC GPIO with
-    // rtc_gpio_hold_en().  RTC hold survives software resets (OTA updates),
-    // locking the pin in RTC mode and disconnecting it from the digital GPIO
-    // matrix — which makes PCNT invisible to the signal.  Explicitly release
-    // the hold and switch back to normal GPIO before anything else touches
-    // the pin.  Safe to call even if the hold was never set (no-op).
-    rtc_gpio_hold_dis((gpio_num_t)CS_SENSE);
-    rtc_gpio_deinit((gpio_num_t)CS_SENSE);
-
-    pinMode(CS_SENSE, INPUT);
-    pinMode(SD_SWITCH_PIN, OUTPUT);
-    digitalWrite(SD_SWITCH_PIN, SD_SWITCH_CPAP_VALUE);
+    // MUX lock, RTC hold release, and EarlyPCNT::init() are now in
+    // preinitPcntAndMux() — a GCC constructor that runs before app_main().
+    // This captures CPAP bus pulses ~500ms earlier than the old position here.
     
     delay(1000);
     LOG("\n\n=== CPAP Data Auto-Uploader ===");
@@ -377,32 +399,25 @@ void setup() {
         LOG_INFOF("Reset reason (raw): Core0=%d Core1=%d", rawCore0, rawCore1);
     }
 
-    // ── 2B: NVS boot counter + consecutive power-on reset detection ──
-    // Tracks total boots and consecutive power-on resets (ESP_RST_POWERON).
-    // A high consecutive count indicates external power cycling (e.g. CPAP
-    // periodically cutting SD slot VCC during therapy).  Any non-POWERON
-    // reset (software reboot, watchdog, brownout) breaks the chain.
+    // ── Early PCNT checkpoint (after ~1s of boot, before detach to TrafficMonitor) ──
+    {
+        int earlyPulses = EarlyPCNT::read();
+        LOG_INFOF("[PCNT] Early checkpoint (boot+1s): %d pulses on DAT3", earlyPulses);
+        if (resetReason == ESP_RST_POWERON) {
+            LOG_INFO("[PCNT] Power-on boot — PCNT started in pre-main constructor");
+        } else {
+            LOG_INFOF("[PCNT] Non-power-on boot (reason=%d) — PCNT may miss init window", (int)resetReason);
+        }
+    }
+
+    // ── 2B: NVS boot counter ──
     {
         Preferences bootStats;
         bootStats.begin("boot_stats", false);
         uint32_t totalBoots = bootStats.getUInt("total", 0) + 1;
         bootStats.putUInt("total", totalBoots);
-
-        uint16_t consecutivePOR = bootStats.getUShort("consec_por", 0);
-        if (resetReason == ESP_RST_POWERON) {
-            consecutivePOR++;
-        } else {
-            consecutivePOR = 0;
-        }
-        bootStats.putUShort("consec_por", consecutivePOR);
         bootStats.end();
-
-        if (resetReason == ESP_RST_POWERON && consecutivePOR > 1) {
-            LOG_WARNF("[BOOT] Boot #%u — consecutive power-on resets: %u (possible external power cycling)",
-                      totalBoots, consecutivePOR);
-        } else {
-            LOG_INFOF("[BOOT] Boot #%u (consecutive power-on resets: %u)", totalBoots, consecutivePOR);
-        }
+        LOG_INFOF("[BOOT] Boot #%u", totalBoots);
     }
 
     // Register CPU idle hooks for load measurement (before any blocking waits)
@@ -462,7 +477,7 @@ void setup() {
         LOG_ERROR("Failed to mount LittleFS - state and logs cannot be saved!");
     } else {
         LOG("LittleFS mounted successfully");
-        Logger::getInstance().enableLogSaving(false, &LittleFS);
+        Logger::getInstance().enableLogSaving(true, &LittleFS); // Enable early to capture boot/detector logs
     }
 
     // Initialize SD card control
@@ -471,56 +486,26 @@ void setup() {
         return;
     }
     
-    // Initialize TrafficMonitor (PCNT-based bus activity detection on CS_SENSE pin)
-    trafficMonitor.begin(CS_SENSE);
-    
+    // Transfer EarlyPCNT's PCNT unit to TrafficMonitor — single unit, zero gap.
+    // EarlyPCNT was started in the pre-main constructor; TrafficMonitor now owns it.
+    // The accumulated pulse count is preserved for the checkpoint readings below.
+    trafficMonitor.adoptUnit(EarlyPCNT::detach(), CS_SENSE);
 
     // Determine boot type: software reset (ESP_RST_SW) = soft-reboot / FastBoot.
     // Cold boots (power-on, brownout, watchdog) use distinct reason codes.
     g_heapRecoveryBoot = (esp_reset_reason() == ESP_RST_SW);
     bool fastBoot = g_heapRecoveryBoot;
 
-    // Smart Wait constants — same values for both cold and soft-reboot.
-    // 5 s of continuous SD bus silence required before taking control.
-    // The previous 45s hostile takeover timeout has been removed to prevent filesystem corruption.
-    const unsigned long SMART_WAIT_REQUIRED_MS = 5000;
-
-    auto runSmartWait = [&]() {
-        LOG("Checking for CPAP SD card activity (Smart Wait)...");
-        while (true) {
-            trafficMonitor.update();
-            delay(10);
-            if (trafficMonitor.isIdleFor(SMART_WAIT_REQUIRED_MS)) {
-                LOGF("Smart Wait: %lums of bus silence — CPAP is idle", SMART_WAIT_REQUIRED_MS);
-                break;
-            }
-        }
-    };
-
-    if (fastBoot) {
-        // Soft-reboot: voltages already stable, skip 15 s electrical stabilization.
-        // Smart Wait still runs — CPAP may have been mid-access when the reboot
-        // was triggered and we must wait for it to finish before touching the SD card.
-        LOG("[FastBoot] Software reset — skipping 15s electrical stabilization");
-        runSmartWait();
-    } else {
-        // Cold boot: wait for power-rail stabilization and CPAP boot sequence to settle,
-        // then wait for SD bus silence before attempting to take SD card control.
-        // 8 seconds is sufficient for voltage rails and CPAP initialization.
-        LOG("Waiting 8s for electrical stabilization...");
-        delay(8000);
-        runSmartWait();
-    }
-    
-    LOG("Boot delay complete, attempting SD card access...");
-
-    // Take control of SD card
-    LOG("Waiting to access SD card...");
-    while (!sdManager.takeControl()) {
-        delay(1000);
+    // AP mode is only permitted on genuine cold-boots (SD just inserted / CPAP just powered on).
+    // Soft-reboots (user clicked Reboot in web UI) and crash-reboots must NOT start AP:
+    // the user's phone may be on a different network and an unexpected AP would be confusing.
+    {
+        esp_reset_reason_t rr = esp_reset_reason();
+        g_apModeAllowed = (rr == ESP_RST_POWERON || rr == ESP_RST_EXT || rr == ESP_RST_UNKNOWN);
+        LOG_INFOF("[AP] Reset reason %d \u2192 AP mode %s", (int)rr, g_apModeAllowed ? "ALLOWED" : "BLOCKED");
     }
 
-    // Check NVS flags from previous boot
+    // ── NVS flags check (always runs — uses Preferences + LittleFS, not SD) ──
     {
         Preferences resetPrefs;
         resetPrefs.begin("cpap_flags", false);
@@ -576,55 +561,152 @@ void setup() {
         }
     }
 
-    // Read config file from SD card
-    LOG("Loading configuration...");
-    if (!config.loadFromSD(sdManager.getFS())) {
-        LOG_ERROR("Failed to load configuration - cannot continue");
-        LOG_ERROR("Please check config.txt file on SD card");
+    // ── Boot path: wait for bus silence, stealth config read, load config ──
+    {
+        // Smart Wait constants — same values for both cold and soft-reboot.
+        // 5 s of continuous SD bus silence required before taking control.
+        const unsigned long SMART_WAIT_REQUIRED_MS = 5000;
+
+        auto runSmartWait = [&]() {
+            LOG("Checking for CPAP SD card activity (Smart Wait)...");
+            while (true) {
+                trafficMonitor.update();
+                delay(10);
+                if (trafficMonitor.isIdleFor(SMART_WAIT_REQUIRED_MS)) {
+                    LOGF("Smart Wait: %lums of bus silence — CPAP is idle", SMART_WAIT_REQUIRED_MS);
+                    break;
+                }
+            }
+        };
+
+        if (fastBoot) {
+            LOG("[FastBoot] Software reset — skipping electrical stabilization");
+            // Run one update() to drain any accumulated pulses into activity tracking
+            trafficMonitor.update();
+            LOG_INFOF("[PCNT] Pre-SmartWait (FastBoot): active=%d idle=%lums",
+                      trafficMonitor.hasActivityLatch() ? 1 : 0,
+                      (unsigned long)trafficMonitor.getConsecutiveIdleMs());
+            runSmartWait();
+        } else {
+            // Run one update() to drain accumulated pulses from the constructor era
+            trafficMonitor.update();
+            LOG_INFOF("[PCNT] Pre-stabilization: active=%d",
+                      trafficMonitor.hasActivityLatch() ? 1 : 0);
+            LOG("Waiting 8s for electrical stabilization...");
+            delay(8000);
+            // Continue sampling during stabilization
+            trafficMonitor.update();
+            LOG_INFOF("[PCNT] Post-stabilization: activeSamples=%lu idleSamples=%lu latch=%d",
+                      (unsigned long)trafficMonitor.getTotalActiveSamples(),
+                      (unsigned long)trafficMonitor.getTotalIdleSamples(),
+                      trafficMonitor.hasActivityLatch() ? 1 : 0);
+            runSmartWait();
+        }
         
-        // ── EMERGENCY BOOT ERROR DUMP ──
-        // Without config, we have no WiFi and no Web UI. We must dump the reason
-        // directly to the SD card so the user can read it on their PC.
-        LOG_ERROR("FATAL ERROR: System halted due to config failure. Please check config.txt.");
-        Logger::getInstance().dumpToSD(sdManager.getFS(), "/uploader_error.txt", "Config load failure");
-        
-        sdManager.releaseControl();
-        
-        // Save logs to internal storage for configuration failures
-        bool dumped = Logger::getInstance().dumpSavedLogs("config_load_failed");
-        if (!dumped) {
-            LOG_WARN("Failed to persist logs (config_load_failed)");
+        // ── PCNT capability detection ──
+        // The single PCNT unit has been counting since the pre-main constructor.
+        // TrafficMonitor's activity latch captures ANY pulses detected since boot.
+        // On power-on boot: write result unconditionally to NVS.
+        //   Users may switch cards between AS10 and AS11 — power-on boot is
+        //   required when moving the card, so NVS must reflect the current machine.
+        // On non-power-on boot: PCNT misses the init window, so read from NVS.
+        {
+            bool activityDetected = trafficMonitor.hasActivityLatch();
+            LOG_INFOF("[PCNT] Activity latch: %s (activeSamples=%lu)",
+                      activityDetected ? "YES" : "NO",
+                      (unsigned long)trafficMonitor.getTotalActiveSamples());
+
+            Preferences pcntPrefs;
+            pcntPrefs.begin("pcnt_cap", false);
+            if (resetReason == ESP_RST_POWERON) {
+                g_pcntCapable = activityDetected;
+                pcntPrefs.putBool("capable", g_pcntCapable);
+                LOG_INFOF("[PCNT] Power-on detection: %s",
+                          g_pcntCapable ? "CAPABLE (4-bit SD, smart mode OK)" : "NOT CAPABLE (1-bit SD, scheduled only)");
+            } else {
+                g_pcntCapable = pcntPrefs.getBool("capable", false);
+                LOG_INFOF("[PCNT] Using cached capability: %s",
+                          g_pcntCapable ? "CAPABLE" : "NOT CAPABLE");
+            }
+            pcntPrefs.end();
         }
 
-        // Fail-safe: always force SD switch back to CPAP before aborting setup
-        digitalWrite(SD_SWITCH_PIN, SD_SWITCH_CPAP_VALUE);
-        
-        return;
+        LOG("Boot delay complete.");
+
+        // ── Config read: unified path for AS10 and AS11 ──
+        // SDCardManager::takeControl() calls StealthConfigReader::captureCardState()
+        // before SD_MMC.begin() on all devices, capturing the card's RCA and bus
+        // width without sending CMD0. After SD_MMC.end(), releaseControl() calls
+        // restoreToSavedState() to put the card back exactly as it was found.
+        // This replaces the old AS10-only custom FAT32 stealth reader and is safe
+        // for both AS10 and AS11 at boot.
+        bool configLoaded = false;
+
+        LOG_INFOF("[Config] Loading config via SD init (%s)", g_pcntCapable ? "AS11" : "AS10");
+        if (sdManager.takeControl()) {
+            configLoaded = config.loadFromSD(sdManager.getFS());
+            if (configLoaded) {
+                LOG_INFO("[Config] Config loaded successfully");
+                Logger::getInstance().checkPreviousBootError(sdManager.getFS());
+            } else {
+                LOG_WARN("[Config] SD init succeeded but config parse failed");
+            }
+            sdManager.releaseControl();
+        } else {
+            LOG_WARN("[Config] SD takeControl failed");
+        }
+
+        // ── Fallback: regular SD mount if primary config read failed ──
+        if (!configLoaded) {
+            LOG("Falling back to regular SD card access for config...");
+
+            while (!sdManager.takeControl()) {
+                delay(1000);
+            }
+
+            if (!config.loadFromSD(sdManager.getFS())) {
+                LOG_ERROR("Failed to load configuration - starting AP Setup Mode...");
+                
+                Logger::getInstance().dumpToSD(sdManager.getFS(), "/uploader_error.txt", "Config load failure");
+                
+                sdManager.releaseControl();
+                
+                bool dumped = Logger::getInstance().dumpSavedLogs("config_load_failed");
+                if (!dumped) {
+                    LOG_WARN("Failed to persist logs (config_load_failed)");
+                }
+
+                digitalWrite(SD_SWITCH_PIN, SD_SWITCH_CPAP_VALUE);
+                
+                g_apSetupMode = true;
+            } else {
+                Logger::getInstance().checkPreviousBootError(sdManager.getFS());
+                sdManager.releaseControl();
+                configLoaded = true;
+            }
+        }
     }
 
+    // ── Config post-processing ──
     LOG("Configuration loaded successfully");
+
+    // ── PCNT gating: force scheduled mode if smart mode is not supported ──
+    if (!g_pcntCapable && config.isSmartMode()) {
+        LOG_WARN("[PCNT] Smart mode not supported on this CPAP (no DAT3 activity) — forcing scheduled mode");
+        config.overrideUploadMode("scheduled");
+    }
     g_debugMode = config.getDebugMode();
     if (g_debugMode) {
         LOG_WARN("DEBUG mode enabled — verbose pre-flight logs and heap stats active");
     }
-    LOG_DEBUGF("WiFi SSID: %s", config.getWifiSSID().c_str());
+    LOG_DEBUGF("WiFi SSID: %s", config.getWifiSSID(0).c_str());
     LOG_DEBUGF("Endpoint: %s", config.getEndpoint().c_str());
 
-    // Check if a previous boot left an emergency error log on the SD card
-    Logger::getInstance().checkPreviousBootError(sdManager.getFS());
-
-    // Configure LittleFS-backed syslog rotation for optional periodic persistence.
-    // The filesystem pointer is already registered so emergency pre-reboot
-    // flushes can persist logs even with PERSISTENT_LOGS=false.
+    // Configure LittleFS-backed syslog rotation for optional periodic persistence
     Logger::getInstance().enableLogSaving(config.getSaveLogs(), &LittleFS);
     if (config.getSaveLogs()) {
-        // Flush immediately so boot logs (reset reason, Smart Wait, config load)
-        // are captured to NAND before upload activity overwrites the 8KB buffer.
         Logger::getInstance().dumpSavedLogsPeriodic(nullptr);
     }
-
-    // Release SD card back to CPAP machine
-    sdManager.releaseControl();
 
     // Apply power management settings from config
     LOG("Applying power management settings...");
@@ -649,49 +731,98 @@ void setup() {
     // Setup WiFi event handlers for logging
     wifiManager.setupEventHandlers();
 
+    // Load cached per-AP connection hints (BSSID, channel, PMF flag) from NVS.
+    networkHints.begin();
+
     // Defer TX power cap — applied inside connectStation() after WiFi.mode(WIFI_STA)
     // to avoid "Neither AP or STA has been started" warning.
     wifiManager.applyTxPowerEarly(config.getWifiTxPower());
 
-    // Initialize WiFi in station mode
-    if (!wifiManager.connectStation(config.getWifiSSID(), config.getWifiPassword())) {
-        LOG("Failed to connect to WiFi");
-        // Note: WiFiManager already persists logs on connection failures
-        
-        // ── EMERGENCY BOOT ERROR DUMP ──
-        // If we can't connect to WiFi on boot, the user can't access the Web UI to see why.
-        // We re-take the SD card just to dump the log buffer.
-        if (sdManager.takeControl()) {
-            LOG_ERROR("FATAL ERROR: System halted due to WiFi connection failure.");
-            Logger::getInstance().dumpToSD(sdManager.getFS(), "/uploader_error.txt", "WiFi connection failure");
-            sdManager.releaseControl();
+    // Initialize WiFi
+    if (g_apSetupMode) {
+        // Config failed to load — enter AP mode if cold-boot, otherwise continue without WiFi
+        if (g_apModeAllowed) {
+            wifiManager.startAP();
+        } else {
+            LOG_WARN("[AP] Config load failed but reset was not a cold-boot — skipping AP mode");
+            g_apSetupMode = false;  // Don't mislead the rest of setup into AP-mode paths
         }
-        
-        // Re-enable brownout detection if it was only relaxed for boot
-        if (config.getBrownoutDetectMode() == BrownoutDetectMode::RELAXED) {
-            LOG_INFO("[POWER] WiFi connection phase complete — re-enabling brownout detection");
-            SET_PERI_REG_MASK(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_ENA);
+    } else {
+        // Attempt 1
+        bool connected = wifiManager.connectStation(config);
+        if (!connected) {
+            LOG_WARN("WiFi connect attempt 1 failed — waiting 3s before retry...");
+            delay(3000);
+            // Attempt 2
+            connected = wifiManager.connectStation(config);
         }
 
-        return;
+        if (!connected) {
+            LOG_ERROR("Failed to connect to WiFi after 2 attempts.");
+
+            // ── EMERGENCY BOOT ERROR DUMP ──
+            // The WiFi attempts above ran a ~30s busy-wait that froze the main
+            // loop, so the PCNT idle counter is stale. Refresh it before gating.
+            trafficMonitor.update();
+            bool safeToDump = !g_pcntCapable || trafficMonitor.isIdleFor(2000);
+            if (safeToDump) {
+                if (sdManager.takeControl()) {
+                    Logger::getInstance().dumpToSD(sdManager.getFS(), "/uploader_error.txt", "WiFi connection failure");
+                    sdManager.releaseControl();
+                }
+            } else {
+                LOG_WARN("[Boot] CPAP bus active — skipping SD log dump to avoid mid-transaction MUX flip");
+            }
+
+            // Re-enable brownout detection if it was only relaxed for boot
+            if (config.getBrownoutDetectMode() == BrownoutDetectMode::RELAXED) {
+                LOG_INFO("[POWER] WiFi connection phase complete — re-enabling brownout detection");
+                SET_PERI_REG_MASK(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_ENA);
+            }
+
+            if (g_apModeAllowed) {
+                LOG("[AP] Cold-boot with failed WiFi — starting AP Setup Mode");
+                g_apSetupMode = true;
+                wifiManager.startAP();
+            } else {
+                LOG_WARN("[AP] WiFi failed but reset was not a cold-boot — skipping AP mode");
+                LOG_WARN("[AP] ⚠️ If you entered wrong WiFi credentials, power-cycle the device to re-enter setup mode.");
+            }
+        }
     }
     
-    // ── POWER: mDNS and WiFi power settings (brownout-aware) ──
-    if (g_brownoutRecoveryBoot) {
-        // Brownout-recovery: skip mDNS entirely, force lowest TX power + MAX power save
-        LOG_WARN("[POWER] Brownout-recovery: skipping mDNS, forcing lowest TX power + MAX power save");
-        wifiManager.applyPowerSettings(WifiTxPower::POWER_LOWEST, WifiPowerSaving::SAVE_MAX);
-    } else {
-        // Normal boot: small delay lets the 3.3V rail recover from the WiFi
-        // association + DHCP burst before mDNS fires its multicast announcement.
-        delay(200);
-        wifiManager.startMDNS(config.getHostname());
-        g_mdnsStartTime = millis();
-        g_mdnsTimedOut = false;
-        wifiManager.applyPowerSettings(config.getWifiTxPower(), config.getWifiPowerSaving());
+    if (!g_apSetupMode) {
+        // ── POWER: mDNS and WiFi power settings (brownout-aware) ──
+        if (g_brownoutRecoveryBoot) {
+            // Brownout-recovery: skip mDNS entirely, force lowest TX power + MAX power save
+            LOG_WARN("[POWER] Brownout-recovery: skipping mDNS, forcing lowest TX power + MAX power save");
+            wifiManager.applyPowerSettings(WifiTxPower::POWER_LOWEST, WifiPowerSaving::SAVE_MAX);
+        } else {
+            // Normal boot: small delay lets the 3.3V rail recover from the WiFi
+            // association + DHCP burst before mDNS fires its multicast announcement.
+            delay(200);
+            wifiManager.startMDNS(config.getHostname());
+            g_mdnsStartTime = millis();
+            g_mdnsTimedOut = false;
+            wifiManager.applyPowerSettings(config.getWifiTxPower(), config.getWifiPowerSaving());
+        }
+        LOG("WiFi power management settings applied");
     }
-    LOG("WiFi power management settings applied");
-    
+
+    // ── Remote syslog (UDP) — enable if configured ──
+    if (!config.getSyslogHost().isEmpty()) {
+        IPAddress syslogIp;
+        if (syslogIp.fromString(config.getSyslogHost())) {
+            Logger::getInstance().enableSyslog(syslogIp, config.getSyslogPort(),
+                                                config.getHostname().c_str());
+            LOGF("[Syslog] UDP syslog enabled → %s:%d",
+                 config.getSyslogHost().c_str(), config.getSyslogPort());
+        } else {
+            LOG_WARNF("[Syslog] Invalid SYSLOG_HOST: %s (must be an IPv4 address)",
+                      config.getSyslogHost().c_str());
+        }
+    }
+
     // Re-enable brownout detection if it was only relaxed for boot
     if (config.getBrownoutDetectMode() == BrownoutDetectMode::RELAXED) {
         LOG_INFO("[POWER] WiFi connection phase complete — re-enabling brownout detection");
@@ -754,94 +885,117 @@ void setup() {
         g_pmLock = nullptr;
     }
 
-    // Initialize uploader (no SD card needed — state is on LittleFS)
-    uploader = new FileUploader(&config, &wifiManager);
-    LOG("Initializing uploader...");
-    if (!uploader->begin()) {
-        LOG_ERROR("Failed to initialize uploader");
-        return;
-    }
-    g_heapRecoveryBoot = false;  // consumed — only skip delays on this one boot
-    LOG("Uploader initialized successfully");
-    
+    if (!g_apSetupMode) {
+        // Initialize uploader (no SD card needed — state is on LittleFS)
+        uploader = new FileUploader(&config, &wifiManager);
+        LOG("Initializing uploader...");
+        if (!uploader->begin()) {
+            LOG_ERROR("Failed to initialize uploader");
+            return;
+        }
+        g_heapRecoveryBoot = false;  // consumed — only skip delays on this one boot
+        LOG("Uploader initialized successfully");
+        
 #ifdef ENABLE_OTA_UPDATES
-    // Initialize OTA manager
-    LOG("Initializing OTA manager...");
-    if (!otaManager.begin()) {
-        LOG_ERROR("Failed to initialize OTA manager");
-        return;
-    }
-    otaManager.setCurrentVersion(VERSION_STRING);
-    LOG("OTA manager initialized successfully");
-    LOGF("OTA Version: %s", VERSION_STRING);
+        // Initialize OTA manager
+        LOG("Initializing OTA manager...");
+        if (!otaManager.begin()) {
+            LOG_ERROR("Failed to initialize OTA manager");
+            return;
+        }
+        otaManager.setCurrentVersion(VERSION_STRING);
+        LOG("OTA manager initialized successfully");
+        LOGF("OTA Version: %s", VERSION_STRING);
 #endif
-    
-    // Synchronize time with NTP server
-    LOG("Synchronizing time with NTP server...");
-    ScheduleManager* sm = uploader->getScheduleManager();
-    if (sm && sm->isTimeSynced()) {
-        LOG("Time synchronized successfully");
-        LOGF("System time: %s", sm->getCurrentLocalTime().c_str());
-    } else {
-        LOG_DEBUG("Time sync not yet available, will retry every 5 minutes");
-        lastNtpSyncAttempt = millis();
+        
+        // Synchronize time with NTP server
+        LOG("Synchronizing time with NTP server...");
+        ScheduleManager* sm = uploader->getScheduleManager();
+        if (sm && sm->isTimeSynced()) {
+            LOG("Time synchronized successfully");
+            LOGF("System time: %s", sm->getCurrentLocalTime().c_str());
+        } else {
+            LOG_DEBUG("Time sync not yet available, will retry every 5 minutes");
+            lastNtpSyncAttempt = millis();
+        }
     }
 
 #ifdef ENABLE_WEBSERVER
     // Initialize web server
     LOG("Initializing web server...");
     
-    // Create web server with references to uploader's internal components
-    webServer = new CpapWebServer(&config, 
-                                      uploader->getStateManager(),
-                                      uploader->getScheduleManager(),
-                                      &wifiManager);
-    
-    if (webServer->begin()) {
-        LOG("Web server started successfully");
-        LOGF("Access web interface at: http://%s", wifiManager.getIPAddress().c_str());
-        
-#ifdef ENABLE_OTA_UPDATES
-        // Set OTA manager reference in web server
-        webServer->setOTAManager(&otaManager);
-        LOG_DEBUG("OTA manager linked to web server");
-#endif
-        
-        // Set TrafficMonitor reference in web server for SD Activity Monitor
-        webServer->setTrafficMonitor(&trafficMonitor);
-        LOG_DEBUG("TrafficMonitor linked to web server");
-
+    if (g_apSetupMode) {
+        webServer = new CpapWebServer(&config, nullptr, nullptr, &wifiManager);
         webServer->setSdManager(&sdManager);
-        LOG_DEBUG("SDCardManager linked to web server for config editor");
-
-        // Give web server access to the SMB state manager so updateStatusSnapshot()
-        // can show folder counts from the active backend (SMB pass vs cloud pass).
-        webServer->setSmbStateManager(uploader->getSmbStateManager());
+        if (webServer->begin()) {
+            LOG("Web server started successfully in AP Setup Mode");
+        } else {
+            LOG_ERROR("Failed to start web server");
+        }
+    } else {
+        // Create web server with references to uploader's internal components
+        webServer = new CpapWebServer(&config, 
+                                          uploader->getStateManager(),
+                                          uploader->getScheduleManager(),
+                                          &wifiManager);
         
-        // Set web server reference in uploader for responsive handling during uploads
-        if (uploader) {
-            uploader->setWebServer(webServer);
-            LOG_DEBUG("Web server linked to uploader for responsive handling");
+        if (webServer->begin()) {
+            LOG("Web server started successfully");
+            LOGF("Access web interface at: http://%s", wifiManager.getIPAddress().c_str());
+            
+#ifdef ENABLE_OTA_UPDATES
+            // Set OTA manager reference in web server
+            webServer->setOTAManager(&otaManager);
+            LOG_DEBUG("OTA manager linked to web server");
+#endif
+            
+            // Set TrafficMonitor reference in web server for SD Activity Monitor
+            webServer->setTrafficMonitor(&trafficMonitor);
+            LOG_DEBUG("TrafficMonitor linked to web server");
+
+            webServer->setSdManager(&sdManager);
+            LOG_DEBUG("SDCardManager linked to web server for config editor");
+
+            // Give web server access to both backend state managers so
+            // updateStatusSnapshot() can render one progress row per backend.
+            webServer->setSmbStateManager(uploader->getSmbStateManager());
+            webServer->setCloudStateManager(uploader->getCloudStateManager());
+            
+            // Set web server reference in uploader for responsive handling during uploads
+            if (uploader) {
+                uploader->setWebServer(webServer);
+                LOG_DEBUG("Web server linked to uploader for responsive handling");
+            }
+
+            // Build static config snapshot once — served from g_webConfigBuf with zero heap alloc.
+            webServer->initConfigSnapshot();
+            LOG_DEBUG("[WebStatus] Config snapshot built");
+        } else {
+            LOG_ERROR("Failed to start web server");
+        }
+    }
+#endif
+
+    if (!g_apSetupMode) {
+        // Set initial FSM state based on upload mode
+        if (uploader && uploader->getScheduleManager() && uploader->getScheduleManager()->isSmartMode()) {
+            if (uploader->getScheduleManager()->isSmartQuietPeriod()) {
+                LOG("[FSM] Smart mode — starting in IDLE (quiet period active)");
+                transitionTo(UploadState::IDLE);
+            } else {
+                LOG("[FSM] Smart mode — starting in LISTENING (continuous loop)");
+                transitionTo(UploadState::LISTENING);
+            }
+        } else {
+            LOG("[FSM] Scheduled mode — starting in IDLE");
+            // IDLE is the correct initial state for scheduled mode
+            transitionTo(UploadState::IDLE);
         }
 
-        // Build static config snapshot once — served from g_webConfigBuf with zero heap alloc.
-        webServer->initConfigSnapshot();
-        LOG_DEBUG("[WebStatus] Config snapshot built");
+        LOG("Setup complete!");
     } else {
-        LOG_ERROR("Failed to start web server");
+        LOG("Setup complete (AP Setup Mode)!");
     }
-#endif
-
-    // Set initial FSM state based on upload mode
-    if (uploader && uploader->getScheduleManager() && uploader->getScheduleManager()->isSmartMode()) {
-        LOG("[FSM] Smart mode — starting in LISTENING (continuous loop)");
-        transitionTo(UploadState::LISTENING);
-    } else {
-        LOG("[FSM] Scheduled mode — starting in IDLE");
-        // IDLE is the correct initial state for scheduled mode
-    }
-
-    LOG("Setup complete!");
 }
 
 // ============================================================================
@@ -849,9 +1003,8 @@ void setup() {
 // ============================================================================
 
 void handleIdle() {
-    // IDLE is only used in scheduled mode.
-    // Smart mode never enters IDLE — it uses the continuous loop:
-    // LISTENING → ACQUIRING → UPLOADING → RELEASING → COOLDOWN → LISTENING
+    // IDLE is used in scheduled mode AND Smart mode during quiet period.
+    // Smart mode quiet period: IDLE from UPLOAD_END_HOUR until SMART_START_HOUR.
     
     unsigned long now = millis();
     if (now - lastIdleCheck < IDLE_CHECK_INTERVAL_MS) return;
@@ -860,6 +1013,16 @@ void handleIdle() {
     if (!uploader || !uploader->getScheduleManager()) return;
     
     ScheduleManager* sm = uploader->getScheduleManager();
+    
+    if (sm->isSmartMode()) {
+        // Smart mode: transition to LISTENING when quiet period ends
+        if (!sm->isSmartQuietPeriod()) {
+            LOG("[FSM] Smart mode — quiet period ended, transitioning to LISTENING");
+            trafficMonitor.resetIdleTracking();
+            transitionTo(UploadState::LISTENING);
+        }
+        return;
+    }
     
     // In scheduled mode: transition to LISTENING when the upload window opens,
     // even if all known files are marked complete. This ensures new DATALOG
@@ -887,6 +1050,20 @@ void handleListening() {
             g_noWorkSuppressed = false;
             trafficMonitor.clearActivityLatch();
             LOG("[FSM] No-work suppression cleared — new bus activity detected");
+        }
+
+        // AS10 fallback: no PCNT activity possible (DAT3 unused in 1-bit mode),
+        // so clear suppression on a timer to enable periodic re-scans for new data.
+        // Uses INACTIVITY_SECONDS as the interval — the natural "silence" threshold.
+        if (!g_pcntCapable && g_noWorkSuppressed) {
+            static unsigned long lastPeriodicClearMs = 0;
+            if (lastPeriodicClearMs == 0) lastPeriodicClearMs = millis();
+            unsigned long periodicIntervalMs = (unsigned long)config.getInactivitySeconds() * 1000UL;
+            if (millis() - lastPeriodicClearMs >= periodicIntervalMs) {
+                lastPeriodicClearMs = millis();
+                g_noWorkSuppressed = false;
+                LOG("[FSM] AS10 periodic check — clearing no-work suppression (no PCNT available)");
+            }
         }
 
         ScheduleManager* sm = uploader->getScheduleManager();
@@ -918,6 +1095,15 @@ void handleListening() {
 
     // Smart mode logic
     if (config.isSmartMode()) {
+        // Check if we've entered the quiet period while listening
+        ScheduleManager* sm = uploader->getScheduleManager();
+        if (sm && sm->isSmartQuietPeriod()) {
+            LOG("[FSM] Smart mode — quiet period started, transitioning to IDLE");
+            g_noWorkSuppressed = false;
+            transitionTo(UploadState::IDLE);
+            return;
+        }
+        
         if (trafficMonitor.isIdleFor(inactivityMs)) {
             LOGF("[FSM] %ds of bus silence confirmed", config.getInactivitySeconds());
             
@@ -926,10 +1112,10 @@ void handleListening() {
             transitionTo(UploadState::ACQUIRING);
             return;
         }
+        return;
     }
     
     // In scheduled mode, check if the upload window has closed while we were listening
-    // Smart mode never exits LISTENING to IDLE — it stays in the continuous loop
     ScheduleManager* sm = uploader->getScheduleManager();
     if (!sm->isSmartMode()) {
         if (!sm->isInUploadWindow() || sm->isDayCompleted()) {
@@ -1058,8 +1244,65 @@ void uploadTaskFunction(void* pvParameters) {
     LOGF("[Upload] Starting upload session: heap fh=%u ma=%u",
          (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
     UploadResult result = params->uploader->runFullSession(
-        params->sdManager, params->maxMinutes, params->filter);
-    
+        params->sdManager, params->maxMinutes, params->filter, params->reducedRetries);
+
+    // Step 4b: Refresh the work-probe snapshot with post-upload state while
+    // the SD is still mounted.  Without this, the dashboard progress counts
+    // stay frozen at their pre-session values until the next upload session
+    // runs a fresh probe — so a successful RECENT_FOLDER_DAYS refresh of
+    // today's folder would leave the UI stuck at "N-1 / N · 1 left" even
+    // though the folder is now fully synced.  The probe is cheap (100–200 ms
+    // of SD time for a typical card) and we've already paid the SD-mount
+    // cost.
+    //
+    // TIMEOUT is included because the timer expiring with partial progress
+    // is a normal outcome (not an error).  If we skip the probe, the
+    // progress bar reverts to the stale pre-session snapshot — e.g. SMB
+    // shows 0 / 12 even though two folders were successfully uploaded during
+    // the phase.  ERROR is still skipped: the state may be inconsistent and
+    // a fresh probe on the next cycle will sort it out.
+    FileUploader::WorkProbeResult postWorkResult = {false, false, -1, -1, -1};
+    bool postProbeRan = false;
+    if ((result == UploadResult::COMPLETE || result == UploadResult::NOTHING_TO_DO ||
+         result == UploadResult::TIMEOUT)
+        && params->sdManager->hasControl()) {
+        postWorkResult = params->uploader->hasWorkToUpload(params->sdManager->getFS());
+        postProbeRan = true;
+        esp_task_wdt_reset();
+        g_uploadHeartbeat = millis();
+    }
+
+    if (postProbeRan && result != UploadResult::ERROR) {
+        time_t completedAt = time(nullptr);
+        if (completedAt >= 1000000000) {
+            UploadStateManager* cloudSm = params->uploader->getCloudStateManager();
+            UploadStateManager* smbSm = params->uploader->getSmbStateManager();
+            bool cloudComplete = !cloudSm || (!postWorkResult.hasCloudWork &&
+                                             postWorkResult.universe >= 0 &&
+                                             postWorkResult.cloudSynced == postWorkResult.universe);
+            bool smbComplete = !smbSm || (!postWorkResult.hasSmbWork &&
+                                         postWorkResult.universe >= 0 &&
+                                         postWorkResult.smbSynced == postWorkResult.universe);
+
+            if (cloudSm && cloudComplete) {
+                cloudSm->setLastUploadTimestamp((unsigned long)completedAt);
+                cloudSm->save(LittleFS);
+            }
+            if (smbSm && smbComplete) {
+                smbSm->setLastUploadTimestamp((unsigned long)completedAt);
+                smbSm->save(LittleFS);
+            }
+            if (cloudComplete && smbComplete) {
+                ScheduleManager* schedule = params->uploader->getScheduleManager();
+                if (schedule) {
+                    schedule->setLastUploadTimestamp((unsigned long)completedAt);
+                    schedule->markDayCompleted();
+                }
+                result = UploadResult::COMPLETE;
+            }
+        }
+    }
+
     // Step 5: Release SD card
     if (params->sdManager->hasControl()) {
         params->sdManager->releaseControl();
@@ -1122,15 +1365,24 @@ void handleUploading() {
         uploader->setWebServer(nullptr);
 #endif
 
+        // Reduce retries outside scheduled hours to minimize SD card hold time
+        bool outsideWindow = false;
+        {
+            ScheduleManager* sm = uploader->getScheduleManager();
+            if (sm) outsideWindow = !sm->isInUploadWindow();
+        }
+
         UploadTaskParams* params = new UploadTaskParams{
             uploader, &sdManager, config.getExclusiveAccessMinutes(), filter,
-            g_uploadWasForceTriggered  // propagate manual-trigger state to upload task
+            g_uploadWasForceTriggered,  // propagate manual-trigger state to upload task
+            outsideWindow               // reduced retries when outside upload window
         };
         g_uploadWasForceTriggered = false;  // consumed
         
         uploadTaskComplete = false;
         uploadTaskRunning = true;
-        
+        wifiManager.suspendRoaming();  // no roam scans / AP switches mid-upload
+
         // Relax task watchdog during upload — TLS handshake (5-15s of CPU-intensive
         // crypto) starves IDLE0 on Core 0. Instead of removing IDLE0 from monitoring
         // (which causes "task not found" error spam because IDLE0 still calls
@@ -1164,6 +1416,7 @@ void handleUploading() {
                        ESP.getFreeHeap(),
                        ESP.getMaxAllocHeap());
             uploadTaskRunning = false;
+            wifiManager.resumeRoaming();
             delete params;
             // Restore normal watchdog timeout (task creation failed)
             {
@@ -1185,6 +1438,7 @@ void handleUploading() {
     } else if (uploadTaskComplete) {
         // ── Task finished: read result and transition ──
         uploadTaskRunning = false;
+        wifiManager.resumeRoaming();
         uploadTaskHandle = nullptr;
         g_abortUploadFlag = false;  // Clear abort flag — task has stopped
         
@@ -1207,9 +1461,14 @@ void handleUploading() {
         
         switch (result) {
             case UploadResult::COMPLETE:
-                LOG("[FSM] All folders complete \u2014 suppressing retries until new bus activity");
                 g_nothingToUpload = true;
-                g_noWorkSuppressed = true;
+                if (uploader->hasIncompleteFolders()) {
+                    LOG("[FSM] Session complete but backends still have incomplete folders \u2014 will retry");
+                    g_noWorkSuppressed = false;
+                } else {
+                    LOG("[FSM] All folders complete \u2014 suppressing retries until new bus activity");
+                    g_noWorkSuppressed = true;
+                }
                 transitionTo(UploadState::COMPLETE);
                 break;
             case UploadResult::TIMEOUT:
@@ -1221,9 +1480,14 @@ void handleUploading() {
                 transitionTo(UploadState::RELEASING);
                 break;
             case UploadResult::NOTHING_TO_DO:
-                LOG("[FSM] Nothing to upload — suppressing retries until new bus activity");
                 g_nothingToUpload = true;
-                g_noWorkSuppressed = true;  // Don't retry until PCNT detects new CPAP activity
+                if (uploader->hasIncompleteFolders()) {
+                    LOG("[FSM] Work probe found no actionable work but folders remain incomplete — will retry");
+                    g_noWorkSuppressed = false;
+                } else {
+                    LOG("[FSM] Nothing to upload — suppressing retries until new bus activity");
+                    g_noWorkSuppressed = true;
+                }
                 transitionTo(UploadState::RELEASING);
                 break;
         }
@@ -1263,7 +1527,9 @@ void handleReleasing() {
     if (config.getMinimizeReboots()) {
         unsigned fh = (unsigned)ESP.getFreeHeap();
         unsigned ma = (unsigned)ESP.getMaxAllocHeap();
-        LOGF("[FSM] MINIMIZE_REBOOTS: skipping elective reboot after upload (fh=%u ma=%u)", fh, ma);
+        if (g_debugMode) {
+            LOGF("[FSM] MINIMIZE_REBOOTS: skipping elective reboot after upload (fh=%u ma=%u)", fh, ma);
+        }
         // Heap safety valve: force reboot if contiguous heap is critically low.
         // 32KB is below the ~36KB minimum needed for TLS handshake and leaves
         // insufficient margin for SMB PDU allocations + lwIP buffers.
@@ -1309,10 +1575,15 @@ void handleCooldown() {
     ScheduleManager* sm = uploader->getScheduleManager();
     
     if (sm->isSmartMode()) {
-        // Smart mode: ALWAYS return to LISTENING (continuous loop)
-        trafficMonitor.resetIdleTracking();
-        LOG("[FSM] Smart mode — returning to LISTENING (continuous loop)");
-        transitionTo(UploadState::LISTENING);
+        // Smart mode: return to LISTENING unless in quiet period
+        if (sm->isSmartQuietPeriod()) {
+            LOG("[FSM] Smart mode — cooldown expired during quiet period, transitioning to IDLE");
+            transitionTo(UploadState::IDLE);
+        } else {
+            trafficMonitor.resetIdleTracking();
+            LOG("[FSM] Smart mode — returning to LISTENING (continuous loop)");
+            transitionTo(UploadState::LISTENING);
+        }
     } else {
         // Scheduled mode: return to LISTENING if still in window and day not done
         if (sm->isInUploadWindow() && !sm->isDayCompleted()) {
@@ -1400,6 +1671,9 @@ void loop() {
 #ifdef ENABLE_WEBSERVER
     // Handle web server requests
     if (webServer) {
+        // Service captive portal DNS in AP mode — without this, phones never get
+        // DNS responses and the auto-redirect to the setup page doesn't work.
+        wifiManager.processDNS();
         webServer->handleClient();
         // Push SSE log events to connected client (if any).
         // Upload-time throttling is handled inside pushSseLogs() so logs remain
@@ -1467,6 +1741,7 @@ void loop() {
             LOG_WARN("[FSM] Killing active upload task for state reset");
             vTaskDelete(uploadTaskHandle);
             uploadTaskRunning = false;
+            wifiManager.resumeRoaming();
             uploadTaskHandle = nullptr;
         }
         
@@ -1509,49 +1784,77 @@ void loop() {
         stopMonitoringRequested = true;
     }
 #endif
-    
+
     // ── WiFi reconnection (non-blocking with 30 second retry interval) ──
     // GUARD: Do NOT attempt reconnection while upload task is running on Core 0.
     // The upload task manages its own WiFi recovery via tryCoordinatedWifiCycle().
     // Concurrent reconnection from both cores corrupts the lwIP state machine.
-    if (!wifiManager.isConnected() && !uploadTaskRunning) {
+    // While in boot-fallback AP mode we keep retrying in the background so the
+    // device can self-heal once the router comes back, but skip the retry while
+    // an AP client is connected (user is mid-config; don't disrupt the radio).
+    // Tracks whether the new-attempt block below relaxed brownout detection
+    // for the in-flight attempt.  Roam scans don't relax brownout, so we must
+    // not re-enable it (or log "reconnect complete") when a roam-stay decision
+    // exits ROAM_SCAN -> CONNECTED.
+    static bool brownoutRelaxedThisAttempt = false;
+
+    bool wasInProgress = wifiManager.isConnectInProgress();
+    wifiManager.pollConnect();
+    if (wasInProgress && !wifiManager.isConnectInProgress()) {
+        if (brownoutRelaxedThisAttempt) {
+            LOG_INFO("[POWER] WiFi reconnect complete - re-enabling brownout detection");
+            SET_PERI_REG_MASK(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_ENA);
+            brownoutRelaxedThisAttempt = false;
+        }
+        if (wifiManager.getConnectPhase() == WiFiManager::ConnectPhase::CONNECTED) {
+            LOG_DEBUG("WiFi reconnected successfully");
+        }
+        // FAILED case logs inside terminateConnect via logConnectFailure().
+    }
+
+    if (!wifiManager.isConnectInProgress() &&
+        !wifiManager.isConnected() && !uploadTaskRunning &&
+        wifiManager.getApClientCount() == 0) {
         unsigned long currentTime = millis();
-        if (currentTime - lastWifiReconnectAttempt >= 30000) {
+        bool intervalElapsed = (currentTime - lastWifiReconnectAttempt >= wifiManager.getReconnectIntervalMs());
+        // PCNT-aware bus-idle gate: defer the RF burst if the CPAP is currently using the SD bus
+        // No-op on non-pcnt capable devices
+        bool busBusy = g_pcntCapable && !trafficMonitor.isIdleFor(2000);
+        if (intervalElapsed && !busBusy) {
             LOG_WARN("WiFi disconnected, attempting to reconnect...");
-            
-            if (!config.valid() || config.getWifiSSID().isEmpty()) {
-                LOG_ERROR("Cannot reconnect to WiFi: Invalid configuration");
+
+            if (!config.valid() || config.getWifiNetworkCount() == 0) {
+                LOG_ERROR("Cannot reconnect to WiFi: no networks configured");
                 lastWifiReconnectAttempt = currentTime;
                 return;
             }
-            
-            // ── POWER: Relax brownout detection before reconnecting ──
+
             if (config.getBrownoutDetectMode() == BrownoutDetectMode::RELAXED) {
                 LOG_INFO("[POWER] Relaxing brownout detection for WiFi reconnect");
                 CLEAR_PERI_REG_MASK(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_ENA);
+                brownoutRelaxedThisAttempt = true;
             }
-            
-            if (!wifiManager.connectStation(config.getWifiSSID(), config.getWifiPassword())) {
-                LOG_ERROR("Failed to reconnect to WiFi");
-                lastWifiReconnectAttempt = currentTime;
-                
-                // Re-enable if we failed early
-                if (config.getBrownoutDetectMode() == BrownoutDetectMode::RELAXED) {
-                    SET_PERI_REG_MASK(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_ENA);
-                }
-                return;
-            }
-            LOG_DEBUG("WiFi reconnected successfully");
-            
-            // Re-enable brownout detection after a successful reconnect attempt.
-            if (config.getBrownoutDetectMode() == BrownoutDetectMode::RELAXED) {
-                LOG_INFO("[POWER] WiFi reconnect complete — re-enabling brownout detection");
-                SET_PERI_REG_MASK(RTC_CNTL_BROWN_OUT_REG, RTC_CNTL_BROWN_OUT_ENA);
-            }
+
+            wifiManager.beginConnect(config);
+            lastWifiReconnectAttempt = currentTime;  // count from attempt start
         }
 
         // Initialize web server regardless of connection success
         // It will either serve normal UI or AP setup UIFSM while WiFi is down
+    }
+
+    // Stable-quiet AP teardown
+    // If we booted into AP-fallback (failed STA at boot) and STA has since
+    // recovered, drop the AP back down so the radio runs in plain STA again.
+    // We reboot rather than tearing down in place: the AP-mode boot path
+    // skipped uploader/scheduler init, so a clean reboot through the normal
+    // STA path is the simplest way to bring the device fully online.
+    if (g_apSetupMode && wifiManager.shouldTearDownAP()) {
+        LOG_INFO("[AP] STA reconnected stably for 2 min, no AP clients - rebooting to exit AP mode");
+        setRebootReason("AP fallback teardown after STA recovery");
+        Logger::getInstance().flushBeforeReboot();
+        delay(300);
+        esp_restart();
     }
 
     // ── NTP sync retry ──

@@ -3,17 +3,32 @@
 
 // Define static constants for Preferences
 const char* Config::PREFS_NAMESPACE = "cpap_creds";
-const char* Config::PREFS_KEY_WIFI_PASS = "wifi_pass";
+const char* Config::PREFS_KEY_WIFI_PASS   = "wifi_pass";    // slot 0 (legacy key)
+const char* Config::PREFS_KEY_WIFI_PASS_2 = "wifi_pass_2";  // slot 1
+const char* Config::PREFS_KEY_WIFI_PASS_3 = "wifi_pass_3";  // slot 2
+const char* Config::PREFS_KEY_WIFI_PASS_4 = "wifi_pass_4";  // slot 3
 const char* Config::PREFS_KEY_ENDPOINT_PASS = "endpoint_pass";
 const char* Config::PREFS_KEY_CLOUD_SECRET = "cloud_secret";
 const char* Config::CENSORED_VALUE = "***STORED_IN_FLASH***";
 
-Config::Config() : 
+const char* Config::prefsKeyForWifiSlot(int idx) {
+    switch (idx) {
+        case 0: return PREFS_KEY_WIFI_PASS;
+        case 1: return PREFS_KEY_WIFI_PASS_2;
+        case 2: return PREFS_KEY_WIFI_PASS_3;
+        case 3: return PREFS_KEY_WIFI_PASS_4;
+        default: return nullptr;
+    }
+}
+
+Config::Config() :
+    wifiNetworkCount(0),
     gmtOffsetHours(0),  // Default: UTC
     ntpServer("pool.ntp.org"),
     saveLogs(false),  // Default: do not persist logs (debugging only)
     debugMode(false),    // Default: suppress verbose pre-flight and heap stats
     isValid(false),
+    hostname("cpap"),    // Default hostname
     
     // Cloud upload defaults
     cloudBaseUrl("https://sleephq.com"),
@@ -21,6 +36,7 @@ Config::Config() :
     maxDays(365),  // Default: upload only last 365 days
     recentFolderDays(2),  // Default: re-check today + yesterday
     cloudInsecureTls(false),  // Default: use root CA validation
+    smbPreserveTimestamps(true),  // Default: preserve SMB timestamps (zero performance impact)
     
     // Upload FSM defaults
     uploadMode("smart"),
@@ -28,23 +44,27 @@ Config::Config() :
     uploadEndHour(21),
     inactivitySeconds(62),
     exclusiveAccessMinutes(5),
-    cooldownMinutes(10),
+    cooldownMinutes(5),
     enable1BitSdMode(false),  // Default to safer 4-bit mode
+    stealthRestore(true),      // Default: restore card state after upload (helps AS10)
     minimizeReboots(true),
     flushLogsDuringUpload(false),  // Default: defer log flushes during uploads
+    smartStartHour(6),  // Default: Smart mode quiet period ends at 6am
+    smartConfigInvalid(false),
     
     _hasSmbEndpoint(false),
     _hasCloudEndpoint(false),
     _hasWebdavEndpoint(false),
     
-    maskCredentials(false),  // Default: plaintext — credentials stay in config.txt
+    maskCredentials(true),  // Default: masked — credentials migrated to NVS and censored in config.txt
     credentialsInFlash(false),  // Will be set during loadFromSD
     
     // Power management defaults (optimized for AirSense 11 compatibility)
     cpuSpeedMhz(80),  // Default: 80MHz (minimum for WiFi, saves ~30-40mA)
     wifiTxPower(WifiTxPower::POWER_MID),  // Default: 5.0dBm (typical bedroom placement, reduces peak current)
     wifiPowerSaving(WifiPowerSaving::SAVE_MID),  // Default: MIN_MODEM (preserves mDNS)
-    brownoutDetectMode(BrownoutDetectMode::ENABLED)  // Default: brownout detection enabled
+    brownoutDetectMode(BrownoutDetectMode::ENABLED),  // Default: brownout detection enabled
+    syslogPort(514)  // Default: standard syslog port
 {}
 
 Config::~Config() {
@@ -172,16 +192,42 @@ void Config::parseLine(String& line) {
     setConfigValue(key, value);
 }
 
+// Returns the WiFi-network slot index for a key like WIFI_SSID, WIFI_SSID_1,
+// WIFI_PASSWORD_3, etc.  Returns -1 if the key is not a WiFi-network key.
+//   WIFI_SSID  / WIFI_PASSWORD     -> slot 0 (back-compat)
+//   WIFI_SSID_N / WIFI_PASSWORD_N  -> slot N-1 (1..WIFI_MAX_NETWORKS)
+static int parseWifiSlotKey(const String& key, bool& isSsid, bool& isPassword) {
+    isSsid = false;
+    isPassword = false;
+    if (key == "WIFI_SSID")       { isSsid = true;     return 0; }
+    if (key == "WIFI_PASSWORD")   { isPassword = true; return 0; }
+    if (key.startsWith("WIFI_SSID_")) {
+        int slot = key.substring(strlen("WIFI_SSID_")).toInt();
+        if (slot >= 1 && slot <= Config::WIFI_MAX_NETWORKS) { isSsid = true; return slot - 1; }
+    }
+    if (key.startsWith("WIFI_PASSWORD_")) {
+        int slot = key.substring(strlen("WIFI_PASSWORD_")).toInt();
+        if (slot >= 1 && slot <= Config::WIFI_MAX_NETWORKS) { isPassword = true; return slot - 1; }
+    }
+    return -1;
+}
+
 // Helper to set config values based on key (case-insensitive)
 void Config::setConfigValue(String key, String value) {
     key.toUpperCase(); // Convert key to uppercase for case-insensitive comparison
 
-    if (key == "WIFI_SSID") {
-        wifiSSID = value;
-    } else if (key == "WIFI_PASSWORD") {
-        wifiPassword = value;
-    } else if (key == "HOSTNAME") {
-        hostname = value;
+    bool isSsid = false, isPassword = false;
+    int wifiSlot = parseWifiSlotKey(key, isSsid, isPassword);
+    if (wifiSlot >= 0) {
+        if (isSsid)     wifiNetworks[wifiSlot].ssid = value;
+        if (isPassword) wifiNetworks[wifiSlot].password = value;
+        return;
+    }
+
+    if (key == "HOSTNAME") {
+        hostname = value.isEmpty() ? "cpap" : value;
+    } else if (key == "NTP_SERVER") {
+        ntpServer = value;
     } else if (key == "SCHEDULE") {
         schedule = value;
     } else if (key == "ENDPOINT") {
@@ -196,6 +242,8 @@ void Config::setConfigValue(String key, String value) {
         gmtOffsetHours = value.toInt();
     } else if (key == "TZ_STRING") {
         tzString = value;
+    } else if (key == "TZ_NAME") {
+        tzName = value;
     } else if (key == "NTP_SERVER") {
         ntpServer = value;
     } else if (key == "PERSISTENT_LOGS") {
@@ -218,6 +266,8 @@ void Config::setConfigValue(String key, String value) {
         recentFolderDays = value.toInt();
     } else if (key == "CLOUD_INSECURE_TLS") {
         cloudInsecureTls = (value.equalsIgnoreCase("true") || value.toInt() == 1);
+    } else if (key == "SMB_PRESERVE_TIMESTAMPS") {
+        smbPreserveTimestamps = (value.equalsIgnoreCase("true") || value.toInt() == 1);
     } else if (key == "UPLOAD_MODE") {
         uploadMode = value;
     } else if (key == "UPLOAD_START_HOUR") {
@@ -230,8 +280,14 @@ void Config::setConfigValue(String key, String value) {
         exclusiveAccessMinutes = value.toInt();
     } else if (key == "COOLDOWN_MINUTES") {
         cooldownMinutes = value.toInt();
+    } else if (key == "SMART_START_HOUR") {
+        smartStartHour = value.toInt();
     } else if (key == "ENABLE_1BIT_SD_MODE") {
         enable1BitSdMode = (value.equalsIgnoreCase("true") || value == "1");
+    } else if (key == "STEALTH_RESTORE") {
+        stealthRestore = (value.equalsIgnoreCase("true") || value == "1");
+    } else if (key == "SD_CMD0_ON_RELEASE" || key == "AS10") {
+        // Deprecated keys — silently ignored (stealth mode replaces these)
     } else if (key == "CPU_SPEED_MHZ") {
         cpuSpeedMhz = value.toInt();
     } else if (key == "WIFI_TX_PWR") {
@@ -252,6 +308,10 @@ void Config::setConfigValue(String key, String value) {
         } else {
             brownoutDetectMode = BrownoutDetectMode::ENABLED;
         }
+    } else if (key == "SYSLOG_HOST") {
+        syslogHost = value;
+    } else if (key == "SYSLOG_PORT") {
+        syslogPort = (uint16_t)value.toInt();
     } else {
         LOG_WARNF("Unknown config key: %s", key.c_str());
     }
@@ -296,7 +356,8 @@ bool Config::censorConfigFile(fs::FS &sd) {
             key.trim();
             key.toUpperCase();
             
-            if (key == "WIFI_PASSWORD" || key == "ENDPOINT_PASSWORD" || key == "CLOUD_CLIENT_SECRET") {
+            bool isWifiPassword = (key == "WIFI_PASSWORD") || key.startsWith("WIFI_PASSWORD_");
+            if (isWifiPassword || key == "ENDPOINT_PASSWORD" || key == "CLOUD_CLIENT_SECRET") {
                 // It's a secret, reconstruct the line with censored value
                 String originalKey = line.substring(0, line.indexOf('=')); // Keep original casing/spacing
                 tempFile.println(originalKey + " = " + String(CENSORED_VALUE));
@@ -337,39 +398,51 @@ bool Config::migrateToSecureStorage(fs::FS &sd) {
     LOG("========================================");
     
     // Step 1: Validate that credentials are not empty
-    if (wifiPassword.isEmpty() && endpointPassword.isEmpty() && cloudClientSecret.isEmpty()) {
+    bool anyWifiPassword = false;
+    for (int i = 0; i < WIFI_MAX_NETWORKS; i++) {
+        if (!wifiNetworks[i].password.isEmpty()) { anyWifiPassword = true; break; }
+    }
+    if (!anyWifiPassword && endpointPassword.isEmpty() && cloudClientSecret.isEmpty()) {
         LOG_WARN("All credentials are empty, skipping migration");
         return false;
     }
-    
+
     // Step 2: Store credentials in Preferences
     bool success = true;
-    
-    if (!wifiPassword.isEmpty() && !isCensored(wifiPassword)) {
-        LOG_DEBUG("Storing WiFi password in Preferences...");
-        if (!storeCredential(PREFS_KEY_WIFI_PASS, wifiPassword)) success = false;
+
+    for (int i = 0; i < WIFI_MAX_NETWORKS; i++) {
+        const String& pw = wifiNetworks[i].password;
+        if (pw.isEmpty() || isCensored(pw)) continue;
+        const char* nvsKey = prefsKeyForWifiSlot(i);
+        if (!nvsKey) continue;
+        LOG_DEBUGF("Storing WiFi password slot %d in Preferences...", i + 1);
+        if (!storeCredential(nvsKey, pw)) success = false;
     }
-    
+
     if (!endpointPassword.isEmpty() && !isCensored(endpointPassword)) {
         LOG_DEBUG("Storing endpoint password in Preferences...");
         if (!storeCredential(PREFS_KEY_ENDPOINT_PASS, endpointPassword)) success = false;
     }
-    
+
     if (!cloudClientSecret.isEmpty() && !isCensored(cloudClientSecret)) {
         LOG_DEBUG("Storing cloud client secret in Preferences...");
         if (!storeCredential(PREFS_KEY_CLOUD_SECRET, cloudClientSecret)) success = false;
     }
-    
+
     if (!success) {
         LOG_ERROR("Failed to store some credentials");
         LOG("Migration aborted - keeping plain text credentials");
         return false;
     }
-    
+
     // Step 3: Verify credentials
     LOG_DEBUG("Verifying stored credentials...");
-    if (!wifiPassword.isEmpty() && !isCensored(wifiPassword)) {
-        if (loadCredential(PREFS_KEY_WIFI_PASS, "") != wifiPassword) success = false;
+    for (int i = 0; i < WIFI_MAX_NETWORKS; i++) {
+        const String& pw = wifiNetworks[i].password;
+        if (pw.isEmpty() || isCensored(pw)) continue;
+        const char* nvsKey = prefsKeyForWifiSlot(i);
+        if (!nvsKey) continue;
+        if (loadCredential(nvsKey, "") != pw) success = false;
     }
     if (!endpointPassword.isEmpty() && !isCensored(endpointPassword)) {
         if (loadCredential(PREFS_KEY_ENDPOINT_PASS, "") != endpointPassword) success = false;
@@ -396,6 +469,68 @@ bool Config::migrateToSecureStorage(fs::FS &sd) {
     LOG("========================================");
     
     return true;
+}
+
+// Load config from a raw string (e.g. stealth-read config.txt content).
+// Skips credential migration and config file censoring (no SD access).
+bool Config::loadFromString(const String& rawConfig) {
+    LOG("Loading config from raw string...");
+
+    int startIdx = 0;
+    int len = (int)rawConfig.length();
+    while (startIdx < len) {
+        int endIdx = rawConfig.indexOf('\n', startIdx);
+        if (endIdx == -1) endIdx = len;
+        String line = rawConfig.substring(startIdx, endIdx);
+        parseLine(line);
+        startIdx = endIdx + 1;
+    }
+
+    // Handle masked credentials: load from Preferences (NVS) if censored
+    if (maskCredentials) {
+        if (initPreferences()) {
+            for (int i = 0; i < WIFI_MAX_NETWORKS; i++) {
+                if (isCensored(wifiNetworks[i].password)) {
+                    const char* nvsKey = prefsKeyForWifiSlot(i);
+                    if (nvsKey) {
+                        wifiNetworks[i].password = loadCredential(nvsKey, "");
+                        LOGF("Loaded WiFi password slot %d from flash", i + 1);
+                    }
+                }
+            }
+            if (isCensored(endpointPassword)) {
+                endpointPassword = loadCredential(PREFS_KEY_ENDPOINT_PASS, "");
+                LOG("Loaded endpoint password from flash");
+            }
+            if (isCensored(cloudClientSecret)) {
+                cloudClientSecret = loadCredential(PREFS_KEY_CLOUD_SECRET, "");
+                LOG("Loaded cloud client secret from flash");
+            }
+            credentialsInFlash = true;
+        }
+    }
+
+    // Compute cached endpoint type flags
+    {
+        String upper = endpointType;
+        upper.toUpperCase();
+        _hasSmbEndpoint = (upper.indexOf("SMB") >= 0);
+        _hasCloudEndpoint = (upper.indexOf("CLOUD") >= 0 || upper.indexOf("SLEEPHQ") >= 0);
+        _hasWebdavEndpoint = (upper.indexOf("WEBDAV") >= 0);
+    }
+
+    // Normalize and validate config values
+    validateAndNormalize();
+
+    isValid = (wifiNetworkCount > 0);
+
+    if (isValid) {
+        LOG("Config loaded successfully from raw string");
+    } else {
+        LOG_ERROR("Config from raw string invalid (no WiFi SSID)");
+    }
+
+    return isValid;
 }
 
 // Main function to load configuration from SD card
@@ -434,10 +569,12 @@ bool Config::loadFromSD(fs::FS &sd) {
         // This happens when a user upgrades firmware or disables masking after credentials
         // were already migrated to NVS. Log a loud error so the user knows to re-enter them.
         bool anyCensored = false;
-        if (isCensored(wifiPassword)) {
-            LOG_ERROR("WiFi password is '***STORED_IN_FLASH***' but MASK_CREDENTIALS is off.");
-            LOG_ERROR("NVS data may be lost after a full (non-OTA) flash. Please re-enter your WiFi password in config.txt.");
-            anyCensored = true;
+        for (int i = 0; i < WIFI_MAX_NETWORKS; i++) {
+            if (isCensored(wifiNetworks[i].password)) {
+                LOG_ERRORF("WIFI_PASSWORD_%d is '***STORED_IN_FLASH***' but MASK_CREDENTIALS is off.", i + 1);
+                LOG_ERROR("NVS data may be lost after a full (non-OTA) flash. Please re-enter your WiFi password in config.txt.");
+                anyCensored = true;
+            }
         }
         if (isCensored(endpointPassword)) {
             LOG_ERROR("Endpoint password is '***STORED_IN_FLASH***' but MASK_CREDENTIALS is off.");
@@ -469,16 +606,23 @@ bool Config::loadFromSD(fs::FS &sd) {
             maskCredentials = false;
             credentialsInFlash = false;
         } else {
-            // Check loaded credentials for censorship
-            bool wifiCensored = isCensored(wifiPassword);
+            // Check loaded credentials for censorship (per WiFi slot + endpoint + cloud)
+            bool wifiWasCensored[WIFI_MAX_NETWORKS] = {false};
+            bool anyWifiCensored = false;
+            for (int i = 0; i < WIFI_MAX_NETWORKS; i++) {
+                if (isCensored(wifiNetworks[i].password)) {
+                    wifiWasCensored[i] = true;
+                    anyWifiCensored = true;
+                    const char* nvsKey = prefsKeyForWifiSlot(i);
+                    if (nvsKey) {
+                        wifiNetworks[i].password = loadCredential(nvsKey, "");
+                        LOGF("Loaded WiFi password slot %d from flash", i + 1);
+                    }
+                }
+            }
             bool endpointCensored = isCensored(endpointPassword);
             bool cloudSecretCensored = isCensored(cloudClientSecret);
-            
-            // If censored, load from preferences
-            if (wifiCensored) {
-                wifiPassword = loadCredential(PREFS_KEY_WIFI_PASS, "");
-                LOG("Loaded WiFi password from flash");
-            }
+
             if (endpointCensored) {
                 endpointPassword = loadCredential(PREFS_KEY_ENDPOINT_PASS, "");
                 LOG("Loaded endpoint password from flash");
@@ -487,15 +631,18 @@ bool Config::loadFromSD(fs::FS &sd) {
                 cloudClientSecret = loadCredential(PREFS_KEY_CLOUD_SECRET, "");
                 LOG("Loaded cloud client secret from flash");
             }
-            
-            credentialsInFlash = (wifiCensored || endpointCensored || cloudSecretCensored);
-            
+
+            credentialsInFlash = (anyWifiCensored || endpointCensored || cloudSecretCensored);
+
             // Check for migration needed (plaintext credentials present in mask mode)
             bool needsMigration = false;
-            if (!wifiPassword.isEmpty() && !wifiCensored) needsMigration = true;
+            for (int i = 0; i < WIFI_MAX_NETWORKS; i++) {
+                const String& pw = wifiNetworks[i].password;
+                if (!pw.isEmpty() && !wifiWasCensored[i]) { needsMigration = true; break; }
+            }
             if (!endpointPassword.isEmpty() && !endpointCensored) needsMigration = true;
             if (!cloudClientSecret.isEmpty() && !cloudSecretCensored) needsMigration = true;
-            
+
             if (needsMigration) {
                 LOG("New plain text credentials detected in mask mode - attempting migration");
                 if (migrateToSecureStorage(sd)) {
@@ -506,15 +653,8 @@ bool Config::loadFromSD(fs::FS &sd) {
     }
     
     // Step 3: Validate configuration
-    
-    // Validate SSID length (WiFi standard limit is 32 characters)
-    if (wifiSSID.length() > 32) {
-        LOG_ERROR("SSID exceeds maximum length of 32 characters");
-        LOGF("SSID length: %d characters", wifiSSID.length());
-        LOG("Truncating SSID to 32 characters");
-        wifiSSID = wifiSSID.substring(0, 32);
-    }
-    
+    // (SSID-length truncation handled per-slot in validateAndNormalize() below.)
+
     // Compute cached endpoint type flags from the (possibly comma-separated) endpointType string
     {
         String upper = endpointType;
@@ -563,30 +703,9 @@ bool Config::loadFromSD(fs::FS &sd) {
         }
     }
     
-    // Validation of numeric ranges
-    if (maxDays <= 0) { maxDays = 365; }
-    else if (maxDays > 366) { maxDays = 366; }
+    validateAndNormalize();
     
-    if (recentFolderDays < 0) { recentFolderDays = 2; }
-    
-    if (uploadMode != "scheduled" && uploadMode != "smart") { uploadMode = "smart"; }
-    
-    if (uploadStartHour < 0 || uploadStartHour > 23) { uploadStartHour = 9; }
-    if (uploadEndHour < 0 || uploadEndHour > 23) { uploadEndHour = 21; }
-    
-    if (inactivitySeconds < 10) { inactivitySeconds = 10; }
-    else if (inactivitySeconds > 3600) { inactivitySeconds = 3600; }
-    
-    if (exclusiveAccessMinutes < 1) { exclusiveAccessMinutes = 1; }
-    else if (exclusiveAccessMinutes > 30) { exclusiveAccessMinutes = 30; }
-    
-    if (cooldownMinutes < 1) { cooldownMinutes = 1; }
-    else if (cooldownMinutes > 60) { cooldownMinutes = 60; }
-    
-    if (cpuSpeedMhz < 80) { cpuSpeedMhz = 80; }
-    else if (cpuSpeedMhz > 240) { cpuSpeedMhz = 240; }
-    
-    isValid = !wifiSSID.isEmpty() && hasValidEndpoint;
+    isValid = (wifiNetworkCount > 0) && hasValidEndpoint;
     
     if (isValid) {
         LOG("========================================");
@@ -608,9 +727,19 @@ bool Config::loadFromSD(fs::FS &sd) {
     return isValid;
 }
 
-const String& Config::getWifiSSID() const { return wifiSSID; }
-const String& Config::getWifiPassword() const { return wifiPassword; }
+int Config::getWifiNetworkCount() const { return wifiNetworkCount; }
+const String& Config::getWifiSSID(int idx) const {
+    static const String empty;
+    if (idx < 0 || idx >= WIFI_MAX_NETWORKS) return empty;
+    return wifiNetworks[idx].ssid;
+}
+const String& Config::getWifiPassword(int idx) const {
+    static const String empty;
+    if (idx < 0 || idx >= WIFI_MAX_NETWORKS) return empty;
+    return wifiNetworks[idx].password;
+}
 const String& Config::getHostname() const { return hostname; }
+const String& Config::getNtpServer() const { return ntpServer; }
 const String& Config::getSchedule() const { return schedule; }
 const String& Config::getEndpoint() const { return endpoint; }
 const String& Config::getEndpointType() const { return endpointType; }
@@ -618,14 +747,34 @@ const String& Config::getEndpointUser() const { return endpointUser; }
 const String& Config::getEndpointPassword() const { return endpointPassword; }
 int Config::getGmtOffsetHours() const { return gmtOffsetHours; }
 const String& Config::getTzString() const { return tzString; }
-const String& Config::getNtpServer() const { return ntpServer; }
+const String& Config::getTzName() const { return tzName; }
 bool Config::getSaveLogs() const { return saveLogs; }
 bool Config::getDebugMode() const { return debugMode; }
 bool Config::valid() const { return isValid; }
 
+void Config::loadDefaults() {
+    LOG("[Config] Loading default configuration settings (Experimental Mode)");
+    
+    // Ensure endpoint type flags are initialized even if default values are empty
+    {
+        String upper = endpointType;
+        upper.toUpperCase();
+        _hasSmbEndpoint = (upper.indexOf("SMB") >= 0);
+        _hasCloudEndpoint = (upper.indexOf("CLOUD") >= 0 || upper.indexOf("SLEEPHQ") >= 0);
+        _hasWebdavEndpoint = (upper.indexOf("WEBDAV") >= 0);
+    }
+    
+    isValid = true;
+    LOG("[Config] Defaults applied, isValid marked TRUE");
+}
+
 // Credential storage mode getters
 bool Config::isMaskingCredentials() const { return maskCredentials; }
 bool Config::areCredentialsInFlash() const { return credentialsInFlash; }
+
+// Remote syslog getters
+const String& Config::getSyslogHost() const { return syslogHost; }
+uint16_t Config::getSyslogPort() const { return syslogPort; }
 
 // Cloud upload getters
 const String& Config::getCloudClientId() const { return cloudClientId; }
@@ -636,6 +785,7 @@ int Config::getCloudDeviceId() const { return cloudDeviceId; }
 int Config::getMaxDays() const { return maxDays; }
 int Config::getRecentFolderDays() const { return recentFolderDays; }
 bool Config::getCloudInsecureTls() const { return cloudInsecureTls; }
+bool Config::getSmbPreserveTimestamps() const { return smbPreserveTimestamps; }
 
 bool Config::hasCloudEndpoint() const { return _hasCloudEndpoint; }
 bool Config::hasSmbEndpoint() const { return _hasSmbEndpoint; }
@@ -655,9 +805,85 @@ int Config::getInactivitySeconds() const { return inactivitySeconds; }
 int Config::getExclusiveAccessMinutes() const { return exclusiveAccessMinutes; }
 int Config::getCooldownMinutes() const { return cooldownMinutes; }
 bool Config::getEnable1BitSdMode() const { return enable1BitSdMode; }
+bool Config::getStealthRestore() const { return stealthRestore; }
 bool Config::getMinimizeReboots() const { return minimizeReboots; }
+void Config::overrideUploadMode(const String& mode) {
+    uploadMode = mode;
+}
 bool Config::getFlushLogsDuringUpload() const { return flushLogsDuringUpload; }
-bool Config::isSmartMode() const { return uploadMode == "smart"; }
+int Config::getSmartStartHour() const { return smartStartHour; }
+bool Config::isSmartMode() const { return uploadMode.equalsIgnoreCase("smart") && !smartConfigInvalid; }
+bool Config::isSmartConfigInvalid() const { return smartConfigInvalid; }
+
+void Config::validateAndNormalize() {
+    // WiFi networks: truncate over-length SSIDs, then compact populated slots
+    // Empty SSIDs (gaps from e.g. only WIFI_SSID_3 being set) are pulled forward
+    // so wifiNetworks[0..wifiNetworkCount-1] is contiguous.  Roaming/failover is
+    // implicit when wifiNetworkCount > 1.
+    for (int i = 0; i < WIFI_MAX_NETWORKS; i++) {
+        if (wifiNetworks[i].ssid.length() > 32) {
+            LOG_WARNF("WIFI_SSID_%d exceeds 32 chars - truncating", i + 1);
+            wifiNetworks[i].ssid = wifiNetworks[i].ssid.substring(0, 32);
+        }
+    }
+    int dst = 0;
+    for (int src = 0; src < WIFI_MAX_NETWORKS; src++) {
+        if (!wifiNetworks[src].ssid.isEmpty()) {
+            if (dst != src) {
+                wifiNetworks[dst] = wifiNetworks[src];
+                wifiNetworks[src] = WiFiCredential{};
+            }
+            dst++;
+        }
+    }
+    // Clear any tail slots above the populated count
+    for (int i = dst; i < WIFI_MAX_NETWORKS; i++) {
+        wifiNetworks[i] = WiFiCredential{};
+    }
+    wifiNetworkCount = dst;
+
+    // Validation of numeric ranges
+    if (maxDays <= 0) { maxDays = 365; }
+    else if (maxDays > 366) { maxDays = 366; }
+    
+    if (recentFolderDays < 0) { recentFolderDays = 2; }
+    
+    uploadMode.toLowerCase();
+    if (uploadMode != "scheduled" && uploadMode != "smart") { uploadMode = "smart"; }
+    
+    if (uploadStartHour < 0 || uploadStartHour > 23) { uploadStartHour = 9; }
+    if (uploadEndHour < 0 || uploadEndHour > 23) { uploadEndHour = 21; }
+    
+    if (inactivitySeconds < 10) { inactivitySeconds = 10; }
+    else if (inactivitySeconds > 3600) { inactivitySeconds = 3600; }
+    
+    if (exclusiveAccessMinutes < 1) { exclusiveAccessMinutes = 1; }
+    else if (exclusiveAccessMinutes > 30) { exclusiveAccessMinutes = 30; }
+    
+    if (cooldownMinutes < 1) { cooldownMinutes = 1; }
+    else if (cooldownMinutes > 60) { cooldownMinutes = 60; }
+    
+    if (smartStartHour < 0 || smartStartHour > 23) { smartStartHour = 6; }
+    
+    // Smart mode config validation: SMART_START_HOUR must be strictly less than UPLOAD_START_HOUR
+    // AND at least 1 hour below it. If invalid, the mode is effectively treated as SCHEDULED.
+    smartConfigInvalid = false;
+    if (uploadMode.equalsIgnoreCase("smart")) {
+        // Invalid if SSH >= USH (must be at least 1 hour before window opens)
+        bool sshInsideWindow = (uploadStartHour < uploadEndHour)
+            ? (smartStartHour >= uploadStartHour && smartStartHour < uploadEndHour)
+            : (smartStartHour >= uploadStartHour || smartStartHour < uploadEndHour); // cross-midnight window
+        if (smartStartHour >= uploadStartHour || sshInsideWindow) {
+            smartConfigInvalid = true;
+            LOG_WARN("[Config] SMART_START_HOUR inside or at upload window boundary — downgrading to SCHEDULED");
+            LOGF("[Config]   SMART_START_HOUR=%d, UPLOAD_START_HOUR=%d, UPLOAD_END_HOUR=%d",
+                 smartStartHour, uploadStartHour, uploadEndHour);
+        }
+    }
+    
+    if (cpuSpeedMhz < 80) { cpuSpeedMhz = 80; }
+    else if (cpuSpeedMhz > 240) { cpuSpeedMhz = 240; }
+}
 
 // Helper methods for enum conversion
 WifiTxPower Config::parseWifiTxPower(const String& str) {
