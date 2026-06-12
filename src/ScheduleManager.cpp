@@ -162,6 +162,7 @@ bool ScheduleManager::syncTime() {
 // ============================================================================
 
 bool ScheduleManager::isInUploadWindow() {
+    if (isManualMode()) return false;
     if (!isTimeSynced()) return false;
     
     struct tm timeinfo;
@@ -205,6 +206,7 @@ bool ScheduleManager::isSmartQuietPeriod() {
 }
 
 bool ScheduleManager::canUploadFreshData() {
+    if (isManualMode()) return false;
     if (!isTimeSynced()) return false;
     
     if (isSmartMode()) {
@@ -216,13 +218,26 @@ bool ScheduleManager::canUploadFreshData() {
 }
 
 bool ScheduleManager::canUploadOldData() {
+    if (isManualMode()) return false;
     if (!isTimeSynced()) return false;
     
     // Both modes: old data only within upload window
     return isInUploadWindow();
 }
 
+bool ScheduleManager::canProcessOldData() {
+    // Manual mode keeps canUploadOldData() == false so the scheduler/window
+    // logic (e.g. main.cpp window-open detection, isUploadEligible) stays
+    // pure.  But a manual run only ever happens via an explicit Force Upload,
+    // which is documented as "upload all available data now" — so old
+    // (non-recent) folders MUST be processed.  Gate on isTimeSynced() because
+    // recent/MAX_DAYS folder-name math is meaningless without a valid clock.
+    if (isManualMode()) return isTimeSynced();
+    return canUploadOldData();
+}
+
 bool ScheduleManager::isUploadEligible(bool hasFreshData, bool hasOldData) {
+    if (isManualMode()) return false;
     if (!isTimeSynced()) return false;
     
     // In scheduled mode, check if already completed today
@@ -282,6 +297,9 @@ void ScheduleManager::markUploadCompleted() {
 }
 
 unsigned long ScheduleManager::getSecondsUntilNextUpload() {
+    if (isManualMode()) {
+        return (unsigned long)-1;
+    }
     if (!isTimeSynced()) {
         return 0;
     }
@@ -366,3 +384,4 @@ int ScheduleManager::getUploadStartHour() const { return uploadStartHour; }
 int ScheduleManager::getSmartStartHour() const { return smartStartHour; }
 int ScheduleManager::getUploadEndHour() const { return uploadEndHour; }
 bool ScheduleManager::isSmartMode() const { return uploadMode == "smart"; }
+bool ScheduleManager::isManualMode() const { return uploadMode == "manual"; }
